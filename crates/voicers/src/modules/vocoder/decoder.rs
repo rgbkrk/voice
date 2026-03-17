@@ -139,14 +139,15 @@ impl AdainResBlk1d {
         if self.upsample_type {
             if let Some(ref mut pool) = self.pool {
                 // Upsample via transposed convolution
+                // x: (B, C, T) -> swap to (B, T, C) for conv_transpose1d
                 let xt = x.swap_axes(2, 1)?;
                 let xt = pool.forward_conv_transpose1d(&xt)?;
-                x = xt.swap_axes(2, 1)?;
-                // Pad channel dim: pad(x, ((0,0), (1,0), (0,0)))
-                // In our layout (B, C, T), we pad the time or channel dim.
-                // Python: mx.pad(x, ((0,0), (1,0), (0,0))) pads dim 1 (channels) with 1 on the left
+                // Pad time dim while still in (B, T, C) layout
+                // Python: mx.pad(x, ((0,0), (1,0), (0,0))) pads dim 1 (time) with 1 at start
                 let widths: &[(i32, i32)] = &[(0, 0), (1, 0), (0, 0)];
-                x = pad(&x, PadWidth::Widths(widths), None, None)?;
+                let xt = pad(&xt, PadWidth::Widths(widths), None, None)?;
+                // Swap back to (B, C, T)
+                x = xt.swap_axes(2, 1)?;
             }
         }
 

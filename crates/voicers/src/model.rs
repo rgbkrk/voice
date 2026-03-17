@@ -226,8 +226,9 @@ impl KokoroModel {
             s: &speaker_style,
         })?;
 
-        // audio shape: (1, 1, samples) -> squeeze to (samples,)
-        let audio = audio.squeeze_axes(&[0, 1])?;
+        // audio may be (1, 1, samples), (1, samples, 1), etc.
+        // Squeeze all size-1 dimensions
+        let audio = audio.squeeze()?;
 
         audio.eval()?;
         Ok(audio)

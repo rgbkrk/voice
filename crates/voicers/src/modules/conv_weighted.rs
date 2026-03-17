@@ -134,8 +134,24 @@ impl ConvWeighted {
     /// Run as a transposed Conv1d.
     ///
     /// Input: `(batch, length, channels)` -- MLX channel-last layout.
+    /// Weight stored as (out_ch, kernel, in_ch). For conv_transpose1d,
+    /// MLX expects weight (out_ch, kernel, in_ch) where in_ch matches
+    /// the input's last dimension. Use .T if the input channels don't
+    /// match weight's last dim (same logic as regular conv1d, but
+    /// the transpose is full-reverse to match Python's .T behavior).
     pub fn forward_conv_transpose1d(&self, x: &Array) -> Result<Array, Exception> {
-        let weight = self.resolve_weight(x)?;
+        let weight = self.normalized_weight()?;
+        let x_last = x.shape()[x.ndim() - 1];
+        let w_last = weight.shape()[weight.ndim() - 1];
+
+        // Same logic as Python: if x.shape[-1] == weight.shape[-1], use as-is
+        // Otherwise transpose weight via .T (full reverse: [2, 1, 0])
+        let weight = if x_last == w_last || self.groups > 1 {
+            weight
+        } else {
+            weight.transpose_axes(&[2, 1, 0])?
+        };
+
         let result = mlx_rs::ops::conv_transpose1d(
             x, &weight, self.stride, self.padding, self.dilation, None, self.groups,
         )?;

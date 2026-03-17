@@ -2,33 +2,45 @@ use mlx_rs::error::Exception;
 use mlx_rs::ops::indexing::{ArrayIndex, Ellipsis, IndexOp, TryIndexOp};
 use mlx_rs::Array;
 
-/// Manual scatter-add for 1-D arrays: result[indices[i]] += updates[i].
+/// Perform overlap-add on CPU for istft.
 ///
-/// Equivalent to `scatter_add_single(a, indices, updates, 0)`.
-/// Implemented by iterating over unique index values and summing the corresponding updates.
-fn scatter_add_1d(
-    a: &Array,
-    indices: &Array,
-    updates: &Array,
-) -> Result<Array, Exception> {
-    // For each unique index position, sum the updates at that position and add to a.
-    // We do this by creating one-hot encodings and using matrix operations.
-    let n = a.shape()[0];
-    let m = indices.shape()[0];
+/// Evaluates frames eagerly and does the overlap-add on the CPU to avoid
+/// building a huge MLX compute graph.
+fn overlap_add_cpu(
+    frames_windowed: &Array, // (num_frames, win_length)
+    window: &Array,          // (win_length,)
+    num_frames: i32,
+    win_length: i32,
+    hop_length: i32,
+    output_length: i32,
+    normalized: bool,
+) -> Result<(Array, Array), Exception> {
+    frames_windowed.eval()?;
+    window.eval()?;
 
-    // Create a one-hot matrix: (n, m) where one_hot[j, i] = 1 if indices[i] == j
-    let arange_n = Array::arange::<_, i32>(None, n, None)?.reshape(&[n, 1])?;
-    let indices_row = indices.reshape(&[1, m])?;
-    let mask = arange_n.eq(&indices_row)?;
-    let mask_f32 = mask.as_type::<f32>()?;
+    let frames_data: &[f32] = frames_windowed.as_slice();
+    let win_data: &[f32] = window.as_slice();
 
-    // Scatter sum: for each position j, sum updates where indices == j
-    // result[j] = sum(updates[i] for i where indices[i] == j) = mask_f32[j, :] @ updates
-    let updates_col = updates.reshape(&[m, 1])?;
-    let sums = mask_f32.matmul(&updates_col)?; // (n, 1)
-    let sums = sums.reshape(&[n])?;
+    let mut reconstructed = vec![0.0f32; output_length as usize];
+    let mut window_sum = vec![0.0f32; output_length as usize];
 
-    Ok(a + &sums)
+    for f in 0..num_frames {
+        let offset = (f * hop_length) as usize;
+        let frame_start = (f * win_length) as usize;
+        for i in 0..win_length as usize {
+            reconstructed[offset + i] += frames_data[frame_start + i] * win_data[i];
+            window_sum[offset + i] += if normalized {
+                win_data[i] * win_data[i]
+            } else {
+                win_data[i]
+            };
+        }
+    }
+
+    Ok((
+        Array::from_slice(&reconstructed, &[output_length]),
+        Array::from_slice(&window_sum, &[output_length]),
+    ))
 }
 
 /// Generate a Hanning window of the given size.
@@ -139,44 +151,18 @@ pub fn istft(
     let frames_time = mlx_rs::fft::irfft(x, None, 0)?;
     let frames_time = frames_time.transpose_axes(&[1, 0])?;
 
-    // Overlap-add using scatter_add_single
-    let total_indices = num_frames * win_length;
-    let mut all_indices = Vec::with_capacity(total_indices as usize);
-    let mut recon_updates = Vec::with_capacity(num_frames as usize);
-    let mut window_updates = Vec::with_capacity(num_frames as usize);
+    // Overlap-add on CPU to avoid massive graph
+    let (reconstructed, window_sum) = overlap_add_cpu(
+        &frames_time,
+        &w,
+        num_frames,
+        win_length,
+        hop_length,
+        t,
+        normalized,
+    )?;
 
-    let window_norm = if normalized {
-        &w * &w
-    } else {
-        w.clone()
-    };
-
-    for f in 0..num_frames {
-        let offset = f * hop_length;
-        all_indices.extend(offset..offset + win_length);
-
-        let frame = frames_time.index(f);
-        recon_updates.push(&frame * &w);
-        window_updates.push(window_norm.clone());
-    }
-
-    let indices = Array::from_slice(&all_indices, &[total_indices]);
-
-    let recon_refs: Vec<&Array> = recon_updates.iter().collect();
-    let recon_flat = mlx_rs::ops::concatenate_axis(&recon_refs, 0)?;
-
-    let win_refs: Vec<&Array> = window_updates.iter().collect();
-    let win_flat = mlx_rs::ops::concatenate_axis(&win_refs, 0)?;
-
-    let reconstructed = Array::zeros::<f32>(&[t])?;
-    let window_sum = Array::zeros::<f32>(&[t])?;
-
-    // Overlap-add: accumulate into reconstructed and window_sum using put_along_axis
-    // We use a manual approach since scatter_add_single is not available in mlx-rs 0.25.x
-    let reconstructed = scatter_add_1d(&reconstructed, &indices, &recon_flat)?;
-    let window_sum = scatter_add_1d(&window_sum, &indices, &win_flat)?;
-
-    // Avoid division by zero
+    // Normalize by window sum (avoid division by zero)
     let eps = Array::from_slice(&[1e-10f32], &[1]);
     let mask = window_sum.gt(&eps)?;
     let ones = Array::from_slice(&[1.0f32], &[1]);

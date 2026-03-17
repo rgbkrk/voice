@@ -90,7 +90,8 @@ impl AdaIN1d {
         let beta = beta.reshape(&[batch, num_features, 1])?;
 
         let normed = self.norm.forward(x)?;
-        Ok(gamma * normed + beta)
+        let one = Array::from_f32(1.0);
+        Ok((&one + gamma) * normed + beta)
     }
 }
 
@@ -155,13 +156,14 @@ impl AdaLayerNorm {
         let gamma = &parts[0];
         let beta = &parts[1];
 
+        let one = Array::from_f32(1.0);
         if x.ndim() == 3 {
             let batch = x.shape()[0];
             let gamma = gamma.reshape(&[batch, 1, d_model])?;
             let beta = beta.reshape(&[batch, 1, d_model])?;
-            Ok(gamma * normed + beta)
+            Ok((&one + gamma) * normed + beta)
         } else {
-            Ok(gamma * normed + beta)
+            Ok((&one + gamma) * normed + beta)
         }
     }
 }

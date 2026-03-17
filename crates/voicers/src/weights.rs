@@ -64,13 +64,62 @@ fn check_array_shape(shape: &[i32]) -> bool {
     out_ch >= kh && out_ch >= kw && kh == kw
 }
 
+/// Remap a weight key from PyTorch/safetensors naming to Rust module naming.
+///
+/// Handles all systematic naming differences between the original model and
+/// our Rust module field names.
+fn remap_key(key: &str) -> String {
+    let mut k = key.to_string();
+
+    // LayerNorm case: LayerNorm -> layer_norm
+    k = k.replace("LayerNorm", "layer_norm");
+
+    // .gamma/.beta -> .weight/.bias (old LayerNorm naming)
+    if k.ends_with(".gamma") {
+        k = k[..k.len() - 6].to_string() + ".weight";
+    } else if k.ends_with(".beta") {
+        k = k[..k.len() - 5].to_string() + ".bias";
+    }
+
+    // Decoder conv naming: F0_conv -> f0_conv, N_conv -> n_conv
+    k = k.replace("decoder.F0_conv", "decoder.f0_conv");
+    k = k.replace("decoder.N_conv", "decoder.n_conv");
+
+    // Predictor field naming: F0 -> f0_blocks, N -> n_blocks, F0_proj -> f0_proj, N_proj -> n_proj
+    k = k.replace("predictor.F0_proj", "predictor.f0_proj");
+    k = k.replace("predictor.N_proj", "predictor.n_proj");
+    // Must come after F0_proj/N_proj to avoid partial matches
+    k = k.replace("predictor.F0.", "predictor.f0_blocks.");
+    k = k.replace("predictor.N.", "predictor.n_blocks.");
+
+    // TextEncoder CNN: cnn.N.0. -> cnn.N.conv., cnn.N.1. -> cnn.N.norm.
+    if k.starts_with("text_encoder.cnn.") {
+        // Pattern: text_encoder.cnn.{idx}.0.{rest} -> text_encoder.cnn.{idx}.conv.{rest}
+        //          text_encoder.cnn.{idx}.1.{rest} -> text_encoder.cnn.{idx}.norm.{rest}
+        let parts: Vec<&str> = k.splitn(4, '.').collect(); // ["text_encoder", "cnn", idx, rest]
+        if parts.len() == 4 {
+            let rest = parts[3];
+            if let Some(stripped) = rest.strip_prefix("0.") {
+                k = format!("text_encoder.cnn.{}.conv.{}", parts[2], stripped);
+            } else if let Some(stripped) = rest.strip_prefix("1.") {
+                k = format!("text_encoder.cnn.{}.norm.{}", parts[2], stripped);
+            }
+        }
+    }
+
+    // mlx-rs Linear wrapping: duration_proj.linear_layer. -> duration_proj.
+    k = k.replace("duration_proj.linear_layer.", "duration_proj.");
+
+    k
+}
+
 /// Sanitize weights from PyTorch format to our Rust module key format.
 ///
 /// This handles:
 /// - Removing position_ids
-/// - Renaming .gamma/.beta to .weight/.bias for LayerNorm
+/// - Key renaming (CamelCase -> snake_case, field name differences)
 /// - Combining bias_ih + bias_hh for LSTM
-/// - Remapping LSTM keys (weight_ih_l0 -> forward.wx, etc.)
+/// - Remapping LSTM keys (weight_ih_l0 -> forward_lstm.wx, etc.)
 /// - Transposing conv weights where needed
 pub fn sanitize_weights(
     weights: HashMap<String, Array>,
@@ -102,45 +151,38 @@ pub fn sanitize_weights(
         let new_key;
         let new_value;
 
-        if key.ends_with(".gamma") {
-            new_key = key.replace(".gamma", ".weight");
-            new_value = value.clone();
-        } else if key.ends_with(".beta") {
-            new_key = key.replace(".beta", ".bias");
-            new_value = value.clone();
-        } else if key.ends_with(".weight_ih_l0") {
-            let base = key.strip_suffix(".weight_ih_l0").unwrap();
-            new_key = format!("{}.forward.wx", base);
+        if key.ends_with(".weight_ih_l0") {
+            let base = remap_key(key.strip_suffix(".weight_ih_l0").unwrap());
+            new_key = format!("{}.forward_lstm.wx", base);
             new_value = value.clone();
         } else if key.ends_with(".weight_hh_l0") {
-            let base = key.strip_suffix(".weight_hh_l0").unwrap();
-            new_key = format!("{}.forward.wh", base);
+            let base = remap_key(key.strip_suffix(".weight_hh_l0").unwrap());
+            new_key = format!("{}.forward_lstm.wh", base);
             new_value = value.clone();
         } else if key.ends_with(".weight_ih_l0_reverse") {
-            let base = key.strip_suffix(".weight_ih_l0_reverse").unwrap();
-            new_key = format!("{}.backward.wx", base);
+            let base = remap_key(key.strip_suffix(".weight_ih_l0_reverse").unwrap());
+            new_key = format!("{}.backward_lstm.wx", base);
             new_value = value.clone();
         } else if key.ends_with(".weight_hh_l0_reverse") {
-            let base = key.strip_suffix(".weight_hh_l0_reverse").unwrap();
-            new_key = format!("{}.backward.wh", base);
+            let base = remap_key(key.strip_suffix(".weight_hh_l0_reverse").unwrap());
+            new_key = format!("{}.backward_lstm.wh", base);
             new_value = value.clone();
         } else if key.contains("weight_v") {
             let shape = value.shape();
+            new_key = remap_key(key);
             if check_array_shape(shape) {
-                new_key = key.clone();
                 new_value = value.clone();
             } else {
-                new_key = key.clone();
                 new_value = value.transpose_axes(&[0, 2, 1]).unwrap_or_else(|_| value.clone());
             }
         } else if key.contains("F0_proj.weight") || key.contains("N_proj.weight") {
-            new_key = key.clone();
+            new_key = remap_key(key);
             new_value = value.transpose_axes(&[0, 2, 1]).unwrap_or_else(|_| value.clone());
         } else if key.starts_with("decoder.") && key.contains("noise_convs") && key.ends_with(".weight") {
-            new_key = key.clone();
+            new_key = remap_key(key);
             new_value = value.transpose_axes(&[0, 2, 1]).unwrap_or_else(|_| value.clone());
         } else {
-            new_key = key.clone();
+            new_key = remap_key(key);
             new_value = value.clone();
         }
 
@@ -156,18 +198,80 @@ pub fn sanitize_weights(
             let direction;
             if ih_key.ends_with("_reverse") {
                 let stripped = ih_key.strip_suffix(".bias_ih_l0_reverse").unwrap();
-                base_key = stripped.to_string();
-                direction = "backward";
+                base_key = remap_key(stripped);
+                direction = "backward_lstm";
             } else {
                 let stripped = ih_key.strip_suffix(".bias_ih_l0").unwrap();
-                base_key = stripped.to_string();
-                direction = "forward";
+                base_key = remap_key(stripped);
+                direction = "forward_lstm";
             }
             sanitized.insert(format!("{}.{}.bias", base_key, direction), combined);
         }
     }
 
     Ok(sanitized)
+}
+
+/// Load alpha (snake1d activation) parameters that aren't exposed via #[param].
+///
+/// These are Vec<Array> fields on AdaINResBlock1 structs in:
+/// - decoder.generator.resblocks[i].alpha{1,2}[j]
+/// - decoder.generator.noise_res[i].alpha{1,2}[j]
+fn load_alpha_params(model: &mut KokoroModel, weights: &HashMap<String, Array>) -> std::collections::HashSet<String> {
+    let mut loaded = std::collections::HashSet::new();
+    for (key, value) in weights {
+        // Pattern: decoder.generator.resblocks.{i}.alpha{1|2}.{j}
+        if let Some(rest) = key.strip_prefix("decoder.generator.resblocks.") {
+            if let Some((idx_str, alpha_rest)) = rest.split_once('.') {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    if let Some((alpha_name, j_str)) = alpha_rest.split_once('.') {
+                        if let Ok(j) = j_str.parse::<usize>() {
+                            if idx < model.decoder.generator.resblocks.len() {
+                                let block = &mut model.decoder.generator.resblocks[idx];
+                                match alpha_name {
+                                    "alpha1" if j < block.alpha1.len() => {
+                                        block.alpha1[j] = value.clone();
+                                        loaded.insert(key.clone());
+                                    }
+                                    "alpha2" if j < block.alpha2.len() => {
+                                        block.alpha2[j] = value.clone();
+                                        loaded.insert(key.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Pattern: decoder.generator.noise_res.{i}.alpha{1|2}.{j}
+        if let Some(rest) = key.strip_prefix("decoder.generator.noise_res.") {
+            if let Some((idx_str, alpha_rest)) = rest.split_once('.') {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    if let Some((alpha_name, j_str)) = alpha_rest.split_once('.') {
+                        if let Ok(j) = j_str.parse::<usize>() {
+                            if idx < model.decoder.generator.noise_res.len() {
+                                let block = &mut model.decoder.generator.noise_res[idx];
+                                match alpha_name {
+                                    "alpha1" if j < block.alpha1.len() => {
+                                        block.alpha1[j] = value.clone();
+                                        loaded.insert(key.clone());
+                                    }
+                                    "alpha2" if j < block.alpha2.len() => {
+                                        block.alpha2[j] = value.clone();
+                                        loaded.insert(key.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    loaded
 }
 
 /// Load a KokoroModel from a HuggingFace repo or local path.
@@ -204,13 +308,31 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
 
     let sanitized = sanitize_weights(all_weights)?;
 
+    // Load alpha parameters manually (not exposed via #[param])
+    let alpha_loaded = load_alpha_params(&mut model, &sanitized);
+
     // Load weights into model by matching parameter keys
     {
         use mlx_rs::module::ModuleParameters;
         let mut params = model.parameters_mut().flatten();
-        for (key, value) in sanitized {
-            if let Some(param) = params.get_mut(&*key) {
-                **param = value;
+        let mut loaded = 0;
+        let mut missing = Vec::new();
+        let total = sanitized.len();
+        for (key, value) in &sanitized {
+            if let Some(param) = params.get_mut(&**key) {
+                **param = value.clone();
+                loaded += 1;
+            } else if !alpha_loaded.contains(key.as_str()) {
+                missing.push(key.clone());
+            } else {
+                loaded += 1; // count alpha as loaded
+            }
+        }
+        if !missing.is_empty() {
+            missing.sort();
+            eprintln!("[WARN] Loaded {}/{} weights, {} unmatched:", loaded, total, missing.len());
+            for k in &missing {
+                eprintln!("  unmatched weight: {}", k);
             }
         }
     }

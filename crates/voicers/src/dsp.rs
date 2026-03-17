@@ -134,7 +134,7 @@ pub fn istft(
     length: Option<i32>,
     normalized: Option<bool>,
 ) -> Result<Array, Exception> {
-    let freq_bins = x.shape()[1];
+    let freq_bins = x.shape()[0];
     let win_length = win_length.unwrap_or((freq_bins - 1) * 2);
     let hop_length = hop_length.unwrap_or(win_length / 4);
     let center = center.unwrap_or(true);
@@ -253,30 +253,26 @@ impl MlxStft {
     /// Input: `spec` of shape `(B, n_fft/2+1, num_frames)` and `phase` same shape.
     /// Returns audio of shape `(B, T)`.
     pub fn inverse(&self, spec: &Array, phase: &Array) -> Result<Array, Exception> {
-        // Reconstruct complex STFT: spec * exp(j * phase) = spec * (cos(phase) + j*sin(phase))
-        let cos_phase = mlx_rs::ops::cos(phase)?;
-        let sin_phase = mlx_rs::ops::sin(phase)?;
-        let real = spec * &cos_phase;
-        let imag = spec * &sin_phase;
-
         let batch_size = spec.shape()[0];
         let mut outputs = Vec::with_capacity(batch_size as usize);
 
         for b in 0..batch_size {
-            let r = real.index(b); // (freq, frames)
-            let im = imag.index(b); // (freq, frames)
+            let spec_b = spec.index(b); // (freq, frames)
+            let phase_b = phase.index(b); // (freq, frames)
+
+            // Unwrap phase along the time axis (axis 1) before reconstruction
+            let phase_cont = mlx_unwrap(&phase_b, None, Some(1), None)?;
+
+            let cos_phase = mlx_rs::ops::cos(&phase_cont)?;
+            let sin_phase = mlx_rs::ops::sin(&phase_cont)?;
+            let r = &spec_b * &cos_phase;
+            let im = &spec_b * &sin_phase;
 
             // Build complex array: transpose to (frames, freq)
             let r_t = r.transpose_axes(&[1, 0])?;
             let im_t = im.transpose_axes(&[1, 0])?;
 
-            // For irfft we need a complex input. Since mlx-rs may not directly support
-            // creating complex arrays from real/imag, we use the real part only with
-            // the phase encoding already applied. We reconstruct via:
-            // output = sum of shifted windowed cosines (overlap-add approach).
-            //
-            // Actually, irfft expects complex input. We need to combine real and imag
-            // into a complex array. Use view trick: interleave real and imag as float pairs.
+            // Interleave real and imag as float pairs for complex64 view.
             // complex64 = [f32 real, f32 imag] per element.
             let r_flat = r_t.reshape(&[-1, 1])?;
             let im_flat = im_t.reshape(&[-1, 1])?;
@@ -299,6 +295,7 @@ impl MlxStft {
                 None,
                 None,
             )?;
+
             outputs.push(audio);
         }
 

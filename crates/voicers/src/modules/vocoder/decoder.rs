@@ -333,7 +333,6 @@ impl Module<DecoderInput<'_>> for Decoder {
         let mut res = true;
         for block in self.decode.iter_mut() {
             if res {
-                // Concatenate x with asr_res, F0, N: (B, C+64+2, T)
                 x = concatenate_axis(&[&x, &asr_res, &f0_feat, &n_feat], 1)?;
             }
             x = block.forward((&x, s))?;

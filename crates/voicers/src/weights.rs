@@ -15,15 +15,14 @@ pub fn download_model(repo_id: &str) -> Result<PathBuf> {
     let api = Api::new().map_err(|e| VoicersError::Hub(e.to_string()))?;
     let repo = api.model(repo_id.to_string());
 
-    // Download config.json and all safetensors files
-    let _config_path = repo
+    // Download config.json
+    let config_path = repo
         .get("config.json")
         .map_err(|e| VoicersError::Hub(e.to_string()))?;
 
-    // The repo.get returns the path to cached file; we need the directory
-    // hf-hub caches in ~/.cache/huggingface/hub/models--{repo}/snapshots/{rev}/
-    let config_path = repo
-        .get("config.json")
+    // Download the model weights file
+    let _weights_path = repo
+        .get("kokoro-v1_0.safetensors")
         .map_err(|e| VoicersError::Hub(e.to_string()))?;
 
     // Return the directory containing config.json

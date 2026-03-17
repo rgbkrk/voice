@@ -144,6 +144,15 @@ impl KokoroModel {
 
         // Extract style from ref_s
         // ref_s shape: (1, 256) -> s = ref_s[:, 128:] (prosody style)
+        // ref_s is a voice pack of shape (510, 1, 256).
+        // Index by phoneme count - 1 to get the style for this length.
+        let phoneme_count = input_ids.len() as i32; // excludes BOS/EOS
+        let ref_s = if ref_s.ndim() == 3 {
+            ref_s.index(phoneme_count - 1)
+        } else {
+            ref_s.clone()
+        };
+
         let s = ref_s.index((.., 128..));
 
         // Duration encoding

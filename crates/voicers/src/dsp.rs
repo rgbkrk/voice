@@ -74,7 +74,9 @@ pub fn stft(
     let win_length = win_length.unwrap_or(n_fft);
     let center = center.unwrap_or(true);
 
-    let w = hanning(win_length, false)?;
+    // Use periodic window (same as istft) for perfect reconstruction
+    let w_full = hanning(win_length + 1, false)?;
+    let w = w_full.index(0..win_length);
 
     // Pad window to n_fft if needed
     let w = if win_length < n_fft {
@@ -138,7 +140,8 @@ pub fn istft(
     let win_length = win_length.unwrap_or((freq_bins - 1) * 2);
     let hop_length = hop_length.unwrap_or(win_length / 4);
     let center = center.unwrap_or(true);
-    let normalized = normalized.unwrap_or(false);
+    // Default to true: overlap-add applies window again, so we need w² normalization
+    let normalized = normalized.unwrap_or(true);
 
     // Window: hanning(win_length + 1)[:-1]
     let w_full = hanning(win_length + 1, false)?;

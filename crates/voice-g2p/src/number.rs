@@ -2,10 +2,27 @@
 ///
 /// Three public functions cover cardinal, ordinal, and year forms.
 /// "and" is intentionally omitted (misaki's `extend_num` strips it).
-
 const ONES: &[&str] = &[
-    "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
-    "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+    "",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
 ];
 
 const TENS: &[&str] = &[
@@ -99,8 +116,8 @@ fn make_ordinal(word: &str) -> String {
     }
 
     // Words ending in "y" -> "ieth"
-    if word.ends_with('y') {
-        return format!("{}ieth", &word[..word.len() - 1]);
+    if let Some(stem) = word.strip_suffix('y') {
+        return format!("{stem}ieth");
     }
 
     // Regular: append "th"
@@ -153,11 +170,7 @@ pub fn int_to_year(n: i64) -> String {
     // 1984 -> "nineteen" + "eighty four"
     if remainder < 10 {
         // 1906 -> "nineteen oh six"
-        format!(
-            "{} oh {}",
-            int_to_words(century),
-            int_to_words(remainder)
-        )
+        format!("{} oh {}", int_to_words(century), int_to_words(remainder))
     } else {
         format!("{} {}", int_to_words(century), int_to_words(remainder))
     }

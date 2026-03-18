@@ -1,9 +1,9 @@
+use mlx_macros::ModuleParameters;
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
 use mlx_rs::module::Module;
 use mlx_rs::nn::{Linear, LinearBuilder};
 use mlx_rs::Array;
-use mlx_macros::ModuleParameters;
 
 // ---------------------------------------------------------------------------
 // InstanceNorm1d

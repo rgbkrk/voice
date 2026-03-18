@@ -7,9 +7,9 @@ use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::ops::{cumsum, sin, tanh};
 use mlx_rs::Array;
 
-use voice_dsp::interpolate;
 use crate::ada_norm::AdaIN1d;
 use crate::conv_weighted::ConvWeighted;
+use voice_dsp::interpolate;
 
 // ---------------------------------------------------------------------------
 // SineGen (not a Module -- no trainable parameters)
@@ -72,7 +72,7 @@ impl SineGen {
         let sr = Array::from_f32(self.sampling_rate as f32);
 
         // Normalized frequency: f0 / sr, then mod 1
-        let rad_values = f0_values.divide(&sr)?.remainder(&Array::from_f32(1.0))?;
+        let rad_values = f0_values.divide(&sr)?.remainder(Array::from_f32(1.0))?;
 
         // Random initial phase for each harmonic, with first column zeroed
         let b = f0_values.dim(0);
@@ -133,11 +133,7 @@ impl SineGen {
     /// Returns `(sine_waves, uv, noise)`.
     pub fn call(&self, f0: &Array) -> Result<(Array, Array, Array), Exception> {
         // Create harmonics: f0 * [1, 2, ..., harmonic_num+1]
-        let harmonics = Array::arange::<i32, f32>(
-            1,
-            self.harmonic_num + 2,
-            None,
-        )?;
+        let harmonics = Array::arange::<i32, f32>(1, self.harmonic_num + 2, None)?;
         // harmonics shape: (harmonic_num+1,) -> (1, 1, harmonic_num+1)
         let harmonics = harmonics.reshape(&[1, 1, -1])?;
         let fn_freqs = f0.multiply(&harmonics)?;
@@ -242,8 +238,8 @@ impl Module<&Array> for SourceModuleHnNSF {
 
         // Generate noise for unvoiced regions
         let noise_amp = Array::from_f32(self.sine_amp / 3.0);
-        let noise = mlx_rs::random::normal::<f32>(uv.shape(), None, None, None)?
-            .multiply(&noise_amp)?;
+        let noise =
+            mlx_rs::random::normal::<f32>(uv.shape(), None, None, None)?.multiply(&noise_amp)?;
 
         Ok(SourceModuleOutput {
             sine_merge,

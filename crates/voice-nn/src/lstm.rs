@@ -18,9 +18,9 @@ fn lstm_forward_recurrent(
 ) -> Result<(Array, Array), Exception> {
     // Pre-compute input projection: x @ wx.T + bias
     let x_proj = if let Some(b) = &lstm.bias.value {
-        addmm(b, x, &lstm.wx.value.t(), None, None)?
+        addmm(b, x, lstm.wx.value.t(), None, None)?
     } else {
-        x.matmul(&lstm.wx.value.t())?
+        x.matmul(lstm.wx.value.t())?
     };
 
     let seq_len = x.dim(-2);
@@ -36,7 +36,7 @@ fn lstm_forward_recurrent(
 
         // Add hidden state contribution if we have one from the previous step
         if let Some(ref h) = hidden {
-            ifgo = addmm(&ifgo, h, &lstm.wh.value.t(), None, None)?;
+            ifgo = addmm(&ifgo, h, lstm.wh.value.t(), None, None)?;
         }
 
         let pieces = split(&ifgo, 4, -1)?;

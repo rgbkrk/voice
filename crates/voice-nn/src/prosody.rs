@@ -173,9 +173,7 @@ impl Module<DurationEncoderInput<'_>> for DurationEncoder {
 
         // Apply mask: mask is (B, T), expand -> (T, B, 1) then use where
         // m[..., None].transpose(1, 0, 2) -> (T, B, 1)
-        let mask_expanded = mask
-            .expand_dims(-1)?
-            .transpose_axes(&[1, 0, 2])?;
+        let mask_expanded = mask.expand_dims(-1)?.transpose_axes(&[1, 0, 2])?;
         let zero = Array::from_f32(0.0);
         x_cat = which(&mask_expanded, &zero, &x_cat)?;
 

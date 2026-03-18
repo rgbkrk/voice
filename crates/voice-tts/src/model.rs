@@ -136,9 +136,7 @@ impl KokoroModel {
         let text_mask = arange_plus_one.gt(&lengths_expanded)?;
 
         // ALBERT encoder
-        let mask_int = text_mask
-            .logical_not()?
-            .as_dtype(mlx_rs::Dtype::Int32)?;
+        let mask_int = text_mask.logical_not()?.as_dtype(mlx_rs::Dtype::Int32)?;
         let bert_output = self.bert.forward(CustomAlbertInput {
             input_ids: &input_ids_arr,
             token_type_ids: None,

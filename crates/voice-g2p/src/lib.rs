@@ -350,7 +350,7 @@ impl G2P {
             return;
         }
         let primary_count: usize = indices.iter().filter(|(b, _, _)| *b).count();
-        if primary_count <= (indices.len() + 1) / 2 {
+        if primary_count <= indices.len().div_ceil(2) {
             return;
         }
 

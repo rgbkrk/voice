@@ -2,7 +2,7 @@ use mlx_macros::ModuleParameters;
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
 use mlx_rs::module::Module;
-use mlx_rs::nn::{Dropout, DropoutBuilder, Upsample, UpsampleMode, leaky_relu};
+use mlx_rs::nn::{leaky_relu, Dropout, DropoutBuilder, Upsample, UpsampleMode};
 use mlx_rs::ops::{concatenate_axis, pad, sqrt, PadWidth};
 use mlx_rs::Array;
 
@@ -90,18 +90,24 @@ impl AdainResBlk1d {
         let norm2 = AdaIN1d::new(style_dim, dim_out)?;
 
         let conv1x1 = if learned_sc {
-            Some(ConvWeighted::new(dim_in, dim_out, 1, 1, 0, 1, 1, false, false)?)
+            Some(ConvWeighted::new(
+                dim_in, dim_out, 1, 1, 0, 1, 1, false, false,
+            )?)
         } else {
             None
         };
 
-        let dropout = DropoutBuilder::new().p(dropout_p).build()
+        let dropout = DropoutBuilder::new()
+            .p(dropout_p)
+            .build()
             .map_err(|e| Exception::custom(e.to_string()))?;
 
         let pool = if upsample {
             // ConvWeighted used as transposed conv for upsampling
             // groups=dim_in for depthwise
-            Some(ConvWeighted::new(1, dim_in, 3, 2, 1, 1, dim_in, true, false)?)
+            Some(ConvWeighted::new(
+                1, dim_in, 3, 2, 1, 1, dim_in, true, false,
+            )?)
         } else {
             None
         };
@@ -174,7 +180,7 @@ impl Module<(&Array, &Array)> for AdainResBlk1d {
         let residual = self.residual(x, s)?;
         let shortcut = self.shortcut(x)?;
         let sum = &residual + &shortcut;
-        let sqrt2 = sqrt(&Array::from_f32(2.0))?;
+        let sqrt2 = sqrt(Array::from_f32(2.0))?;
         sum.divide(&sqrt2)
     }
 
@@ -268,9 +274,7 @@ impl Decoder {
         let n_conv = ConvWeighted::new(1, 1, 3, 2, 1, 1, 1, true, false)?;
 
         // ASR residual projection
-        let asr_res = vec![
-            ConvWeighted::new(512, 64, 1, 1, 0, 1, 1, true, false)?,
-        ];
+        let asr_res = vec![ConvWeighted::new(512, 64, 1, 1, 0, 1, 1, true, false)?];
 
         let generator = Generator::new(
             style_dim,

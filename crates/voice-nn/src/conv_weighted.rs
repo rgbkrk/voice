@@ -1,7 +1,7 @@
+use mlx_macros::ModuleParameters;
 use mlx_rs::error::Exception;
 use mlx_rs::module::Param;
 use mlx_rs::Array;
-use mlx_macros::ModuleParameters;
 
 /// Which convolution operation to use.
 #[derive(Debug, Clone, Copy)]
@@ -39,6 +39,7 @@ impl ConvWeighted {
     /// - `stride`, `padding`, `dilation`, `groups`: convolution parameters
     /// - `bias`: whether to include a bias term
     /// - `encode`: if true, bias dimension is `in_channels` instead of `out_channels`
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         in_channels: i32,
         out_channels: i32,
@@ -79,7 +80,17 @@ impl ConvWeighted {
         kernel_size: i32,
         padding: i32,
     ) -> Result<Self, Exception> {
-        Self::new(in_channels, out_channels, kernel_size, 1, padding, 1, 1, true, false)
+        Self::new(
+            in_channels,
+            out_channels,
+            kernel_size,
+            1,
+            padding,
+            1,
+            1,
+            true,
+            false,
+        )
     }
 
     /// Compute the weight-normalized weight: `g * v / ||v||`.
@@ -126,7 +137,12 @@ impl ConvWeighted {
     pub fn forward_conv1d(&self, x: &Array) -> Result<Array, Exception> {
         let weight = self.resolve_weight(x)?;
         let result = mlx_rs::ops::conv1d(
-            x, &weight, self.stride, self.padding, self.dilation, self.groups,
+            x,
+            &weight,
+            self.stride,
+            self.padding,
+            self.dilation,
+            self.groups,
         )?;
         self.add_bias(result)
     }
@@ -153,7 +169,13 @@ impl ConvWeighted {
         };
 
         let result = mlx_rs::ops::conv_transpose1d(
-            x, &weight, self.stride, self.padding, self.dilation, None, self.groups,
+            x,
+            &weight,
+            self.stride,
+            self.padding,
+            self.dilation,
+            None,
+            self.groups,
         )?;
         self.add_bias(result)
     }

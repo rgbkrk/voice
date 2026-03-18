@@ -1,3 +1,4 @@
+pub mod builtin;
 pub mod config;
 pub mod error;
 pub mod model;
@@ -8,6 +9,7 @@ use std::path::Path;
 
 use mlx_rs::Array;
 
+pub use builtin::BUILTIN_VOICES;
 pub use config::ModelConfig;
 pub use error::{Result, VoicersError};
 pub use model::KokoroModel;
@@ -21,8 +23,13 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
 
 /// Load a voice embedding by name.
 ///
-/// Built-in voices include: af_heart, af_bella, af_nova, am_adam, am_echo, etc.
+/// Builtin voices (af_heart, af_bella, af_sarah, af_sky, am_michael, am_adam,
+/// bf_emma) are embedded in the binary and load instantly. All other voices
+/// are fetched from HuggingFace Hub.
 pub fn load_voice(voice_name: &str, repo_id: Option<&str>) -> Result<Array> {
+    if let Some(result) = builtin::load_builtin_voice(voice_name) {
+        return result;
+    }
     voice::load_voice(voice_name, repo_id)
 }
 
@@ -53,15 +60,15 @@ pub fn save_wav(audio: &Array, path: &Path, sample_rate: u32) -> Result<()> {
     };
 
     let mut writer = hound::WavWriter::create(path, spec)
-        .map_err(|e| VoicersError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| VoicersError::Io(std::io::Error::other(e)))?;
     for &sample in samples {
         writer
             .write_sample(sample)
-            .map_err(|e| VoicersError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| VoicersError::Io(std::io::Error::other(e)))?;
     }
     writer
         .finalize()
-        .map_err(|e| VoicersError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| VoicersError::Io(std::io::Error::other(e)))?;
 
     Ok(())
 }

@@ -1,5 +1,6 @@
-use mlx_rs::Array;
 use mlx_rs::ops::indexing::IndexOp;
+use mlx_rs::Array;
+use voice_dsp::{mlx_angle, stft, MlxStft};
 
 #[test]
 fn test_istft_roundtrip() {
@@ -14,10 +15,9 @@ fn test_istft_roundtrip() {
     let n_fft = 20;
     let hop = 5;
 
-    let stft_result =
-        voicers::dsp::stft(&signal_arr, Some(n_fft), Some(hop), Some(n_fft), Some(true)).unwrap();
+    let stft_result = stft(&signal_arr, Some(n_fft), Some(hop), Some(n_fft), Some(true)).unwrap();
     let mag = stft_result.abs().unwrap();
-    let phase = voicers::dsp::mlx_angle(&stft_result).unwrap();
+    let phase = mlx_angle(&stft_result).unwrap();
 
     let mag_t = mag.transpose_axes(&[1, 0]).unwrap();
     let phase_t = phase.transpose_axes(&[1, 0]).unwrap();
@@ -28,7 +28,7 @@ fn test_istft_roundtrip() {
         .reshape(&[1, phase_t.shape()[0], phase_t.shape()[1]])
         .unwrap();
 
-    let stft_obj = voicers::dsp::MlxStft::new(n_fft, hop, n_fft).unwrap();
+    let stft_obj = MlxStft::new(n_fft, hop, n_fft).unwrap();
     let reconstructed = stft_obj.inverse(&mag_b, &phase_b).unwrap();
     reconstructed.eval().unwrap();
 
@@ -37,13 +37,12 @@ fn test_istft_roundtrip() {
     let recon_data: &[f32] = recon.as_slice();
 
     let orig_peak: f32 = signal.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
-    let recon_peak: f32 = recon_data.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+    let recon_peak: f32 = recon_data
+        .iter()
+        .map(|x: &f32| x.abs())
+        .fold(0.0f32, f32::max);
 
-    eprintln!(
-        "Original: {} samples, peak: {:.4}",
-        signal.len(),
-        orig_peak
-    );
+    eprintln!("Original: {} samples, peak: {:.4}", signal.len(), orig_peak);
     eprintln!(
         "Reconstructed: {} samples, peak: {:.4}",
         recon_data.len(),
@@ -67,7 +66,9 @@ fn test_istft_roundtrip() {
     assert!(
         ratio > 0.3 && ratio < 3.0,
         "Unexpected gain ratio: {} (peak: orig={}, recon={})",
-        ratio, orig_peak, recon_peak
+        ratio,
+        orig_peak,
+        recon_peak
     );
 
     // Check waveform shape correlation: first non-zero samples should have consistent ratio
@@ -79,12 +80,19 @@ fn test_istft_roundtrip() {
     }
     if ratios.len() > 2 {
         let mean_ratio: f32 = ratios.iter().sum::<f32>() / ratios.len() as f32;
-        let max_dev: f32 = ratios.iter().map(|r| (r - mean_ratio).abs()).fold(0.0f32, f32::max);
-        eprintln!("Mean ratio: {:.4}, max deviation: {:.4}", mean_ratio, max_dev);
+        let max_dev: f32 = ratios
+            .iter()
+            .map(|r| (r - mean_ratio).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!(
+            "Mean ratio: {:.4}, max deviation: {:.4}",
+            mean_ratio, max_dev
+        );
         assert!(
             max_dev < 0.15,
             "Waveform shape not preserved: mean_ratio={}, max_dev={}",
-            mean_ratio, max_dev
+            mean_ratio,
+            max_dev
         );
     }
 }

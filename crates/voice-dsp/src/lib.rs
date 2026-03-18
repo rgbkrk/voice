@@ -316,11 +316,7 @@ impl MlxStft {
 /// This is the simple 3-argument form used by the vocoder source module.
 /// `scale_factor` is a single float that scales the width dimension.
 /// Supports "nearest" and "linear" modes.
-pub fn interpolate(
-    input: &Array,
-    scale_factor: f32,
-    mode: &str,
-) -> Result<Array, Exception> {
+pub fn interpolate(input: &Array, scale_factor: f32, mode: &str) -> Result<Array, Exception> {
     let in_w = input.shape()[2] as f32;
     let target_size = (in_w * scale_factor).ceil().max(1.0) as i32;
     interpolate1d(input, target_size, mode, None)
@@ -494,12 +490,7 @@ pub fn mlx_unwrap(
 }
 
 /// Slice an array along a given axis from `start` to `stop`.
-fn slice_along_axis(
-    arr: &Array,
-    axis: i32,
-    start: i32,
-    stop: i32,
-) -> Result<Array, Exception> {
+fn slice_along_axis(arr: &Array, axis: i32, start: i32, stop: i32) -> Result<Array, Exception> {
     let ndim = arr.ndim();
     let axis_usize = if axis < 0 {
         (ndim as i32 + axis) as usize

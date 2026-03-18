@@ -1,1 +1,2 @@
 crates/voice-g2p/data/tagger/weights.json filter=lfs diff=lfs merge=lfs -text
+crates/voice-tts/data/voices/*.safetensors filter=lfs diff=lfs merge=lfs -text

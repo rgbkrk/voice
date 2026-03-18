@@ -13,28 +13,28 @@ const E2M: &[(&str, &str)] = &[
     // 4+ character sequences
     ("\u{0294}\u{02CC}n\u{0329}", "t\u{1D4A}n"), // ʔˌn̩ → tᵊn
     // 3 character sequences
-    ("\u{0294}n", "t\u{1D4A}n"),                   // ʔn → tᵊn
-    ("\u{0259}\u{005E}l", "\u{1D4A}l"),            // ə^l → ᵊl
+    ("\u{0294}n", "t\u{1D4A}n"),        // ʔn → tᵊn
+    ("\u{0259}\u{005E}l", "\u{1D4A}l"), // ə^l → ᵊl
     // 2 character sequences (tied diphthongs/affricates)
-    ("a\u{005E}\u{026A}", "I"),                    // a^ɪ → I
-    ("a\u{005E}\u{028A}", "W"),                    // a^ʊ → W
-    ("d\u{005E}\u{0292}", "\u{02A4}"),             // d^ʒ → ʤ
-    ("e\u{005E}\u{026A}", "A"),                    // e^ɪ → A
-    ("t\u{005E}\u{0283}", "\u{02A7}"),             // t^ʃ → ʧ
-    ("\u{0254}\u{005E}\u{026A}", "Y"),             // ɔ^ɪ → Y
-    ("\u{02B2}O", "jO"),                           // ʲO → jO
-    ("\u{02B2}Q", "jQ"),                           // ʲQ → jQ
+    ("a\u{005E}\u{026A}", "I"),        // a^ɪ → I
+    ("a\u{005E}\u{028A}", "W"),        // a^ʊ → W
+    ("d\u{005E}\u{0292}", "\u{02A4}"), // d^ʒ → ʤ
+    ("e\u{005E}\u{026A}", "A"),        // e^ɪ → A
+    ("t\u{005E}\u{0283}", "\u{02A7}"), // t^ʃ → ʧ
+    ("\u{0254}\u{005E}\u{026A}", "Y"), // ɔ^ɪ → Y
+    ("\u{02B2}O", "jO"),               // ʲO → jO
+    ("\u{02B2}Q", "jQ"),               // ʲQ → jQ
     // 1 character sequences
-    ("\u{0303}", ""),                               // nasalization diacritic → remove
-    ("e", "A"),                                    // bare e → A
-    ("r", "\u{0279}"),                             // r → ɹ
-    ("x", "k"),                                    // velar fricative → k
-    ("\u{00E7}", "k"),                             // ç → k
-    ("\u{0250}", "\u{0259}"),                      // ɐ → ə
-    ("\u{025A}", "\u{0259}\u{0279}"),              // ɚ → əɹ
-    ("\u{026C}", "l"),                             // ɬ → l
-    ("\u{0294}", "t"),                             // ʔ → t
-    ("\u{02B2}", ""),                              // bare ʲ → remove
+    ("\u{0303}", ""),                 // nasalization diacritic → remove
+    ("e", "A"),                       // bare e → A
+    ("r", "\u{0279}"),                // r → ɹ
+    ("x", "k"),                       // velar fricative → k
+    ("\u{00E7}", "k"),                // ç → k
+    ("\u{0250}", "\u{0259}"),         // ɐ → ə
+    ("\u{025A}", "\u{0259}\u{0279}"), // ɚ → əɹ
+    ("\u{026C}", "l"),                // ɬ → l
+    ("\u{0294}", "t"),                // ʔ → t
+    ("\u{02B2}", ""),                 // bare ʲ → remove
 ];
 
 /// Per-word espeak-ng fallback, ported from misaki's `EspeakFallback`.
@@ -46,12 +46,18 @@ pub struct EspeakFallback {
 impl EspeakFallback {
     /// Create a new fallback with US English and default PATH lookup.
     pub fn new() -> Self {
-        Self { british: false, espeak_path: "espeak-ng".to_string() }
+        Self {
+            british: false,
+            espeak_path: "espeak-ng".to_string(),
+        }
     }
 
     /// Create a new fallback with a custom espeak-ng binary path.
     pub fn with_path(espeak_path: String) -> Self {
-        Self { british: false, espeak_path }
+        Self {
+            british: false,
+            espeak_path,
+        }
     }
 
     /// Check if espeak-ng is available on the system.
@@ -102,11 +108,11 @@ impl EspeakFallback {
             ps = ps.replace("i\u{0259}", "\u{026A}\u{0259}"); // iə → ɪə
             ps = ps.replace("\u{0259}^\u{028A}", "Q"); // ə^ʊ → Q
         } else {
-            ps = ps.replace("o^\u{028A}", "O");                // o^ʊ → O
+            ps = ps.replace("o^\u{028A}", "O"); // o^ʊ → O
             ps = ps.replace("\u{025C}\u{02D0}\u{0279}", "\u{025C}\u{0279}"); // ɜːɹ → ɜɹ
             ps = ps.replace("\u{025C}\u{02D0}", "\u{025C}\u{0279}"); // ɜː → ɜɹ
-            ps = ps.replace("\u{026A}\u{0259}", "i\u{0259}");  // ɪə → iə
-            ps = ps.replace('\u{02D0}', "");                   // remove remaining ː
+            ps = ps.replace("\u{026A}\u{0259}", "i\u{0259}"); // ɪə → iə
+            ps = ps.replace('\u{02D0}', ""); // remove remaining ː
         }
 
         // Remove remaining tie markers
@@ -228,7 +234,10 @@ mod tests {
             return;
         }
         let result = fb.convert_word("hello");
-        assert!(result.is_some(), "espeak-ng should produce output for 'hello'");
+        assert!(
+            result.is_some(),
+            "espeak-ng should produce output for 'hello'"
+        );
         let (ps, rating) = result.unwrap();
         assert_eq!(rating, 2);
         assert!(!ps.is_empty());

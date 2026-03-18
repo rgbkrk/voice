@@ -1,5 +1,5 @@
-/// Phoneme stress constants and the `apply_stress` function,
-/// ported from misaki's `en.py`.
+//! Phoneme stress constants and the `apply_stress` function,
+//! ported from misaki's `en.py`.
 
 // ---------------------------------------------------------------------------
 // Character-set constants (small sets — plain &str + .contains() is fine)
@@ -151,14 +151,16 @@ pub fn apply_stress(ps: &str, stress: Option<f32>) -> String {
 
     if stress < -1.0 {
         // Strip all stress marks.
-        ps.replace(PRIMARY_STRESS, "").replace(SECONDARY_STRESS, "")
+        ps.replace([PRIMARY_STRESS, SECONDARY_STRESS], "")
     } else if (stress - (-1.0)).abs() < f32::EPSILON
         || ((stress == 0.0 || stress == -0.5) && has_primary)
     {
         // Demote: remove secondary, then replace primary with secondary.
         ps.replace(SECONDARY_STRESS, "")
             .replace(PRIMARY_STRESS, &SECONDARY_STRESS.to_string())
-    } else if [0.0_f32, 0.5, 1.0].iter().any(|v| (stress - v).abs() < f32::EPSILON)
+    } else if [0.0_f32, 0.5, 1.0]
+        .iter()
+        .any(|v| (stress - v).abs() < f32::EPSILON)
         && !has_any_stress
     {
         if !contains_vowel(ps) {
@@ -221,10 +223,7 @@ mod tests {
 
     #[test]
     fn stress_strip_all() {
-        assert_eq!(
-            apply_stress("hˈɛˌloʊ", Some(-2.0)),
-            "hɛloʊ"
-        );
+        assert_eq!(apply_stress("hˈɛˌloʊ", Some(-2.0)), "hɛloʊ");
     }
 
     // -- apply_stress: -1 → demote primary to secondary ----------------------

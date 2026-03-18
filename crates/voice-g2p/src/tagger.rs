@@ -167,7 +167,7 @@ impl PerceptronTagger {
             "!HYPHEN"
         } else if token.len() == 4 && token.parse::<usize>().is_ok() {
             "!YEAR"
-        } else if token.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        } else if token.chars().next().is_some_and(|c| c.is_ascii_digit()) {
             "!DIGITS"
         } else {
             token

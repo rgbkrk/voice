@@ -2,9 +2,7 @@ use mlx_macros::ModuleParameters;
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
 use mlx_rs::module::Module;
-use mlx_rs::nn::{
-    Dropout, DropoutBuilder, Embedding, LayerNorm, LayerNormBuilder,
-};
+use mlx_rs::nn::{Dropout, DropoutBuilder, Embedding, LayerNorm, LayerNormBuilder};
 use mlx_rs::ops::{concatenate_axis, expand_dims, zeros};
 use mlx_rs::Array;
 
@@ -39,7 +37,9 @@ impl ConvBlock {
     pub fn new(channels: i32, kernel_size: i32, padding: i32) -> Result<Self, Exception> {
         let conv = ConvWeighted::new_simple(channels, channels, kernel_size, padding)?;
         let norm = LayerNormBuilder::new(channels).build()?;
-        let dropout = DropoutBuilder::new().p(0.2).build()
+        let dropout = DropoutBuilder::new()
+            .p(0.2)
+            .build()
             .map_err(|e| Exception::custom(e.to_string()))?;
         Ok(Self {
             conv,

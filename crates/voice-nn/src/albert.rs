@@ -2,7 +2,9 @@ use mlx_macros::ModuleParameters;
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
 use mlx_rs::module::Module;
-use mlx_rs::nn::{Dropout, DropoutBuilder, Embedding, Gelu, LayerNorm, LayerNormBuilder, Linear, LinearBuilder};
+use mlx_rs::nn::{
+    Dropout, DropoutBuilder, Embedding, Gelu, LayerNorm, LayerNormBuilder, Linear, LinearBuilder,
+};
 use mlx_rs::ops::{expand_dims, softmax_axis, zeros_like};
 use mlx_rs::Array;
 use serde::Deserialize;
@@ -32,14 +34,30 @@ pub struct AlbertConfig {
     pub vocab_size: i32,
 }
 
-fn default_embedding_size() -> i32 { 128 }
-fn default_inner_group_num() -> i32 { 1 }
-fn default_num_hidden_groups() -> i32 { 1 }
-fn default_hidden_dropout_prob() -> f32 { 0.1 }
-fn default_attention_probs_dropout_prob() -> f32 { 0.1 }
-fn default_type_vocab_size() -> i32 { 2 }
-fn default_layer_norm_eps() -> f32 { 1e-12 }
-fn default_vocab_size() -> i32 { 30522 }
+fn default_embedding_size() -> i32 {
+    128
+}
+fn default_inner_group_num() -> i32 {
+    1
+}
+fn default_num_hidden_groups() -> i32 {
+    1
+}
+fn default_hidden_dropout_prob() -> f32 {
+    0.1
+}
+fn default_attention_probs_dropout_prob() -> f32 {
+    0.1
+}
+fn default_type_vocab_size() -> i32 {
+    2
+}
+fn default_layer_norm_eps() -> f32 {
+    1e-12
+}
+fn default_vocab_size() -> i32 {
+    30522
+}
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -79,8 +97,7 @@ impl AlbertEmbeddings {
         let word_embeddings = Embedding::new(config.vocab_size, config.embedding_size)?;
         let position_embeddings =
             Embedding::new(config.max_position_embeddings, config.embedding_size)?;
-        let token_type_embeddings =
-            Embedding::new(config.type_vocab_size, config.embedding_size)?;
+        let token_type_embeddings = Embedding::new(config.type_vocab_size, config.embedding_size)?;
         let layer_norm = LayerNormBuilder::new(config.embedding_size)
             .eps(config.layer_norm_eps)
             .build()?;
@@ -112,7 +129,7 @@ impl<'a> Module<AlbertEmbeddingsInput<'a>> for AlbertEmbeddings {
             Some(p) => p,
             None => {
                 position_ids_owned =
-                    Array::arange::<_, i32>(None, seq_length as i32, None)?.reshape(&[1, -1])?;
+                    Array::arange::<_, i32>(None, seq_length, None)?.reshape(&[1, -1])?;
                 &position_ids_owned
             }
         };
@@ -286,7 +303,8 @@ impl AlbertLayer {
             .eps(config.layer_norm_eps)
             .build()?;
         let ffn = LinearBuilder::new(config.hidden_size, config.intermediate_size).build()?;
-        let ffn_output = LinearBuilder::new(config.intermediate_size, config.hidden_size).build()?;
+        let ffn_output =
+            LinearBuilder::new(config.intermediate_size, config.hidden_size).build()?;
         let activation = Gelu::new();
 
         Ok(Self {

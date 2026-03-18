@@ -2,17 +2,14 @@ use mlx_macros::ModuleParameters;
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
 use mlx_rs::module::Module;
-use mlx_rs::nn::{
-    Conv1d, Conv1dBuilder, Upsample, UpsampleMode,
-    leaky_relu,
-};
+use mlx_rs::nn::{leaky_relu, Conv1d, Conv1dBuilder, Upsample, UpsampleMode};
 use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::ops::{concatenate_axis, exp, pad, sin, squeeze_axes, PadWidth};
 use mlx_rs::Array;
 
 use super::source::{AdaINResBlock1, SourceModuleHnNSF};
-use voice_dsp::MlxStft;
 use crate::conv_weighted::ConvWeighted;
+use voice_dsp::MlxStft;
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -107,28 +104,27 @@ impl Generator {
         )?;
 
         // F0 upsampling layer
-        let f0_upsamp = Upsample::new(
-            total_upsample as f32,
-            UpsampleMode::Nearest,
-        );
+        let f0_upsamp = Upsample::new(total_upsample as f32, UpsampleMode::Nearest);
 
         // Build upsampling layers (transposed convolutions)
         let mut ups = Vec::new();
-        for (i, (&u, &k)) in upsample_rates.iter().zip(upsample_kernel_sizes.iter()).enumerate() {
+        for (i, (&u, &k)) in upsample_rates
+            .iter()
+            .zip(upsample_kernel_sizes.iter())
+            .enumerate()
+        {
             let ch_out = upsample_initial_channel / (1 << (i + 1));
             let ch_in = upsample_initial_channel / (1 << i);
             let padding = (k - u) / 2;
             // encode=true means this is used as a transposed conv
             ups.push(ConvWeighted::new(
-                ch_out,     // "in" for transposed = output channels
-                ch_in,      // "out" for transposed = input channels
-                k,
-                u,          // stride
-                padding,
-                1,          // dilation
-                1,          // groups
-                true,       // bias
-                true,       // encode (transpose mode)
+                ch_out, // "in" for transposed = output channels
+                ch_in,  // "out" for transposed = input channels
+                k, u, // stride
+                padding, 1,    // dilation
+                1,    // groups
+                true, // bias
+                true, // encode (transpose mode)
             )?);
         }
 
@@ -136,10 +132,9 @@ impl Generator {
         let mut resblocks = Vec::new();
         for i in 0..num_upsamples {
             let ch = upsample_initial_channel / (1 << (i + 1));
-            for (_, (k, d)) in resblock_kernel_sizes
+            for (k, d) in resblock_kernel_sizes
                 .iter()
                 .zip(resblock_dilation_sizes.iter())
-                .enumerate()
             {
                 resblocks.push(AdaINResBlock1::new(ch, *k, d, style_dim)?);
             }
@@ -162,26 +157,15 @@ impl Generator {
                 );
                 noise_res.push(AdaINResBlock1::new(c_cur, 7, &[1, 3, 5], style_dim)?);
             } else {
-                noise_convs.push(
-                    Conv1dBuilder::new(gen_istft_n_fft + 2, c_cur, 1).build()?,
-                );
+                noise_convs.push(Conv1dBuilder::new(gen_istft_n_fft + 2, c_cur, 1).build()?);
                 noise_res.push(AdaINResBlock1::new(c_cur, 11, &[1, 3, 5], style_dim)?);
             }
         }
 
         // Post-processing convolution
         let ch_final = upsample_initial_channel / (1 << num_upsamples);
-        let conv_post = ConvWeighted::new(
-            ch_final,
-            gen_istft_n_fft + 2,
-            7,
-            1,
-            3,
-            1,
-            1,
-            true,
-            false,
-        )?;
+        let conv_post =
+            ConvWeighted::new(ch_final, gen_istft_n_fft + 2, 7, 1, 3, 1, 1, true, false)?;
 
         let stft = MlxStft::new(gen_istft_n_fft, gen_istft_hop_size, gen_istft_n_fft)?;
 

@@ -33,7 +33,11 @@ pub struct MToken {
 impl MToken {
     /// Create a new token with the given text, tag, and trailing whitespace.
     /// All other fields are set to their defaults.
-    pub fn new(text: impl Into<String>, tag: impl Into<String>, whitespace: impl Into<String>) -> Self {
+    pub fn new(
+        text: impl Into<String>,
+        tag: impl Into<String>,
+        whitespace: impl Into<String>,
+    ) -> Self {
         Self {
             text: text.into(),
             tag: tag.into(),
@@ -45,19 +49,10 @@ impl MToken {
 }
 
 /// Contextual information threaded through English G2P rules.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TokenContext {
     pub future_vowel: Option<bool>,
     pub future_to: bool,
-}
-
-impl Default for TokenContext {
-    fn default() -> Self {
-        Self {
-            future_vowel: None,
-            future_to: false,
-        }
-    }
 }
 
 /// Characters treated as diphthongs (or affricates) for stress-weight counting.
@@ -70,7 +65,10 @@ const DIPHTHONGS: &[char] = &['A', 'I', 'O', 'Q', 'W', 'Y', '\u{02A4}', '\u{02A7
 pub fn stress_weight(ps: Option<&str>) -> usize {
     match ps {
         None => 0,
-        Some(s) => s.chars().map(|c| if DIPHTHONGS.contains(&c) { 2 } else { 1 }).sum(),
+        Some(s) => s
+            .chars()
+            .map(|c| if DIPHTHONGS.contains(&c) { 2 } else { 1 })
+            .sum(),
     }
 }
 

@@ -9,8 +9,7 @@ const DEFAULT_REPO: &str = "prince-canuma/Kokoro-82M";
 
 /// Load a voice embedding from a local .safetensors file.
 pub fn load_voice_from_file(path: &Path) -> Result<Array> {
-    let tensors =
-        Array::load_safetensors(path).map_err(|e| VoicersError::Weight(e.to_string()))?;
+    let tensors = Array::load_safetensors(path).map_err(|e| VoicersError::Weight(e.to_string()))?;
 
     // Voice files typically have a single tensor
     let voice = tensors
@@ -20,9 +19,7 @@ pub fn load_voice_from_file(path: &Path) -> Result<Array> {
 
     // Ensure shape is (1, 256) for the model
     let voice = if voice.ndim() == 1 {
-        voice
-            .reshape(&[1, -1])
-            .map_err(|e| VoicersError::Mlx(e))?
+        voice.reshape(&[1, -1]).map_err(VoicersError::Mlx)?
     } else {
         voice
     };

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use hf_hub::api::sync::Api;
 use mlx_rs::Array;
 
+use crate::builtin;
 use crate::config::ModelConfig;
 use crate::error::{Result, VoicersError};
 use crate::model::KokoroModel;
@@ -26,14 +27,17 @@ pub fn download_model(repo_id: &str) -> Result<PathBuf> {
         .map_err(|e| VoicersError::Hub(e.to_string()))?;
 
     // Return the directory containing config.json
-    Ok(config_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .to_path_buf())
+    Ok(config_path.parent().unwrap_or(Path::new(".")).to_path_buf())
 }
 
 /// Load model config from a directory or HF repo.
+///
+/// Tries the embedded builtin config first (avoids file I/O), then falls
+/// back to reading `config.json` from the given path.
 pub fn load_config(path: &Path) -> Result<ModelConfig> {
+    if let Ok(config) = builtin::builtin_config() {
+        return Ok(config);
+    }
     let config_path = path.join("config.json");
     let config_str = std::fs::read_to_string(&config_path)?;
     let config: ModelConfig = serde_json::from_str(&config_str)?;
@@ -46,7 +50,7 @@ fn find_safetensors(dir: &Path) -> Result<Vec<PathBuf>> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |e| e == "safetensors") {
+        if path.extension().is_some_and(|e| e == "safetensors") {
             files.push(path);
         }
     }
@@ -121,9 +125,7 @@ fn remap_key(key: &str) -> String {
 /// - Combining bias_ih + bias_hh for LSTM
 /// - Remapping LSTM keys (weight_ih_l0 -> forward_lstm.wx, etc.)
 /// - Transposing conv weights where needed
-pub fn sanitize_weights(
-    weights: HashMap<String, Array>,
-) -> Result<HashMap<String, Array>> {
+pub fn sanitize_weights(weights: HashMap<String, Array>) -> Result<HashMap<String, Array>> {
     let mut sanitized = HashMap::new();
     let mut bias_ih_cache: HashMap<String, Array> = HashMap::new();
     let mut bias_hh_cache: HashMap<String, Array> = HashMap::new();
@@ -173,14 +175,23 @@ pub fn sanitize_weights(
             if check_array_shape(shape) {
                 new_value = value.clone();
             } else {
-                new_value = value.transpose_axes(&[0, 2, 1]).unwrap_or_else(|_| value.clone());
+                new_value = value
+                    .transpose_axes(&[0, 2, 1])
+                    .unwrap_or_else(|_| value.clone());
             }
         } else if key.contains("F0_proj.weight") || key.contains("N_proj.weight") {
             new_key = remap_key(key);
-            new_value = value.transpose_axes(&[0, 2, 1]).unwrap_or_else(|_| value.clone());
-        } else if key.starts_with("decoder.") && key.contains("noise_convs") && key.ends_with(".weight") {
+            new_value = value
+                .transpose_axes(&[0, 2, 1])
+                .unwrap_or_else(|_| value.clone());
+        } else if key.starts_with("decoder.")
+            && key.contains("noise_convs")
+            && key.ends_with(".weight")
+        {
             new_key = remap_key(key);
-            new_value = value.transpose_axes(&[0, 2, 1]).unwrap_or_else(|_| value.clone());
+            new_value = value
+                .transpose_axes(&[0, 2, 1])
+                .unwrap_or_else(|_| value.clone());
         } else {
             new_key = remap_key(key);
             new_value = value.clone();
@@ -217,7 +228,10 @@ pub fn sanitize_weights(
 /// These are Vec<Array> fields on AdaINResBlock1 structs in:
 /// - decoder.generator.resblocks[i].alpha{1,2}[j]
 /// - decoder.generator.noise_res[i].alpha{1,2}[j]
-fn load_alpha_params(model: &mut KokoroModel, weights: &HashMap<String, Array>) -> std::collections::HashSet<String> {
+fn load_alpha_params(
+    model: &mut KokoroModel,
+    weights: &HashMap<String, Array>,
+) -> std::collections::HashSet<String> {
     let mut loaded = std::collections::HashSet::new();
     for (key, value) in weights {
         // Pattern: decoder.generator.resblocks.{i}.alpha{1|2}.{j}
@@ -287,8 +301,7 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
     let config = load_config(&model_dir)?;
 
     // Create model
-    let mut model =
-        KokoroModel::new(&config).map_err(|e| VoicersError::Weight(e.to_string()))?;
+    let mut model = KokoroModel::new(&config).map_err(|e| VoicersError::Weight(e.to_string()))?;
 
     // Load and sanitize weights
     let weight_files = find_safetensors(&model_dir)?;
@@ -301,8 +314,8 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
 
     let mut all_weights = HashMap::new();
     for wf in &weight_files {
-        let tensors = Array::load_safetensors(wf)
-            .map_err(|e| VoicersError::Weight(e.to_string()))?;
+        let tensors =
+            Array::load_safetensors(wf).map_err(|e| VoicersError::Weight(e.to_string()))?;
         all_weights.extend(tensors);
     }
 
@@ -330,7 +343,12 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
         }
         if !missing.is_empty() {
             missing.sort();
-            eprintln!("[WARN] Loaded {}/{} weights, {} unmatched:", loaded, total, missing.len());
+            eprintln!(
+                "[WARN] Loaded {}/{} weights, {} unmatched:",
+                loaded,
+                total,
+                missing.len()
+            );
             for k in &missing {
                 eprintln!("  unmatched weight: {}", k);
             }

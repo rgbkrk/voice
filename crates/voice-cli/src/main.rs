@@ -9,7 +9,8 @@ const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
 #[command(
     name = "voice",
     about = "Kokoro TTS from the command line",
-    after_help = "If no text, --phonemes, or -f is given, reads from stdin.\n\n\
+    after_help = "If no text, --phonemes, or -f is given, reads from stdin.\n\
+                  A .voice-subs file is auto-discovered from the working directory upward.\n\n\
                   Examples:\n  \
                   voice Hello world\n  \
                   voice -v am_adam \"How are you today?\"\n  \
@@ -53,7 +54,8 @@ struct Args {
     #[arg(long = "sub", value_name = "WORD=REPLACEMENT")]
     subs: Vec<String>,
 
-    /// Load substitutions from a file (one WORD=REPLACEMENT per line, # comments)
+    /// Load substitutions from a file (one WORD=REPLACEMENT per line, # comments).
+    /// If not set, .voice-subs is auto-discovered from the working directory upward.
     #[arg(long = "sub-file", value_name = "PATH")]
     sub_file: Option<PathBuf>,
 }
@@ -182,8 +184,6 @@ fn strip_markdown(text: &str) -> String {
 fn apply_substitutions(text: &str, subs: &[(String, String)]) -> String {
     let mut result = text.to_string();
     for (from, to) in subs {
-        // Simple whole-ish word replacement: replace all occurrences
-        // We do case-insensitive find-and-replace
         result = result.replace(from.as_str(), to.as_str());
     }
     result
@@ -214,6 +214,21 @@ fn load_sub_file(path: &std::path::Path) -> Result<Vec<(String, String)>, String
             Some((k.to_string(), v.to_string()))
         })
         .collect())
+}
+
+/// Walk up from the current directory looking for a `.voice-subs` file.
+/// Returns the first one found, or None.
+fn find_sub_file() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let candidate = dir.join(".voice-subs");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 /// Merge and sort substitutions so longer keys match first.
@@ -280,7 +295,12 @@ fn main() {
                 } else {
                     text
                 };
-                let (subs, phoneme_overrides) = collect_subs(&args.subs, args.sub_file.as_deref());
+                // Resolve sub file: explicit --sub-file, or auto-discover .voice-subs
+                let sub_file = args.sub_file.clone().or_else(find_sub_file);
+                if let Some(ref path) = sub_file {
+                    eprintln!("Using substitutions from {}", path.display());
+                }
+                let (subs, phoneme_overrides) = collect_subs(&args.subs, sub_file.as_deref());
                 let text = if subs.is_empty() {
                     text
                 } else {

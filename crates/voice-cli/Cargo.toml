@@ -4,14 +4,16 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85.0"
 description = "CLI for voice TTS — like say, but with Kokoro"
+license = "MIT"
+repository = "https://github.com/rgbkrk/voicers"
 
 [[bin]]
 name = "voice"
 path = "src/main.rs"
 
 [dependencies]
-voice-tts = { path = "../voice-tts" }
-voice-g2p = { path = "../voice-g2p" }
+voice-tts = { version = "0.1.0", path = "../voice-tts" }
+voice-g2p = { version = "0.1.0", path = "../voice-g2p" }
 clap = { version = "4", features = ["derive"] }
-rodio = "0.20"
+rodio = "0.22"
 hound = "3"

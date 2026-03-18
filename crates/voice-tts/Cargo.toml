@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85.0"
 description = "Rust TTS library backed by MLX, starting with Kokoro"
+license = "MIT"
+repository = "https://github.com/rgbkrk/voicers"
 
 [dependencies]
 mlx-rs = { version = "0.25", features = ["safetensors"] }
@@ -13,5 +15,5 @@ hf-hub = "0.5"
 hound = "3"
 thiserror = "2"
 mlx-macros = "0.25.3"
-voice-dsp = { path = "../voice-dsp" }
-voice-nn = { path = "../voice-nn" }
+voice-dsp = { version = "0.1.0", path = "../voice-dsp" }
+voice-nn = { version = "0.1.0", path = "../voice-nn" }

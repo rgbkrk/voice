@@ -118,17 +118,6 @@ fn main() {
         }
     };
 
-    eprintln!("Loading model...");
-    let mut model = match voice_tts::load_model(MODEL_REPO) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("Failed to load model: {e}");
-            eprintln!("The model will be downloaded from HuggingFace on first run.");
-            eprintln!("Check your network connection and try again.");
-            std::process::exit(1);
-        }
-    };
-
     eprintln!("Loading voice '{}'...", args.voice);
     let voice = match voice_tts::load_voice(&args.voice, Some(MODEL_REPO)) {
         Ok(v) => v,
@@ -136,6 +125,17 @@ fn main() {
             eprintln!("Failed to load voice '{}': {e}", args.voice);
             eprintln!("Available voices include: af_heart, af_bella, af_nicole, af_sarah, af_sky,");
             eprintln!("  am_adam, am_michael, bf_emma, bf_isabella, bm_george, bm_lewis");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("Loading model...");
+    let mut model = match voice_tts::load_model(MODEL_REPO) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Failed to load model: {e}");
+            eprintln!("The model will be downloaded from HuggingFace on first run.");
+            eprintln!("Check your network connection and try again.");
             std::process::exit(1);
         }
     };

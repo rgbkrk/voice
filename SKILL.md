@@ -32,6 +32,7 @@ voice --phonemes "həlˈO wˈɜɹld"
 
 ## Tips
 
+- Use `-q` for quiet mode — suppresses phonemes and progress, only errors print
 - Put flags before the text: `voice -v af_bella "text"` not `voice "text" -v af_bella`
 - For long text, `voice` automatically chunks at ~510 phonemes and streams playback
 - Stderr shows phoneme output — useful for debugging pronunciation

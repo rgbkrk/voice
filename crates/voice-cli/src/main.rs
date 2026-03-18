@@ -2,8 +2,20 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
+
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+/// Print an informational message to stderr, unless `--quiet` is set.
+macro_rules! info {
+    ($($arg:tt)*) => {
+        if !QUIET.load(Ordering::Relaxed) {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -58,6 +70,11 @@ struct Args {
     /// If not set, .voice-subs is auto-discovered from the working directory upward.
     #[arg(long = "sub-file", value_name = "PATH")]
     sub_file: Option<PathBuf>,
+
+    /// Suppress progress output (phonemes, chunk info, loading messages).
+    /// Errors are always printed.
+    #[arg(short, long)]
+    quiet: bool,
 }
 
 fn resolve_text(args: &Args) -> Result<String, String> {
@@ -284,6 +301,10 @@ fn collect_subs(
 fn main() {
     let args = Args::parse();
 
+    if args.quiet {
+        QUIET.store(true, Ordering::Relaxed);
+    }
+
     // Start model loading in a background thread immediately — this is the
     // slowest startup step (~200ms) and can run while we resolve text + G2P.
     let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
@@ -303,7 +324,7 @@ fn main() {
                 // Resolve sub file: explicit --sub-file, or auto-discover .voice-subs
                 let sub_file = args.sub_file.clone().or_else(find_sub_file);
                 if let Some(ref path) = sub_file {
-                    eprintln!("Using substitutions from {}", path.display());
+                    info!("Using substitutions from {}", path.display());
                 }
                 let (subs, phoneme_overrides) = collect_subs(&args.subs, sub_file.as_deref());
                 let text = if subs.is_empty() {
@@ -311,7 +332,7 @@ fn main() {
                 } else {
                     apply_substitutions(&text, &subs)
                 };
-                eprintln!("Converting text to phonemes...");
+                info!("Converting text to phonemes...");
                 let chunks_result = if phoneme_overrides.is_empty() {
                     voice_g2p::text_to_phoneme_chunks(&text)
                 } else {
@@ -320,7 +341,7 @@ fn main() {
                 match chunks_result {
                     Ok(chunks) => {
                         for (i, chunk) in chunks.iter().enumerate() {
-                            eprintln!("  chunk {}: {}", i + 1, chunk);
+                            info!("  chunk {}: {}", i + 1, chunk);
                         }
                         chunks
                     }
@@ -389,7 +410,7 @@ fn generate_to_file(
     sample_rate: u32,
     output_path: &PathBuf,
 ) {
-    eprintln!("Generating audio...");
+    info!("Generating audio...");
     let mut all_samples: Vec<f32> = Vec::new();
 
     for (i, phonemes) in chunks.iter().enumerate() {
@@ -397,7 +418,7 @@ fn generate_to_file(
             continue;
         }
         if chunks.len() > 1 {
-            eprintln!("  generating chunk {}/{}...", i + 1, chunks.len());
+            info!("  generating chunk {}/{}...", i + 1, chunks.len());
         }
         match voice_tts::generate(model, phonemes, voice, speed) {
             Ok(audio) => {
@@ -421,7 +442,7 @@ fn generate_to_file(
         writer.write_sample(*s).expect("Failed to write sample");
     }
     writer.finalize().expect("Failed to finalize WAV");
-    eprintln!("Saved to {}", output_path.display());
+    info!("Saved to {}", output_path.display());
 }
 
 /// Generate audio chunks and stream them to the speakers via rodio.
@@ -451,7 +472,7 @@ fn stream_playback(
             continue;
         }
         if chunks.len() > 1 {
-            eprintln!("  generating chunk {}/{}...", i + 1, chunks.len());
+            info!("  generating chunk {}/{}...", i + 1, chunks.len());
         }
         match voice_tts::generate(model, phonemes, voice, speed) {
             Ok(audio) => {

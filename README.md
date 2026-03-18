@@ -63,6 +63,7 @@ Options:
       --markdown                 Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>   Word substitution (repeatable)
       --sub-file <PATH>          Load substitutions from a file
+  -q, --quiet                    Suppress progress output (errors still print)
   -h, --help                     Print help
 ```
 

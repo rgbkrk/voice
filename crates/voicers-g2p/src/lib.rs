@@ -1,4 +1,19 @@
-use std::process::Command;
+pub mod espeak;
+pub mod lexicon;
+pub mod number;
+pub mod stress;
+pub mod token;
+pub mod tokenizer;
+
+use std::sync::OnceLock;
+
+use espeak::EspeakFallback;
+use lexicon::Lexicon;
+use stress::{
+    apply_stress, CONSONANTS, NON_QUOTE_PUNCTS, PRIMARY_STRESS, SUBTOKEN_JUNKS, VOWELS,
+};
+use token::{merge_tokens, MToken, TokenContext};
+use tokenizer::TokenOrGroup;
 
 #[derive(Debug, thiserror::Error)]
 pub enum G2pError {
@@ -10,86 +25,355 @@ pub enum G2pError {
     Io(#[from] std::io::Error),
 }
 
-/// Convert English text to a Kokoro-compatible phoneme string via espeak-ng.
-pub fn english_to_phonemes(text: &str) -> Result<String, G2pError> {
-    let output = Command::new("espeak-ng")
-        .args(["--ipa", "-q", "-v", "en-us", text])
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                G2pError::EspeakNotFound
-            } else {
-                G2pError::Io(e)
-            }
-        })?;
+/// The main G2P pipeline, ported from misaki's `en.G2P.__call__()`.
+pub struct G2P {
+    lexicon: Lexicon,
+    fallback: EspeakFallback,
+    unk: String,
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(G2pError::EspeakFailed(stderr));
+fn global_g2p() -> &'static G2P {
+    static INSTANCE: OnceLock<G2P> = OnceLock::new();
+    INSTANCE.get_or_init(G2P::new)
+}
+
+impl G2P {
+    pub fn new() -> Self {
+        Self {
+            lexicon: Lexicon::new(),
+            fallback: EspeakFallback::new(),
+            unk: String::new(),
+        }
     }
 
-    let ipa = String::from_utf8_lossy(&output.stdout);
-    // espeak-ng may output multiple lines (one per clause). Join with space.
-    let joined: String = ipa
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
+    /// Full pipeline: text -> phoneme string.
+    ///
+    /// Mirrors misaki `G2P.__call__()` from en.py:679-738.
+    pub fn convert(&self, text: &str) -> Result<String, G2pError> {
+        // 1. Tokenize (spaCy preferred, simple fallback)
+        let tokens = tokenizer::tokenize(text);
 
-    Ok(espeak_ipa_to_kokoro(&joined))
+        // 2. fold_left: merge non-head tokens
+        let tokens = tokenizer::fold_left(tokens);
+
+        // 3. retokenize: subtokenize, handle punctuation/currency
+        let mut items = tokenizer::retokenize(tokens);
+
+        // 4. Right-to-left resolution with TokenContext
+        let mut ctx = TokenContext::default();
+
+        for item in items.iter_mut().rev() {
+            match item {
+                TokenOrGroup::Single(ref mut w) => {
+                    self.resolve_single_token(w, &ctx);
+                    ctx = Self::token_context(&ctx, w.phonemes.as_deref(), w);
+                }
+                TokenOrGroup::Group(ref mut group) => {
+                    self.resolve_group(group, &ctx);
+                    if let Some(first) = group.first() {
+                        ctx =
+                            Self::token_context(&ctx, first.phonemes.as_deref(), first);
+                    }
+                }
+            }
+        }
+
+        // 5. Merge groups into single tokens
+        let tokens: Vec<MToken> = items
+            .into_iter()
+            .map(|item| match item {
+                TokenOrGroup::Single(tok) => tok,
+                TokenOrGroup::Group(group) => merge_tokens(&group, Some(&self.unk)),
+            })
+            .collect();
+
+        // 6. Legacy conversion: ɾ->T, ʔ->t
+        let result: String = tokens
+            .iter()
+            .map(|tk| {
+                let ps = match &tk.phonemes {
+                    Some(p) => p.replace('ɾ', "T").replace('ʔ', "t"),
+                    None => self.unk.clone(),
+                };
+                format!("{}{}", ps, tk.whitespace)
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    /// Resolve a single (non-grouped) token.
+    fn resolve_single_token(&self, w: &mut MToken, ctx: &TokenContext) {
+        if w.phonemes.is_some() {
+            return;
+        }
+
+        let (ps, rating) = self.lexicon.call(
+            &w.text,
+            w.underscore.alias.as_deref(),
+            &w.tag,
+            w.underscore.stress,
+            w.underscore.currency,
+            w.underscore.is_head,
+            &w.underscore.num_flags,
+            ctx,
+        );
+        if let Some(ps) = ps {
+            w.phonemes = Some(ps);
+            w.underscore.rating = rating;
+            return;
+        }
+
+        if let Some((ps, rating)) = self.fallback.convert_word(&w.text) {
+            w.phonemes = Some(ps);
+            w.underscore.rating = Some(rating);
+        }
+    }
+
+    /// Resolve a group of subtokens using the left-expand/right-shrink algorithm.
+    ///
+    /// Ported from en.py:694-731.
+    fn resolve_group(&self, group: &mut [MToken], ctx: &TokenContext) {
+        let n = group.len();
+        let mut left = 0;
+        let mut right = n;
+        let mut should_fallback = false;
+
+        while left < right {
+            let has_existing = group[left..right]
+                .iter()
+                .any(|tk| tk.underscore.alias.is_some() || tk.phonemes.is_some());
+
+            let (ps, rating) = if has_existing {
+                (None, None)
+            } else {
+                let merged = merge_tokens(&group[left..right], None);
+                self.lexicon.call(
+                    &merged.text,
+                    merged.underscore.alias.as_deref(),
+                    &merged.tag,
+                    merged.underscore.stress,
+                    merged.underscore.currency,
+                    merged.underscore.is_head,
+                    &merged.underscore.num_flags,
+                    ctx,
+                )
+            };
+
+            if let Some(ps) = ps {
+                group[left].phonemes = Some(ps);
+                group[left].underscore.rating = rating;
+                for x in &mut group[left + 1..right] {
+                    x.phonemes = Some(String::new());
+                    x.underscore.rating = rating;
+                }
+                right = left;
+                left = 0;
+            } else if left + 1 < right {
+                left += 1;
+            } else {
+                right -= 1;
+                let tk = &mut group[right];
+                if tk.phonemes.is_none() {
+                    if tk.text.chars().all(|c| SUBTOKEN_JUNKS.contains(c)) {
+                        tk.phonemes = Some(String::new());
+                        tk.underscore.rating = Some(3);
+                    } else {
+                        should_fallback = true;
+                        break;
+                    }
+                }
+                left = 0;
+            }
+        }
+
+        if should_fallback {
+            let merged = merge_tokens(group, None);
+            if let Some((ps, rating)) = self.fallback.convert_word(&merged.text) {
+                group[0].phonemes = Some(ps);
+                group[0].underscore.rating = Some(rating);
+                for j in 1..group.len() {
+                    group[j].phonemes = Some(String::new());
+                    group[j].underscore.rating = group[0].underscore.rating;
+                }
+            }
+        } else {
+            Self::resolve_tokens(group);
+        }
+    }
+
+    /// Update TokenContext based on resolved phonemes and token.
+    ///
+    /// Ported from en.py:646-650.
+    fn token_context(ctx: &TokenContext, ps: Option<&str>, token: &MToken) -> TokenContext {
+        let mut vowel = ctx.future_vowel;
+
+        if let Some(ps) = ps {
+            for c in ps.chars() {
+                let is_vowel = VOWELS.contains(c);
+                let is_consonant = CONSONANTS.contains(c);
+                let is_punct = NON_QUOTE_PUNCTS.contains(c);
+
+                if is_vowel || is_consonant || is_punct {
+                    vowel = if is_punct { None } else { Some(is_vowel) };
+                    break;
+                }
+            }
+        }
+
+        let future_to = matches!(token.text.as_str(), "to" | "To")
+            || (token.text == "TO" && matches!(token.tag.as_str(), "TO" | "IN"));
+
+        TokenContext {
+            future_vowel: vowel,
+            future_to,
+        }
+    }
+
+    /// Normalize stress across a group of resolved subtokens.
+    ///
+    /// Ported from en.py:652-677.
+    fn resolve_tokens(tokens: &mut [MToken]) {
+        if tokens.is_empty() {
+            return;
+        }
+
+        let text: String = tokens
+            .iter()
+            .enumerate()
+            .map(|(i, tk)| {
+                if i < tokens.len() - 1 {
+                    format!("{}{}", tk.text, tk.whitespace)
+                } else {
+                    tk.text.clone()
+                }
+            })
+            .collect();
+
+        let has_space = text.contains(' ') || text.contains('/');
+        let char_classes: std::collections::HashSet<u8> = text
+            .chars()
+            .filter(|c| !SUBTOKEN_JUNKS.contains(*c))
+            .map(|c| {
+                if c.is_alphabetic() {
+                    0
+                } else if c.is_ascii_digit() {
+                    1
+                } else {
+                    2
+                }
+            })
+            .collect();
+        let prespace = has_space || char_classes.len() > 1;
+
+        let n = tokens.len();
+        for (i, tk) in tokens.iter_mut().enumerate() {
+            if tk.phonemes.is_none() {
+                let last = i == n - 1;
+                if last
+                    && tk.text.len() == 1
+                    && NON_QUOTE_PUNCTS
+                        .contains(tk.text.chars().next().unwrap_or(' '))
+                {
+                    tk.phonemes = Some(tk.text.clone());
+                    tk.underscore.rating = Some(3);
+                } else if tk.text.chars().all(|c| SUBTOKEN_JUNKS.contains(c)) {
+                    tk.phonemes = Some(String::new());
+                    tk.underscore.rating = Some(3);
+                }
+            } else if i > 0 {
+                tk.underscore.prespace = prespace;
+            }
+        }
+
+        if prespace {
+            return;
+        }
+
+        let indices: Vec<(bool, usize, usize)> = tokens
+            .iter()
+            .enumerate()
+            .filter_map(|(i, tk)| {
+                tk.phonemes.as_ref().filter(|p| !p.is_empty()).map(|p| {
+                    let has_primary = p.contains(PRIMARY_STRESS);
+                    let weight = token::stress_weight(Some(p));
+                    (has_primary, weight, i)
+                })
+            })
+            .collect();
+
+        if indices.len() == 2 && tokens[indices[0].2].text.len() == 1 {
+            let i = indices[1].2;
+            if let Some(ref ps) = tokens[i].phonemes {
+                tokens[i].phonemes = Some(apply_stress(ps, Some(-0.5)));
+            }
+            return;
+        }
+
+        if indices.len() < 2 {
+            return;
+        }
+        let primary_count: usize = indices.iter().filter(|(b, _, _)| *b).count();
+        if primary_count <= (indices.len() + 1) / 2 {
+            return;
+        }
+
+        let mut sorted = indices.clone();
+        sorted.sort();
+        let half = sorted.len() / 2;
+        for &(_, _, i) in &sorted[..half] {
+            if let Some(ref ps) = tokens[i].phonemes {
+                tokens[i].phonemes = Some(apply_stress(ps, Some(-0.5)));
+            }
+        }
+    }
+}
+
+impl Default for G2P {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public API (backward-compatible)
+// ---------------------------------------------------------------------------
+
+/// Convert English text to a Kokoro-compatible phoneme string.
+///
+/// Uses misaki-style dictionary lookup with espeak-ng fallback for unknown words.
+pub fn english_to_phonemes(text: &str) -> Result<String, G2pError> {
+    global_g2p().convert(text)
 }
 
 /// Post-process espeak-ng IPA output into Kokoro phoneme format.
 ///
-/// The Kokoro model was trained with misaki G2P output, which uses collapsed
-/// diphthongs (capital letters) and affricate ligatures. espeak-ng outputs
-/// expanded IPA, so we convert to match.
+/// Kept for backward compatibility. New code should use `english_to_phonemes()`.
 pub fn espeak_ipa_to_kokoro(ipa: &str) -> String {
     let mut s = ipa.to_string();
 
-    // Multi-character replacements (longest match first to avoid partial matches)
-
-    // Affricates: two-char sequences → ligature characters
     s = s.replace("dʒ", "ʤ");
     s = s.replace("tʃ", "ʧ");
-
-    // NURSE vowel: ɜːɹ → ɜɹ (remove length mark before rhotic)
     s = s.replace("ɜːɹ", "ɜɹ");
-    // NURSE without explicit rhotic: ɜː → ɜɹ (American English adds rhotic)
     s = s.replace("ɜː", "ɜɹ");
-
-    // Diphthongs: two-char IPA → single capital letter tokens
-    // Order matters: do these after affricates but before single-char cleanup
     s = s.replace("aɪ", "I");
     s = s.replace("aʊ", "W");
     s = s.replace("eɪ", "A");
     s = s.replace("oʊ", "O");
     s = s.replace("ɔɪ", "Y");
-
-    // Long vowels: remove remaining length marks (the model doesn't use them
-    // for most vowels since misaki doesn't produce them)
     s = s.replace('ː', "");
-
-    // Rhotacized schwa: ɚ is in vocab (token 85), keep as-is
-    // ɾ (flap) → T for American English (matches misaki pipeline)
     s = s.replace('ɾ', "T");
-
-    // ɡ (IPA g, U+0261) should map to ɡ (token 92) — espeak already uses this
 
     s
 }
 
 /// Split text into chunks whose phoneme representations fit within the model's
 /// 510-character context limit.
-///
-/// Strategy: split on newlines first, then on sentence boundaries if needed.
 pub fn text_to_phoneme_chunks(text: &str) -> Result<Vec<String>, G2pError> {
-    const MAX_PHONEME_LEN: usize = 500; // leave margin below 510
+    const MAX_PHONEME_LEN: usize = 500;
 
     let mut chunks = Vec::new();
 
-    // Split on newlines first
     for paragraph in text.split('\n') {
         let paragraph = paragraph.trim();
         if paragraph.is_empty() {
@@ -102,7 +386,6 @@ pub fn text_to_phoneme_chunks(text: &str) -> Result<Vec<String>, G2pError> {
             continue;
         }
 
-        // Too long — split on sentence boundaries
         let sentences = split_sentences(paragraph);
         let mut current_phonemes = String::new();
 
@@ -136,8 +419,6 @@ pub fn text_to_phoneme_chunks(text: &str) -> Result<Vec<String>, G2pError> {
     Ok(chunks)
 }
 
-/// Split text into sentences on `.!?` boundaries, keeping the punctuation
-/// attached to the preceding sentence.
 fn split_sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut current = String::new();
@@ -150,7 +431,6 @@ fn split_sentences(text: &str) -> Vec<String> {
         }
     }
 
-    // Remaining text without terminal punctuation
     if !current.trim().is_empty() {
         sentences.push(current);
     }
@@ -196,7 +476,6 @@ mod tests {
 
     #[test]
     fn test_full_espeak_output() {
-        // espeak-ng output for "Hello world"
         let input = "həlˈoʊ wˈɜːld";
         let expected = "həlˈO wˈɜɹld";
         assert_eq!(espeak_ipa_to_kokoro(input), expected);
@@ -205,22 +484,59 @@ mod tests {
     #[test]
     fn test_split_sentences() {
         let sentences = split_sentences("Hello world. How are you? I'm fine!");
-        assert_eq!(sentences, vec!["Hello world.", " How are you?", " I'm fine!"]);
+        assert_eq!(
+            sentences,
+            vec!["Hello world.", " How are you?", " I'm fine!"]
+        );
     }
 
     #[test]
-    fn test_english_to_phonemes() {
-        // This test requires espeak-ng to be installed
-        match english_to_phonemes("Hello") {
-            Ok(phonemes) => {
-                assert!(!phonemes.is_empty());
-                // Should contain the O diphthong (collapsed from oʊ)
-                assert!(phonemes.contains('O'), "Expected O diphthong in: {}", phonemes);
-            }
-            Err(G2pError::EspeakNotFound) => {
-                eprintln!("Skipping test: espeak-ng not installed");
-            }
-            Err(e) => panic!("Unexpected error: {}", e),
-        }
+    fn test_g2p_convert_hello() {
+        let g2p = G2P::new();
+        let result = g2p.convert("hello").unwrap();
+        assert!(!result.is_empty());
+        assert!(
+            result.contains('O') || result.contains('o'),
+            "Expected phonemes for 'hello', got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_g2p_convert_sentence() {
+        let g2p = G2P::new();
+        let result = g2p.convert("Hello world").unwrap();
+        assert!(!result.is_empty());
+        assert!(
+            result.contains(' '),
+            "Expected space between words in: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_g2p_convert_the_context() {
+        let g2p = G2P::new();
+        let result = g2p.convert("the apple").unwrap();
+        assert!(
+            result.contains("ði"),
+            "Expected 'ði' (the before vowel) in: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_g2p_convert_number() {
+        let g2p = G2P::new();
+        let result = g2p.convert("42").unwrap();
+        assert!(!result.is_empty(), "Should produce phonemes for numbers");
+    }
+
+    #[test]
+    fn test_english_to_phonemes_api() {
+        let result = english_to_phonemes("hello world");
+        assert!(result.is_ok());
+        let phonemes = result.unwrap();
+        assert!(!phonemes.is_empty());
     }
 }

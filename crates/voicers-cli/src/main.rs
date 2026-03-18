@@ -8,7 +8,7 @@ struct Args {
     #[arg(long, default_value = "prince-canuma/Kokoro-82M")]
     model: String,
 
-    /// Plain English text to synthesize (requires espeak-ng)
+    /// Plain English text to synthesize
     #[arg(long, group = "input")]
     text: Option<String>,
 
@@ -38,7 +38,7 @@ fn main() {
 
     // Resolve phoneme chunks from either --text or --phonemes
     let phoneme_chunks: Vec<String> = if let Some(text) = &args.text {
-        eprintln!("Converting text to phonemes via espeak-ng...");
+        eprintln!("Converting text to phonemes...");
         match voicers_g2p::text_to_phoneme_chunks(text) {
             Ok(chunks) => {
                 for (i, chunk) in chunks.iter().enumerate() {

@@ -13,3 +13,5 @@ hf-hub = "0.5"
 hound = "3"
 thiserror = "2"
 mlx-macros = "0.25.3"
+voicers-dsp = { path = "../voicers-dsp" }
+voicers-nn = { path = "../voicers-nn" }

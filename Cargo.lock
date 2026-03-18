@@ -2706,6 +2706,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "voicers-dsp",
+ "voicers-nn",
 ]
 
 [[package]]
@@ -2720,6 +2722,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "voicers-dsp"
+version = "0.1.0"
+dependencies = [
+ "mlx-rs",
+]
+
+[[package]]
 name = "voicers-g2p"
 version = "0.1.0"
 dependencies = [
@@ -2728,6 +2737,16 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "unicode-normalization",
+]
+
+[[package]]
+name = "voicers-nn"
+version = "0.1.0"
+dependencies = [
+ "mlx-macros",
+ "mlx-rs",
+ "serde",
+ "voicers-dsp",
 ]
 
 [[package]]

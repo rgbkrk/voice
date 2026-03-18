@@ -1,8 +1,6 @@
 pub mod config;
-pub mod dsp;
 pub mod error;
 pub mod model;
-pub mod modules;
 pub mod voice;
 pub mod weights;
 

@@ -1,80 +1,17 @@
-//! Two-tier tokenizer for English G2P.
+//! Tokenizer for English G2P.
 //!
-//! **Tier 1** – spaCy via `uv run` (preferred): uses `uv run --with spacy --with
-//! en-core-web-sm` to get POS tags without requiring a pre-configured Python env.
-//!
-//! **Tier 2** – Simple fallback tokenizer: whitespace-based splitting with
-//! heuristic tag assignment.
+//! Splits text into [`MToken`]s using whitespace-based word boundaries, then
+//! assigns POS tags via an embedded averaged perceptron tagger (no external
+//! processes required). espeak-ng subprocess is still used downstream as an
+//! OOV pronunciation fallback, but tokenization itself is fully self-contained.
 
-use std::process::Command;
 use std::sync::OnceLock;
 
 use fancy_regex::Regex;
-use serde::Deserialize;
 
 use crate::stress::{punct_tag_phoneme, PUNCTS, PUNCT_TAGS, SUBTOKEN_JUNKS};
+use crate::tagger;
 use crate::token::MToken;
-
-// ---------------------------------------------------------------------------
-// Tier 1: spaCy via uv
-// ---------------------------------------------------------------------------
-
-const SPACY_SCRIPT: &str = r#"
-import sys, json, spacy
-nlp = spacy.load('en_core_web_sm', enable=['tok2vec', 'tagger'])
-doc = nlp(sys.argv[1])
-print(json.dumps([{"text": t.text, "tag": t.tag_, "whitespace": t.whitespace_} for t in doc]))
-"#;
-
-#[derive(Deserialize)]
-struct SpacyToken {
-    text: String,
-    tag: String,
-    whitespace: String,
-}
-
-const EN_CORE_WEB_SM_URL: &str = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl";
-
-/// Tokenize text using spaCy via `uv run`.
-///
-/// Uses `uv run --with spacy --with <en_core_web_sm whl URL>` so no
-/// pre-installed Python environment is needed — just `uv`.
-/// Falls back to `None` if `uv` is not available.
-pub fn tokenize_with_spacy(text: &str, uv_path: &str) -> Option<Vec<MToken>> {
-    let output = Command::new(uv_path)
-        .args([
-            "run",
-            "--with", "spacy",
-            "--with", EN_CORE_WEB_SM_URL,
-            "python", "-c",
-        ])
-        .arg(SPACY_SCRIPT.trim())
-        .arg(text)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let spacy_tokens: Vec<SpacyToken> = serde_json::from_str(stdout.trim()).ok()?;
-
-    let tokens = spacy_tokens
-        .into_iter()
-        .map(|st| {
-            let mut tok = MToken::new(st.text, st.tag, st.whitespace);
-            tok.underscore.is_head = true;
-            tok
-        })
-        .collect();
-
-    Some(tokens)
-}
-
-// ---------------------------------------------------------------------------
-// Tier 2: Simple fallback tokenizer
-// ---------------------------------------------------------------------------
 
 /// Returns true if every character in `s` is a punctuation character from PUNCTS.
 fn is_all_puncts(s: &str) -> bool {
@@ -83,7 +20,9 @@ fn is_all_puncts(s: &str) -> bool {
 
 /// Returns true if every character in `s` is a digit, comma, or dot.
 fn is_number_like(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '.')
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_digit() || c == ',' || c == '.')
 }
 
 /// Returns true if every character in `s` is a currency symbol.
@@ -134,10 +73,7 @@ pub fn tokenize_simple(text: &str) -> Vec<MToken> {
                         break;
                     }
                 }
-                let ws_end = chars
-                    .peek()
-                    .map(|&(idx, _)| idx)
-                    .unwrap_or(text.len());
+                let ws_end = chars.peek().map(|&(idx, _)| idx).unwrap_or(text.len());
                 let ws = &text[ws_start..ws_end];
                 let tag = simple_tag(word);
                 let mut tok = MToken::new(word, tag, ws);
@@ -171,9 +107,31 @@ pub fn tokenize_simple(text: &str) -> Vec<MToken> {
 // Combined entry point
 // ---------------------------------------------------------------------------
 
-/// Tokenize text, trying spaCy first and falling back to the simple tokenizer.
-pub fn tokenize(text: &str, uv_path: &str) -> Vec<MToken> {
-    tokenize_with_spacy(text, uv_path).unwrap_or_else(|| tokenize_simple(text))
+/// Tokenize text using the simple word splitter, then apply POS tags from
+/// the embedded perceptron tagger.
+///
+/// Heuristic tags for punctuation, numbers, and currency are kept as-is
+/// (the perceptron wasn't trained on those token shapes). All other tokens
+/// get their tag overwritten by the perceptron's prediction.
+pub fn tokenize(text: &str) -> Vec<MToken> {
+    let mut tokens = tokenize_simple(text);
+
+    // Collect words for the perceptron tagger. Owned strings break the
+    // borrow on `tokens` so we can mutate them afterwards.
+    let words_owned: Vec<String> = tokens.iter().map(|t| t.text.clone()).collect();
+    let words: Vec<&str> = words_owned.iter().map(|s| s.as_str()).collect();
+    let tags = tagger::global_tagger().tag(&words);
+
+    for (tok, tag) in tokens.iter_mut().zip(tags.iter()) {
+        // Keep heuristic tags for punctuation/numbers/currency — the perceptron
+        // doesn't handle those well. Override everything tagged "DEFAULT" by
+        // the simple tagger.
+        if tok.tag == "DEFAULT" {
+            tok.tag = tag.tag.clone();
+        }
+    }
+
+    tokens
 }
 
 // ---------------------------------------------------------------------------
@@ -349,7 +307,11 @@ pub fn retokenize(tokens: Vec<MToken>) -> Vec<TokenOrGroup> {
 
             let mut sub_tok = MToken::new(
                 sub_text.as_str(),
-                if is_junk { ":".to_string() } else { tok.tag.clone() },
+                if is_junk {
+                    ":".to_string()
+                } else {
+                    tok.tag.clone()
+                },
                 if is_last {
                     tok.whitespace.clone()
                 } else {
@@ -504,23 +466,27 @@ mod tests {
     fn subtokenize_camel_case() {
         let result = subtokenize("iPhone");
         // 'i' is lowercase before 'P' uppercase → should split
-        assert!(result.len() >= 2, "Expected split for camelCase: {:?}", result);
+        assert!(
+            result.len() >= 2,
+            "Expected split for camelCase: {:?}",
+            result
+        );
     }
 
     #[test]
     fn subtokenize_number_word() {
         let result = subtokenize("test123");
-        assert!(result.len() >= 2, "Expected split for word+number: {:?}", result);
+        assert!(
+            result.len() >= 2,
+            "Expected split for word+number: {:?}",
+            result
+        );
     }
 
     #[test]
     fn subtokenize_hyphenated() {
         let result = subtokenize("well-known");
-        assert!(
-            result.len() >= 3,
-            "Expected split on hyphen: {:?}",
-            result
-        );
+        assert!(result.len() >= 3, "Expected split on hyphen: {:?}", result);
         assert!(result.contains(&"-".to_string()));
     }
 

@@ -2,17 +2,16 @@ pub mod espeak;
 pub mod lexicon;
 pub mod number;
 pub mod stress;
+pub mod tagger;
 pub mod token;
 pub mod tokenizer;
 
-use std::sync::OnceLock;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use espeak::EspeakFallback;
 use lexicon::Lexicon;
-use stress::{
-    apply_stress, CONSONANTS, NON_QUOTE_PUNCTS, PRIMARY_STRESS, SUBTOKEN_JUNKS, VOWELS,
-};
+use stress::{apply_stress, CONSONANTS, NON_QUOTE_PUNCTS, PRIMARY_STRESS, SUBTOKEN_JUNKS, VOWELS};
 use token::{merge_tokens, MToken, TokenContext};
 use tokenizer::TokenOrGroup;
 
@@ -29,9 +28,6 @@ pub enum G2pError {
 /// Configuration for external tool paths used by the G2P pipeline.
 #[derive(Debug, Clone)]
 pub struct G2PConfig {
-    /// Path to the `uv` binary for spaCy POS tagging.
-    /// Defaults to `"uv"` (PATH lookup).
-    pub uv_path: String,
     /// Path to the `espeak-ng` binary for fallback pronunciation.
     /// Defaults to `"espeak-ng"` (PATH lookup).
     pub espeak_path: String,
@@ -40,7 +36,6 @@ pub struct G2PConfig {
 impl Default for G2PConfig {
     fn default() -> Self {
         Self {
-            uv_path: "uv".to_string(),
             espeak_path: "espeak-ng".to_string(),
         }
     }
@@ -51,7 +46,6 @@ pub struct G2P {
     lexicon: Lexicon,
     fallback: EspeakFallback,
     unk: String,
-    config: G2PConfig,
     overrides: HashMap<String, String>,
 }
 
@@ -68,10 +62,9 @@ impl G2P {
     pub fn with_config(config: G2PConfig) -> Self {
         Self {
             lexicon: Lexicon::new(),
-            fallback: EspeakFallback::with_path(config.espeak_path.clone()),
+            fallback: EspeakFallback::with_path(config.espeak_path),
             unk: String::new(),
             overrides: HashMap::new(),
-            config,
         }
     }
 
@@ -88,8 +81,8 @@ impl G2P {
     ///
     /// Mirrors misaki `G2P.__call__()` from en.py:679-738.
     pub fn convert(&self, text: &str) -> Result<String, G2pError> {
-        // 1. Tokenize (spaCy preferred, simple fallback)
-        let tokens = tokenizer::tokenize(text, &self.config.uv_path);
+        // 1. Tokenize and POS-tag (embedded perceptron tagger)
+        let tokens = tokenizer::tokenize(text);
 
         // 2. fold_left: merge non-head tokens
         let tokens = tokenizer::fold_left(tokens);
@@ -109,8 +102,7 @@ impl G2P {
                 TokenOrGroup::Group(ref mut group) => {
                     self.resolve_group(group, &ctx);
                     if let Some(first) = group.first() {
-                        ctx =
-                            Self::token_context(&ctx, first.phonemes.as_deref(), first);
+                        ctx = Self::token_context(&ctx, first.phonemes.as_deref(), first);
                     }
                 }
             }
@@ -145,7 +137,6 @@ impl G2P {
         if w.phonemes.is_some() {
             return;
         }
-
 
         // Check custom overrides before lexicon/espeak fallback
         let lookup_key = w.text.to_lowercase();
@@ -318,8 +309,7 @@ impl G2P {
                 let last = i == n - 1;
                 if last
                     && tk.text.len() == 1
-                    && NON_QUOTE_PUNCTS
-                        .contains(tk.text.chars().next().unwrap_or(' '))
+                    && NON_QUOTE_PUNCTS.contains(tk.text.chars().next().unwrap_or(' '))
                 {
                     tk.phonemes = Some(tk.text.clone());
                     tk.underscore.rating = Some(3);

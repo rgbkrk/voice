@@ -95,6 +95,15 @@ impl KokoroModel {
         ref_s: &Array,
         speed: f32,
     ) -> Result<Array, Exception> {
+        // Disable nn.Dropout in all modules (eval mode) — Python MLX modules default
+        // to eval mode where nn.Dropout is a no-op. mlx-rs defaults to training=true.
+        // Note: The prosody predictor intentionally uses raw mx.dropout(p=0.5) at
+        // inference which is NOT an nn.Dropout and is always active.
+        self.bert.training_mode(false);
+        self.text_encoder.training_mode(false);
+        self.decoder.training_mode(false);
+        self.predictor.training_mode(false);
+
         // Map phonemes to token IDs
         let input_ids: Vec<i32> = phonemes
             .chars()
@@ -143,7 +152,6 @@ impl KokoroModel {
             .transpose_axes(&[0, 2, 1])?;
 
         // Extract style from ref_s
-        // ref_s shape: (1, 256) -> s = ref_s[:, 128:] (prosody style)
         // ref_s is a voice pack of shape (510, 1, 256).
         // Index by phoneme count - 1 to get the style for this length.
         let phoneme_count = input_ids.len() as i32; // excludes BOS/EOS

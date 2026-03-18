@@ -140,8 +140,8 @@ pub fn istft(
     let win_length = win_length.unwrap_or((freq_bins - 1) * 2);
     let hop_length = hop_length.unwrap_or(win_length / 4);
     let center = center.unwrap_or(true);
-    // Default to true: overlap-add applies window again, so we need w² normalization
-    let normalized = normalized.unwrap_or(true);
+    // Match Python mlx-audio default: use simple window normalization (not squared)
+    let normalized = normalized.unwrap_or(false);
 
     // Window: hanning(win_length + 1)[:-1]
     let w_full = hanning(win_length + 1, false)?;
@@ -296,7 +296,7 @@ impl MlxStft {
                 Some(self.win_size),
                 Some(true),
                 None,
-                None,
+                Some(false), // Match Python mlx-audio: simple window normalization
             )?;
 
             outputs.push(audio);

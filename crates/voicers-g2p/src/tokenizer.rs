@@ -40,8 +40,8 @@ const EN_CORE_WEB_SM_URL: &str = "https://github.com/explosion/spacy-models/rele
 /// Uses `uv run --with spacy --with <en_core_web_sm whl URL>` so no
 /// pre-installed Python environment is needed — just `uv`.
 /// Falls back to `None` if `uv` is not available.
-pub fn tokenize_with_spacy(text: &str) -> Option<Vec<MToken>> {
-    let output = Command::new("uv")
+pub fn tokenize_with_spacy(text: &str, uv_path: &str) -> Option<Vec<MToken>> {
+    let output = Command::new(uv_path)
         .args([
             "run",
             "--with", "spacy",
@@ -172,8 +172,8 @@ pub fn tokenize_simple(text: &str) -> Vec<MToken> {
 // ---------------------------------------------------------------------------
 
 /// Tokenize text, trying spaCy first and falling back to the simple tokenizer.
-pub fn tokenize(text: &str) -> Vec<MToken> {
-    tokenize_with_spacy(text).unwrap_or_else(|| tokenize_simple(text))
+pub fn tokenize(text: &str, uv_path: &str) -> Vec<MToken> {
+    tokenize_with_spacy(text, uv_path).unwrap_or_else(|| tokenize_simple(text))
 }
 
 // ---------------------------------------------------------------------------

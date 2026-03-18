@@ -40,23 +40,23 @@ const E2M: &[(&str, &str)] = &[
 /// Per-word espeak-ng fallback, ported from misaki's `EspeakFallback`.
 pub struct EspeakFallback {
     british: bool,
+    espeak_path: String,
 }
 
 impl EspeakFallback {
-    /// Create a new fallback with US English (british=false).
+    /// Create a new fallback with US English and default PATH lookup.
     pub fn new() -> Self {
-        Self { british: false }
+        Self { british: false, espeak_path: "espeak-ng".to_string() }
     }
 
-    /// Create a new fallback specifying British or American English.
-    #[allow(dead_code)]
-    pub fn with_british(british: bool) -> Self {
-        Self { british }
+    /// Create a new fallback with a custom espeak-ng binary path.
+    pub fn with_path(espeak_path: String) -> Self {
+        Self { british: false, espeak_path }
     }
 
     /// Check if espeak-ng is available on the system.
-    pub fn is_available() -> bool {
-        Command::new("espeak-ng")
+    pub fn is_available(&self) -> bool {
+        Command::new(&self.espeak_path)
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -70,7 +70,7 @@ impl EspeakFallback {
     pub fn convert_word(&self, word: &str) -> Option<(String, u8)> {
         let lang = if self.british { "en-gb" } else { "en-us" };
 
-        let output = Command::new("espeak-ng")
+        let output = Command::new(&self.espeak_path)
             .args(["--ipa", "-q", "-v", lang, "--tie=^", word])
             .output()
             .ok()?;
@@ -156,8 +156,8 @@ fn replace_syllabic_mark(input: &str) -> String {
 ///
 /// This wraps the same espeak-ng subprocess call used by `english_to_phonemes`
 /// in `lib.rs`, but returns `Option<String>` for convenience in fallback chains.
-pub fn espeak_sentence(text: &str) -> Option<String> {
-    let output = Command::new("espeak-ng")
+pub fn espeak_sentence(text: &str, espeak_path: &str) -> Option<String> {
+    let output = Command::new(espeak_path)
         .args(["--ipa", "-q", "-v", "en-us", text])
         .output()
         .ok()?;
@@ -222,12 +222,11 @@ mod tests {
 
     #[test]
     fn test_convert_word_available() {
-        if !EspeakFallback::is_available() {
+        let fb = EspeakFallback::new();
+        if !fb.is_available() {
             eprintln!("Skipping test: espeak-ng not installed");
             return;
         }
-
-        let fb = EspeakFallback::new();
         let result = fb.convert_word("hello");
         assert!(result.is_some(), "espeak-ng should produce output for 'hello'");
         let (ps, rating) = result.unwrap();
@@ -243,12 +242,13 @@ mod tests {
 
     #[test]
     fn test_espeak_sentence_available() {
-        if !EspeakFallback::is_available() {
+        let fb = EspeakFallback::new();
+        if !fb.is_available() {
             eprintln!("Skipping test: espeak-ng not installed");
             return;
         }
 
-        let result = espeak_sentence("Hello world");
+        let result = espeak_sentence("Hello world", "espeak-ng");
         assert!(result.is_some());
         let ps = result.unwrap();
         assert!(!ps.is_empty());

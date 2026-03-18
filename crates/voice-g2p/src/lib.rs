@@ -6,6 +6,7 @@ pub mod token;
 pub mod tokenizer;
 
 use std::sync::OnceLock;
+use std::collections::HashMap;
 
 use espeak::EspeakFallback;
 use lexicon::Lexicon;
@@ -51,6 +52,7 @@ pub struct G2P {
     fallback: EspeakFallback,
     unk: String,
     config: G2PConfig,
+    overrides: HashMap<String, String>,
 }
 
 fn global_g2p() -> &'static G2P {
@@ -68,8 +70,18 @@ impl G2P {
             lexicon: Lexicon::new(),
             fallback: EspeakFallback::with_path(config.espeak_path.clone()),
             unk: String::new(),
+            overrides: HashMap::new(),
             config,
         }
+    }
+
+    /// Set custom word-to-phoneme overrides (builder pattern).
+    ///
+    /// Overrides map lowercase words to phoneme strings, checked before
+    /// the lexicon and espeak fallback.
+    pub fn with_overrides(mut self, overrides: HashMap<String, String>) -> Self {
+        self.overrides = overrides;
+        self
     }
 
     /// Full pipeline: text -> phoneme string.
@@ -134,6 +146,14 @@ impl G2P {
             return;
         }
 
+
+        // Check custom overrides before lexicon/espeak fallback
+        let lookup_key = w.text.to_lowercase();
+        if let Some(ps) = self.overrides.get(&lookup_key) {
+            w.phonemes = Some(ps.clone());
+            w.underscore.rating = Some(5); // highest priority
+            return;
+        }
         let (ps, rating) = self.lexicon.call(
             &w.text,
             w.underscore.alias.as_deref(),
@@ -372,6 +392,18 @@ pub fn english_to_phonemes(text: &str) -> Result<String, G2pError> {
     global_g2p().convert(text)
 }
 
+/// Convert English text to phonemes with custom word overrides.
+///
+/// Overrides map lowercase words to phoneme strings, checked before
+/// the lexicon and espeak fallback.
+pub fn english_to_phonemes_with_overrides(
+    text: &str,
+    overrides: &HashMap<String, String>,
+) -> Result<String, G2pError> {
+    let g2p = G2P::new().with_overrides(overrides.clone());
+    g2p.convert(text)
+}
+
 /// Post-process espeak-ng IPA output into Kokoro phoneme format.
 ///
 /// Kept for backward compatibility. New code should use `english_to_phonemes()`.
@@ -421,6 +453,64 @@ pub fn text_to_phoneme_chunks(text: &str) -> Result<Vec<String>, G2pError> {
                 continue;
             }
             let sent_phonemes = english_to_phonemes(sentence)?;
+
+            if current_phonemes.is_empty() {
+                current_phonemes = sent_phonemes;
+            } else if current_phonemes.len() + 1 + sent_phonemes.len() <= MAX_PHONEME_LEN {
+                current_phonemes.push(' ');
+                current_phonemes.push_str(&sent_phonemes);
+            } else {
+                chunks.push(current_phonemes);
+                current_phonemes = sent_phonemes;
+            }
+        }
+
+        if !current_phonemes.is_empty() {
+            chunks.push(current_phonemes);
+        }
+    }
+
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+
+    Ok(chunks)
+}
+
+/// Split text into chunks whose phoneme representations fit within the model's
+/// 510-character context limit, with custom word-to-phoneme overrides.
+///
+/// Overrides map lowercase words to phoneme strings, checked before
+/// the lexicon and espeak fallback.
+pub fn text_to_phoneme_chunks_with_overrides(
+    text: &str,
+    overrides: &HashMap<String, String>,
+) -> Result<Vec<String>, G2pError> {
+    const MAX_PHONEME_LEN: usize = 500;
+
+    let mut chunks = Vec::new();
+
+    for paragraph in text.split('\n') {
+        let paragraph = paragraph.trim();
+        if paragraph.is_empty() {
+            continue;
+        }
+
+        let phonemes = english_to_phonemes_with_overrides(paragraph, overrides)?;
+        if phonemes.len() <= MAX_PHONEME_LEN {
+            chunks.push(phonemes);
+            continue;
+        }
+
+        let sentences = split_sentences(paragraph);
+        let mut current_phonemes = String::new();
+
+        for sentence in &sentences {
+            let sentence = sentence.trim();
+            if sentence.is_empty() {
+                continue;
+            }
+            let sent_phonemes = english_to_phonemes_with_overrides(sentence, overrides)?;
 
             if current_phonemes.is_empty() {
                 current_phonemes = sent_phonemes;

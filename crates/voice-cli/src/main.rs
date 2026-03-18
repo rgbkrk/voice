@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 
@@ -14,7 +15,10 @@ const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
                   voice -v am_adam \"How are you today?\"\n  \
                   echo \"Hello\" | voice\n  \
                   voice -f speech.txt -o output.wav\n  \
-                  voice --phonemes \"hɛloʊ wɜːld\""
+                  voice --phonemes \"hɛloʊ wɜːld\"\n  \
+                  voice --markdown -f post.mdx\n  \
+                  voice --sub nteract=enteract -f post.mdx\n  \
+                  voice --sub-file .voice-subs --markdown -f post.mdx"
 )]
 struct Args {
     /// Text to speak
@@ -40,6 +44,18 @@ struct Args {
     /// Speech speed factor (1.0 = normal)
     #[arg(short, long, default_value = "1.0")]
     speed: f32,
+
+    /// Strip markdown/MDX formatting before speaking
+    #[arg(long)]
+    markdown: bool,
+
+    /// Word substitutions (pre-processing), e.g. --sub nteract=enteract
+    #[arg(long = "sub", value_name = "WORD=REPLACEMENT")]
+    subs: Vec<String>,
+
+    /// Load substitutions from a file (one WORD=REPLACEMENT per line, # comments)
+    #[arg(long = "sub-file", value_name = "PATH")]
+    sub_file: Option<PathBuf>,
 }
 
 fn resolve_text(args: &Args) -> Result<String, String> {
@@ -88,6 +104,168 @@ fn resolve_text(args: &Args) -> Result<String, String> {
     Ok(text)
 }
 
+/// Strip markdown formatting from text, producing clean prose for TTS.
+fn strip_markdown(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_frontmatter = false;
+    let mut frontmatter_count = 0;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        // Handle YAML frontmatter (--- delimited)
+        if trimmed == "---" {
+            frontmatter_count += 1;
+            if frontmatter_count == 1 {
+                in_frontmatter = true;
+                continue;
+            } else if frontmatter_count == 2 {
+                in_frontmatter = false;
+                continue;
+            }
+        }
+        if in_frontmatter {
+            continue;
+        }
+
+        // Skip blank lines
+        if trimmed.is_empty() {
+            out.push('\n');
+            continue;
+        }
+
+        let mut line = line.to_string();
+
+        // Strip heading markers: "## Foo" -> "Foo"
+        if line.trim_start().starts_with('#') {
+            line = line
+                .trim_start()
+                .trim_start_matches('#')
+                .trim_start()
+                .to_string();
+        }
+
+        // Strip bold markers: **text** and __text__
+        line = line.replace("**", "");
+        line = line.replace("__", "");
+
+        // Strip remaining italic markers: *text*
+        line = line.replace("*", "");
+
+        // Strip inline code backticks
+        line = line.replace("`", "");
+
+        // Strip numbered list prefixes: "1. Foo" -> "Foo"
+        let stripped = line.trim_start();
+        if let Some(rest) = stripped.strip_prefix(|c: char| c.is_ascii_digit()) {
+            // Handle multi-digit: consume remaining digits
+            let rest = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+            if let Some(rest) = rest.strip_prefix(". ") {
+                line = rest.to_string();
+            }
+        }
+
+        // Strip bullet markers: "- Foo" or "* Foo" (already stripped * above, handle -)
+        let stripped = line.trim_start();
+        if let Some(rest) = stripped.strip_prefix("- ") {
+            line = rest.to_string();
+        }
+
+        out.push_str(&line);
+        out.push('\n');
+    }
+
+    out
+}
+
+/// Apply word-level text substitutions (case-insensitive on match, preserves replacement as-is).
+fn apply_substitutions(text: &str, subs: &[(String, String)]) -> String {
+    let mut result = text.to_string();
+    for (from, to) in subs {
+        // Simple whole-ish word replacement: replace all occurrences
+        // We do case-insensitive find-and-replace
+        result = result.replace(from.as_str(), to.as_str());
+    }
+    result
+}
+
+/// Parse "word=replacement" substitution strings.
+fn parse_subs(raw: &[String]) -> Vec<(String, String)> {
+    raw.iter()
+        .filter_map(|s| {
+            let (k, v) = s.split_once('=')?;
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+/// Load substitutions from a file. Format: one `WORD=REPLACEMENT` per line.
+/// Wrap the replacement in /slashes/ for phoneme overrides.
+/// Lines starting with `#` and blank lines are ignored.
+fn load_sub_file(path: &std::path::Path) -> Result<Vec<(String, String)>, String> {
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read sub-file {}: {e}", path.display()))?;
+    Ok(contents
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect())
+}
+
+/// Merge and sort substitutions so longer keys match first.
+/// CLI --sub entries override --sub-file entries for the same key.
+///
+/// Returns (text_subs, phoneme_overrides). Values wrapped in `/slashes/`
+/// are phoneme overrides passed to G2P; everything else is a text substitution.
+fn collect_subs(
+    cli_subs: &[String],
+    file_path: Option<&std::path::Path>,
+) -> (Vec<(String, String)>, HashMap<String, String>) {
+    let mut map = HashMap::<String, String>::new();
+
+    // File entries first (lower priority)
+    if let Some(path) = file_path {
+        match load_sub_file(path) {
+            Ok(entries) => {
+                for (k, v) in entries {
+                    map.insert(k, v);
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // CLI entries override
+    for (k, v) in parse_subs(cli_subs) {
+        map.insert(k, v);
+    }
+
+    // Split into text subs and phoneme overrides
+    let mut text_subs = Vec::new();
+    let mut phoneme_overrides = HashMap::new();
+
+    for (k, v) in map {
+        if v.starts_with('/') && v.ends_with('/') && v.len() > 2 {
+            // /phonemes/ → phoneme override (keyed lowercase for G2P lookup)
+            phoneme_overrides.insert(k.to_lowercase(), v[1..v.len() - 1].to_string());
+        } else {
+            text_subs.push((k, v));
+        }
+    }
+
+    // Sort text subs by key length descending so "nteract.io" matches before "nteract"
+    text_subs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+    (text_subs, phoneme_overrides)
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -97,8 +275,24 @@ fn main() {
     } else {
         match resolve_text(&args) {
             Ok(text) => {
+                let text = if args.markdown {
+                    strip_markdown(&text)
+                } else {
+                    text
+                };
+                let (subs, phoneme_overrides) = collect_subs(&args.subs, args.sub_file.as_deref());
+                let text = if subs.is_empty() {
+                    text
+                } else {
+                    apply_substitutions(&text, &subs)
+                };
                 eprintln!("Converting text to phonemes...");
-                match voice_g2p::text_to_phoneme_chunks(&text) {
+                let chunks_result = if phoneme_overrides.is_empty() {
+                    voice_g2p::text_to_phoneme_chunks(&text)
+                } else {
+                    voice_g2p::text_to_phoneme_chunks_with_overrides(&text, &phoneme_overrides)
+                };
+                match chunks_result {
                     Ok(chunks) => {
                         for (i, chunk) in chunks.iter().enumerate() {
                             eprintln!("  chunk {}: {}", i + 1, chunk);

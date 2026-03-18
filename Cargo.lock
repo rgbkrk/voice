@@ -2984,7 +2984,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voice"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -2997,14 +2997,14 @@ dependencies = [
 
 [[package]]
 name = "voice-dsp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "mlx-rs",
 ]
 
 [[package]]
 name = "voice-g2p"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "fancy-regex",
  "serde",
@@ -3015,7 +3015,7 @@ dependencies = [
 
 [[package]]
 name = "voice-nn"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "mlx-macros",
  "mlx-rs",
@@ -3025,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "voice-tts"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "hf-hub",
  "hound",

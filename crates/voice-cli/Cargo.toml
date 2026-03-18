@@ -13,8 +13,8 @@ name = "voice"
 path = "src/main.rs"
 
 [dependencies]
-voice-tts = { version = "0.1.1", path = "../voice-tts" }
-voice-g2p = { version = "0.1.1", path = "../voice-g2p" }
+voice-tts = { version = "0.2.0", path = "../voice-tts" }
+voice-g2p = { version = "0.2.0", path = "../voice-g2p" }
 clap = { version = "4", features = ["derive"] }
 rodio = "0.22"
 hound = "3"

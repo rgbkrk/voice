@@ -1,6 +1,6 @@
 [package]
 name = "voice-tts"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85.0"
 description = "Rust TTS library backed by MLX, starting with Kokoro"
@@ -15,5 +15,5 @@ hf-hub = "0.5"
 hound = "3"
 thiserror = "2"
 mlx-macros = "0.25.3"
-voice-dsp = { version = "0.1.1", path = "../voice-dsp" }
-voice-nn = { version = "0.1.1", path = "../voice-nn" }
+voice-dsp = { version = "0.2.0", path = "../voice-dsp" }
+voice-nn = { version = "0.2.0", path = "../voice-nn" }

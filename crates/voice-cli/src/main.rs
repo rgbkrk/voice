@@ -269,7 +269,12 @@ fn collect_subs(
 fn main() {
     let args = Args::parse();
 
-    // Resolve phoneme chunks
+    // Start model loading in a background thread immediately — this is the
+    // slowest startup step (~200ms) and can run while we resolve text + G2P.
+    let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
+
+    // Resolve phoneme chunks (text resolution + G2P are fast with the
+    // embedded perceptron tagger, ~1-2ms total).
     let phoneme_chunks: Vec<String> = if let Some(phonemes) = &args.phonemes {
         vec![phonemes.clone()]
     } else {
@@ -312,7 +317,7 @@ fn main() {
         }
     };
 
-    eprintln!("Loading voice '{}'...", args.voice);
+    // Load voice (fast for builtins — embedded in binary, ~5ms).
     let voice = match voice_tts::load_voice(&args.voice, Some(MODEL_REPO)) {
         Ok(v) => v,
         Err(e) => {
@@ -323,8 +328,8 @@ fn main() {
         }
     };
 
-    eprintln!("Loading model...");
-    let mut model = match voice_tts::load_model(MODEL_REPO) {
+    // Wait for model loading to finish.
+    let mut model = match model_handle.join().expect("model loading thread panicked") {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Failed to load model: {e}");
@@ -336,17 +341,45 @@ fn main() {
 
     let sample_rate = model.sample_rate as u32;
 
+    if let Some(output_path) = &args.output {
+        // File output: batch generate all chunks, then write WAV
+        // (WAV header needs total sample count upfront).
+        generate_to_file(
+            &mut model,
+            &voice,
+            &phoneme_chunks,
+            args.speed,
+            sample_rate,
+            output_path,
+        );
+    } else {
+        // Streaming playback: generate chunks and feed them to rodio as
+        // they're ready. The first chunk starts playing immediately while
+        // subsequent chunks are generated in the background.
+        stream_playback(&mut model, &voice, &phoneme_chunks, args.speed, sample_rate);
+    }
+}
+
+/// Batch-generate all chunks and write a single WAV file.
+fn generate_to_file(
+    model: &mut voice_tts::KokoroModel,
+    voice: &voice_tts::Array,
+    chunks: &[String],
+    speed: f32,
+    sample_rate: u32,
+    output_path: &PathBuf,
+) {
     eprintln!("Generating audio...");
     let mut all_samples: Vec<f32> = Vec::new();
 
-    for (i, phonemes) in phoneme_chunks.iter().enumerate() {
+    for (i, phonemes) in chunks.iter().enumerate() {
         if phonemes.is_empty() {
             continue;
         }
-        if phoneme_chunks.len() > 1 {
-            eprintln!("  generating chunk {}/{}...", i + 1, phoneme_chunks.len());
+        if chunks.len() > 1 {
+            eprintln!("  generating chunk {}/{}...", i + 1, chunks.len());
         }
-        match voice_tts::generate(&mut model, phonemes, &voice, args.speed) {
+        match voice_tts::generate(model, phonemes, voice, speed) {
             Ok(audio) => {
                 all_samples.extend_from_slice(audio.as_slice());
             }
@@ -357,27 +390,32 @@ fn main() {
         }
     }
 
-    if let Some(output_path) = &args.output {
-        // Write WAV to file
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate,
-            bits_per_sample: 32,
-            sample_format: hound::SampleFormat::Float,
-        };
-        let mut writer = hound::WavWriter::create(output_path, spec).expect("Failed to create WAV");
-        for s in &all_samples {
-            writer.write_sample(*s).expect("Failed to write sample");
-        }
-        writer.finalize().expect("Failed to finalize WAV");
-        eprintln!("Saved to {}", output_path.display());
-    } else {
-        // Play directly from memory
-        play_samples(&all_samples, sample_rate);
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer = hound::WavWriter::create(output_path, spec).expect("Failed to create WAV");
+    for s in &all_samples {
+        writer.write_sample(*s).expect("Failed to write sample");
     }
+    writer.finalize().expect("Failed to finalize WAV");
+    eprintln!("Saved to {}", output_path.display());
 }
 
-fn play_samples(samples: &[f32], sample_rate: u32) {
+/// Generate audio chunks and stream them to the speakers via rodio.
+///
+/// Each chunk is appended to the player as soon as it's generated. rodio
+/// plays them sequentially on its audio thread, so the first chunk starts
+/// playing while subsequent chunks are still being generated.
+fn stream_playback(
+    model: &mut voice_tts::KokoroModel,
+    voice: &voice_tts::Array,
+    chunks: &[String],
+    speed: f32,
+    sample_rate: u32,
+) {
     use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
     use std::num::NonZero;
 
@@ -385,11 +423,28 @@ fn play_samples(samples: &[f32], sample_rate: u32) {
     stream.log_on_drop(false);
     let player = Player::connect_new(stream.mixer());
 
-    let source = SamplesBuffer::new(
-        NonZero::new(1u16).unwrap(),
-        NonZero::new(sample_rate).unwrap(),
-        samples.to_vec(),
-    );
-    player.append(source);
+    let channels = NonZero::new(1u16).unwrap();
+    let rate = NonZero::new(sample_rate).unwrap();
+
+    for (i, phonemes) in chunks.iter().enumerate() {
+        if phonemes.is_empty() {
+            continue;
+        }
+        if chunks.len() > 1 {
+            eprintln!("  generating chunk {}/{}...", i + 1, chunks.len());
+        }
+        match voice_tts::generate(model, phonemes, voice, speed) {
+            Ok(audio) => {
+                let samples: Vec<f32> = audio.as_slice().to_vec();
+                let source = SamplesBuffer::new(channels, rate, samples);
+                player.append(source);
+            }
+            Err(e) => {
+                eprintln!("Failed to generate audio for chunk {}: {e}", i + 1);
+                std::process::exit(1);
+            }
+        }
+    }
+
     player.sleep_until_end();
 }

@@ -1,4 +1,5 @@
 use clap::Parser;
+use pulldown_cmark::{Event, Options, Parser as MdParser, Tag, TagEnd};
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
@@ -123,85 +124,117 @@ fn resolve_text(args: &Args) -> Result<String, String> {
     Ok(text)
 }
 
-/// Strip markdown formatting from text, producing clean prose for TTS.
+/// Strip markdown/MDX to clean prose for TTS using pulldown-cmark.
+///
+/// Keeps text content from paragraphs, headings, list items, and block quotes.
+/// Drops code blocks, inline code, images, HTML, and link URLs (keeps link text).
+/// Handles YAML frontmatter (--- delimited) by skipping it before parsing.
 fn strip_markdown(text: &str) -> String {
+    // Strip YAML frontmatter before passing to pulldown-cmark
+    let text = strip_frontmatter(text);
+
+    let opts = Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TABLES;
+    let parser = MdParser::new_ext(&text, opts);
+
     let mut out = String::new();
-    let mut in_frontmatter = false;
-    let mut frontmatter_count = 0;
+    let mut skip_depth: usize = 0;
 
-    for line in text.lines() {
-        let trimmed = line.trim();
-
-        // Handle YAML frontmatter (--- delimited)
-        if trimmed == "---" {
-            frontmatter_count += 1;
-            if frontmatter_count == 1 {
-                in_frontmatter = true;
-                continue;
-            } else if frontmatter_count == 2 {
-                in_frontmatter = false;
-                continue;
+    for event in parser {
+        match event {
+            // Skip content inside code blocks and images
+            Event::Start(Tag::CodeBlock(_)) | Event::Start(Tag::Image { .. }) => {
+                skip_depth += 1;
             }
-        }
-        if in_frontmatter {
-            continue;
-        }
-
-        // Skip blank lines
-        if trimmed.is_empty() {
-            out.push('\n');
-            continue;
-        }
-
-        let mut line = line.to_string();
-
-        // Strip heading markers: "## Foo" -> "Foo"
-        if line.trim_start().starts_with('#') {
-            line = line
-                .trim_start()
-                .trim_start_matches('#')
-                .trim_start()
-                .to_string();
-        }
-
-        // Strip bold markers: **text** and __text__
-        line = line.replace("**", "");
-        line = line.replace("__", "");
-
-        // Strip remaining italic markers: *text*
-        line = line.replace("*", "");
-
-        // Strip inline code backticks
-        line = line.replace("`", "");
-
-        // Strip numbered list prefixes: "1. Foo" -> "Foo"
-        let stripped = line.trim_start();
-        if let Some(rest) = stripped.strip_prefix(|c: char| c.is_ascii_digit()) {
-            // Handle multi-digit: consume remaining digits
-            let rest = rest.trim_start_matches(|c: char| c.is_ascii_digit());
-            if let Some(rest) = rest.strip_prefix(". ") {
-                line = rest.to_string();
+            Event::End(TagEnd::CodeBlock) | Event::End(TagEnd::Image) => {
+                skip_depth = skip_depth.saturating_sub(1);
             }
-        }
 
-        // Strip bullet markers: "- Foo" or "* Foo" (already stripped * above, handle -)
-        let stripped = line.trim_start();
-        if let Some(rest) = stripped.strip_prefix("- ") {
-            line = rest.to_string();
-        }
+            // Inside a skipped region — ignore everything
+            _ if skip_depth > 0 => {}
 
-        out.push_str(&line);
-        out.push('\n');
+            // Text and soft/hard breaks
+            Event::Text(t) => out.push_str(&t),
+            Event::SoftBreak => out.push(' '),
+            Event::HardBreak => out.push('\n'),
+
+            // Block-level boundaries → newlines for natural pauses
+            Event::End(TagEnd::Paragraph)
+            | Event::End(TagEnd::Heading(_))
+            | Event::End(TagEnd::Item)
+            | Event::End(TagEnd::BlockQuote(_)) => {
+                out.push('\n');
+            }
+
+            // Inline code → just emit the text (e.g. `HashMap` → "HashMap")
+            Event::Code(t) => out.push_str(&t),
+
+            // Everything else (HTML, rules, metadata, etc.) → skip
+            _ => {}
+        }
     }
 
     out
 }
 
-/// Apply word-level text substitutions (case-insensitive on match, preserves replacement as-is).
+/// Strip YAML frontmatter (--- delimited) from the start of text.
+fn strip_frontmatter(text: &str) -> String {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with("---") {
+        return text.to_string();
+    }
+    // Find the closing ---
+    if let Some(rest) = trimmed.strip_prefix("---") {
+        if let Some(end) = rest.find("\n---") {
+            // Skip past the closing --- and its newline
+            let after = &rest[end + 4..];
+            return after.trim_start_matches('\n').to_string();
+        }
+    }
+    text.to_string()
+}
+
+/// Built-in substitutions for common tech terms that G2P mispronounces.
+/// These are always applied (before user subs). User subs can override.
+const TECH_SUBS: &[(&str, &str)] = &[
+    ("JSON", "jay-sahn"),
+    ("json", "jay-sahn"),
+    ("Json", "jay-sahn"),
+    ("YAML", "yam-ul"),
+    ("yaml", "yam-ul"),
+    ("TOML", "tom-ul"),
+    ("toml", "tom-ul"),
+    ("WASM", "waz-um"),
+    ("wasm", "waz-um"),
+    ("OAuth", "oh-auth"),
+    ("oauth", "oh-auth"),
+    ("NGINX", "engine-X"),
+    ("nginx", "engine-X"),
+    ("PostgreSQL", "post-gres-Q-L"),
+    ("CRDTs", "C R D Ts"),
+    ("CRDT", "C R D T"),
+    ("SQLite", "S-Q-lite"),
+    ("WiFi", "why-fye"),
+    ("iOS", "eye-O-S"),
+    ("macOS", "mac O S"),
+    ("VS Code", "V S Code"),
+];
+
+/// Apply word-level text substitutions (case-sensitive match, preserves replacement as-is).
 fn apply_substitutions(text: &str, subs: &[(String, String)]) -> String {
     let mut result = text.to_string();
     for (from, to) in subs {
         result = result.replace(from.as_str(), to.as_str());
+    }
+    result
+}
+
+/// Apply built-in tech term substitutions.
+fn apply_tech_subs(text: &str) -> String {
+    let mut result = text.to_string();
+    for (from, to) in TECH_SUBS {
+        result = result.replace(from, to);
     }
     result
 }
@@ -327,6 +360,7 @@ fn main() {
                     info!("Using substitutions from {}", path.display());
                 }
                 let (subs, phoneme_overrides) = collect_subs(&args.subs, sub_file.as_deref());
+                let text = apply_tech_subs(&text);
                 let text = if subs.is_empty() {
                     text
                 } else {

@@ -1,5 +1,5 @@
 [package]
-name = "voicers"
+name = "voice-tts"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85.0"
@@ -13,5 +13,5 @@ hf-hub = "0.5"
 hound = "3"
 thiserror = "2"
 mlx-macros = "0.25.3"
-voicers-dsp = { path = "../voicers-dsp" }
-voicers-nn = { path = "../voicers-nn" }
+voice-dsp = { path = "../voice-dsp" }
+voice-nn = { path = "../voice-nn" }

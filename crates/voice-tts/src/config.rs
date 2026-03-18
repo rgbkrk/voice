@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-pub use voicers_nn::albert::AlbertConfig;
+pub use voice_nn::albert::AlbertConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelConfig {

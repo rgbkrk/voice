@@ -11,7 +11,7 @@ use mlx_rs::ops::{concatenate_axis, exp, pad, sin, squeeze_axes, PadWidth};
 use mlx_rs::Array;
 
 use super::source::{AdaINResBlock1, SourceModuleHnNSF};
-use voicers_dsp::MlxStft;
+use voice_dsp::MlxStft;
 use crate::conv_weighted::ConvWeighted;
 
 // ---------------------------------------------------------------------------

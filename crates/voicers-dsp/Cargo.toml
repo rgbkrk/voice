@@ -1,0 +1,9 @@
+[package]
+name = "voicers-dsp"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+description = "DSP primitives for voicers: STFT, iSTFT, overlap-add, windowing"
+
+[dependencies]
+mlx-rs = { version = "0.25" }

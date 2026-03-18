@@ -7,9 +7,9 @@ use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::ops::{cumsum, sin, tanh};
 use mlx_rs::Array;
 
-use crate::dsp::interpolate;
-use crate::modules::ada_norm::AdaIN1d;
-use crate::modules::conv_weighted::ConvWeighted;
+use voicers_dsp::interpolate;
+use crate::ada_norm::AdaIN1d;
+use crate::conv_weighted::ConvWeighted;
 
 // ---------------------------------------------------------------------------
 // SineGen (not a Module -- no trainable parameters)

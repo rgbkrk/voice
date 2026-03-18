@@ -8,7 +8,7 @@ use mlx_rs::Array;
 
 use super::ada_norm::AdaLayerNorm;
 use super::lstm::BiLstm;
-use crate::modules::vocoder::decoder::AdainResBlk1d;
+use crate::vocoder::decoder::AdainResBlk1d;
 
 // ---------------------------------------------------------------------------
 // Input types

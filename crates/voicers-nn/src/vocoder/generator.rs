@@ -11,8 +11,8 @@ use mlx_rs::ops::{concatenate_axis, exp, pad, sin, squeeze_axes, PadWidth};
 use mlx_rs::Array;
 
 use super::source::{AdaINResBlock1, SourceModuleHnNSF};
-use crate::dsp::MlxStft;
-use crate::modules::conv_weighted::ConvWeighted;
+use voicers_dsp::MlxStft;
+use crate::conv_weighted::ConvWeighted;
 
 // ---------------------------------------------------------------------------
 // Input types

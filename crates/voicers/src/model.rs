@@ -9,10 +9,10 @@ use mlx_rs::Array;
 use std::collections::HashMap;
 
 use crate::config::{AlbertConfig, ModelConfig};
-use crate::modules::albert::{CustomAlbert, CustomAlbertInput};
-use crate::modules::prosody::{DurationEncoderInput, ProsodyPredictor};
-use crate::modules::text_encoder::{TextEncoder, TextEncoderInput};
-use crate::modules::vocoder::decoder::{Decoder, DecoderInput};
+use voicers_nn::albert::{CustomAlbert, CustomAlbertInput};
+use voicers_nn::prosody::{DurationEncoderInput, ProsodyPredictor};
+use voicers_nn::text_encoder::{TextEncoder, TextEncoderInput};
+use voicers_nn::vocoder::decoder::{Decoder, DecoderInput};
 
 #[derive(Debug, ModuleParameters)]
 pub struct KokoroModel {

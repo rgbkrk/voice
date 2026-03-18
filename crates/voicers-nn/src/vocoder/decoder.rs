@@ -7,8 +7,8 @@ use mlx_rs::ops::{concatenate_axis, pad, sqrt, PadWidth};
 use mlx_rs::Array;
 
 use super::generator::Generator;
-use crate::modules::ada_norm::AdaIN1d;
-use crate::modules::conv_weighted::ConvWeighted;
+use crate::ada_norm::AdaIN1d;
+use crate::conv_weighted::ConvWeighted;
 
 // ---------------------------------------------------------------------------
 // UpSample1d helper

@@ -1,0 +1,12 @@
+[package]
+name = "voicers-nn"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+description = "Neural network modules for voicers: ALBERT, BiLSTM, vocoder, prosody"
+
+[dependencies]
+mlx-rs = { version = "0.25" }
+mlx-macros = "0.25.3"
+serde = { version = "1", features = ["derive"] }
+voicers-dsp = { path = "../voicers-dsp" }

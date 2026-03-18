@@ -1,10 +1,69 @@
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{Lstm, LstmBuilder, LstmInput};
+use mlx_rs::nn::{Lstm, LstmBuilder};
 use mlx_rs::ops::indexing::IndexOp;
+use mlx_rs::ops::{addmm, split, stack_axis};
 use mlx_rs::Array;
+
 use mlx_macros::ModuleParameters;
+
+/// Run a single-direction LSTM with proper hidden state propagation.
+///
+/// The mlx-rs built-in `Lstm::step` doesn't propagate hidden/cell state between
+/// timesteps (each step uses the initial hidden state). This function fixes that
+/// by manually iterating over timesteps and feeding back the hidden/cell state.
+fn lstm_forward_recurrent(
+    lstm: &Lstm,
+    x: &Array, // (batch, seq_len, features)
+) -> Result<(Array, Array), Exception> {
+    // Pre-compute input projection: x @ wx.T + bias
+    let x_proj = if let Some(b) = &lstm.bias.value {
+        addmm(b, x, &lstm.wx.value.t(), None, None)?
+    } else {
+        x.matmul(&lstm.wx.value.t())?
+    };
+
+    let seq_len = x.dim(-2);
+    let mut all_hidden = Vec::with_capacity(seq_len as usize);
+    let mut all_cell = Vec::with_capacity(seq_len as usize);
+
+    // No initial hidden/cell state — start from zeros (implicit in the math)
+    let mut hidden: Option<Array> = None;
+    let mut cell: Option<Array> = None;
+
+    for idx in 0..seq_len {
+        let mut ifgo = x_proj.index((.., idx, ..));
+
+        // Add hidden state contribution if we have one from the previous step
+        if let Some(ref h) = hidden {
+            ifgo = addmm(&ifgo, h, &lstm.wh.value.t(), None, None)?;
+        }
+
+        let pieces = split(&ifgo, 4, -1)?;
+        let i = mlx_rs::ops::sigmoid(&pieces[0])?;
+        let f = mlx_rs::ops::sigmoid(&pieces[1])?;
+        let g = mlx_rs::ops::tanh(&pieces[2])?;
+        let o = mlx_rs::ops::sigmoid(&pieces[3])?;
+
+        let new_cell = match &cell {
+            Some(c) => f.multiply(c)?.add(i.multiply(&g)?)?,
+            None => i.multiply(&g)?,
+        };
+
+        let new_hidden = o.multiply(mlx_rs::ops::tanh(&new_cell)?)?;
+
+        all_hidden.push(new_hidden.clone());
+        all_cell.push(new_cell.clone());
+
+        hidden = Some(new_hidden);
+        cell = Some(new_cell);
+    }
+
+    let hidden_refs: Vec<&Array> = all_hidden.iter().collect();
+    let cell_refs: Vec<&Array> = all_cell.iter().collect();
+
+    Ok((stack_axis(&hidden_refs, -2)?, stack_axis(&cell_refs, -2)?))
+}
 
 /// Bidirectional LSTM that processes a sequence in both forward and backward directions
 /// and concatenates the outputs.
@@ -47,19 +106,15 @@ impl BiLstm {
 
         let seq_len = x.shape()[1];
 
-        // Forward direction: process the full sequence
-        // Lstm.step processes (batch, seq_len, features) -> ((batch, seq_len, hidden_size), cell)
-        let fwd_input = LstmInput::from(&x);
-        let (fwd_out, _fwd_cell) = self.forward_lstm.forward(fwd_input)?;
+        // Forward direction with proper recurrence
+        let (fwd_out, _fwd_cell) = lstm_forward_recurrent(&self.forward_lstm, &x)?;
 
-        // Backward direction: reverse the input along the sequence dimension (axis 1)
+        // Backward direction: reverse input, run forward, reverse output
         let rev_indices: Vec<i32> = (0..seq_len).rev().collect();
         let rev_idx = Array::from_slice(&rev_indices, &[seq_len]);
-        // x_rev = x[:, rev_indices, :]
         let x_rev = x.index((0.., &rev_idx, 0..));
 
-        let bwd_input = LstmInput::from(&x_rev);
-        let (bwd_out_rev, _bwd_cell) = self.backward_lstm.forward(bwd_input)?;
+        let (bwd_out_rev, _bwd_cell) = lstm_forward_recurrent(&self.backward_lstm, &x_rev)?;
 
         // Reverse the backward output back to the original temporal order
         let bwd_out = bwd_out_rev.index((0.., &rev_idx, 0..));
@@ -71,6 +126,6 @@ impl BiLstm {
 
     /// Set training mode on both LSTMs.
     pub fn training_mode(&mut self, _mode: bool) {
-        // mlx-rs Lstm doesn't have training mode, but we keep the interface
+        // Lstm doesn't have dropout, nothing to toggle
     }
 }

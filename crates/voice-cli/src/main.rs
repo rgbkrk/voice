@@ -8,6 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
 
 static QUIET: AtomicBool = AtomicBool::new(false);
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// Check if Ctrl+C has been pressed.
+fn interrupted() -> bool {
+    INTERRUPTED.load(Ordering::Relaxed)
+}
 
 /// Print an informational message to stderr, unless `--quiet` is set.
 macro_rules! info {
@@ -332,11 +338,12 @@ fn collect_subs(
 }
 
 fn main() {
-    // Ctrl+C: print feedback and exit immediately, bypassing slow Drop teardown.
-    // Always prints, even in quiet mode — the user needs to know we heard them.
+    // Ctrl+C: set flag for cooperative cancellation. The generation loops
+    // check this between chunks and exit cleanly, letting MLX finish its
+    // current kernel before tearing down. Always prints, even in quiet mode.
     ctrlc::set_handler(|| {
+        INTERRUPTED.store(true, Ordering::SeqCst);
         eprintln!("\nInterrupted.");
-        std::process::exit(130);
     })
     .expect("Failed to set Ctrl+C handler");
 
@@ -456,6 +463,9 @@ fn generate_to_file(
     let mut all_samples: Vec<f32> = Vec::new();
 
     for (i, phonemes) in chunks.iter().enumerate() {
+        if interrupted() {
+            break;
+        }
         if phonemes.is_empty() {
             continue;
         }
@@ -471,6 +481,10 @@ fn generate_to_file(
                 std::process::exit(1);
             }
         }
+    }
+
+    if interrupted() {
+        std::process::exit(130);
     }
 
     let spec = hound::WavSpec {
@@ -510,6 +524,9 @@ fn stream_playback(
     let rate = NonZero::new(sample_rate).unwrap();
 
     for (i, phonemes) in chunks.iter().enumerate() {
+        if interrupted() {
+            break;
+        }
         if phonemes.is_empty() {
             continue;
         }
@@ -529,5 +546,13 @@ fn stream_playback(
         }
     }
 
-    player.sleep_until_end();
+    // Wait for playback to finish, checking for Ctrl+C periodically
+    // so we can exit cleanly without blocking on sleep_until_end().
+    while !player.empty() {
+        if interrupted() {
+            player.stop();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }

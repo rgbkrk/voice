@@ -1,7 +1,7 @@
 //! Two-tier tokenizer for English G2P.
 //!
-//! **Tier 1** – spaCy subprocess (preferred): calls Python with spaCy's
-//! `en_core_web_sm` model to obtain POS tags.
+//! **Tier 1** – spaCy via `uv run` (preferred): uses `uv run --with spacy --with
+//! en-core-web-sm` to get POS tags without requiring a pre-configured Python env.
 //!
 //! **Tier 2** – Simple fallback tokenizer: whitespace-based splitting with
 //! heuristic tag assignment.
@@ -16,7 +16,7 @@ use crate::stress::{punct_tag_phoneme, PUNCTS, PUNCT_TAGS, SUBTOKEN_JUNKS};
 use crate::token::MToken;
 
 // ---------------------------------------------------------------------------
-// Tier 1: spaCy subprocess
+// Tier 1: spaCy via uv
 // ---------------------------------------------------------------------------
 
 const SPACY_SCRIPT: &str = r#"
@@ -33,12 +33,21 @@ struct SpacyToken {
     whitespace: String,
 }
 
-/// Tokenize text using spaCy via a Python subprocess.
+const EN_CORE_WEB_SM_URL: &str = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl";
+
+/// Tokenize text using spaCy via `uv run`.
 ///
-/// Returns `None` if Python or spaCy is not available.
+/// Uses `uv run --with spacy --with <en_core_web_sm whl URL>` so no
+/// pre-installed Python environment is needed — just `uv`.
+/// Falls back to `None` if `uv` is not available.
 pub fn tokenize_with_spacy(text: &str) -> Option<Vec<MToken>> {
-    let output = Command::new("python3")
-        .arg("-c")
+    let output = Command::new("uv")
+        .args([
+            "run",
+            "--with", "spacy",
+            "--with", EN_CORE_WEB_SM_URL,
+            "python", "-c",
+        ])
         .arg(SPACY_SCRIPT.trim())
         .arg(text)
         .output()

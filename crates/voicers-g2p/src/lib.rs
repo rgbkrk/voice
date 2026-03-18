@@ -25,11 +25,32 @@ pub enum G2pError {
     Io(#[from] std::io::Error),
 }
 
+/// Configuration for external tool paths used by the G2P pipeline.
+#[derive(Debug, Clone)]
+pub struct G2PConfig {
+    /// Path to the `uv` binary for spaCy POS tagging.
+    /// Defaults to `"uv"` (PATH lookup).
+    pub uv_path: String,
+    /// Path to the `espeak-ng` binary for fallback pronunciation.
+    /// Defaults to `"espeak-ng"` (PATH lookup).
+    pub espeak_path: String,
+}
+
+impl Default for G2PConfig {
+    fn default() -> Self {
+        Self {
+            uv_path: "uv".to_string(),
+            espeak_path: "espeak-ng".to_string(),
+        }
+    }
+}
+
 /// The main G2P pipeline, ported from misaki's `en.G2P.__call__()`.
 pub struct G2P {
     lexicon: Lexicon,
     fallback: EspeakFallback,
     unk: String,
+    config: G2PConfig,
 }
 
 fn global_g2p() -> &'static G2P {
@@ -39,10 +60,15 @@ fn global_g2p() -> &'static G2P {
 
 impl G2P {
     pub fn new() -> Self {
+        Self::with_config(G2PConfig::default())
+    }
+
+    pub fn with_config(config: G2PConfig) -> Self {
         Self {
             lexicon: Lexicon::new(),
-            fallback: EspeakFallback::new(),
+            fallback: EspeakFallback::with_path(config.espeak_path.clone()),
             unk: String::new(),
+            config,
         }
     }
 
@@ -51,7 +77,7 @@ impl G2P {
     /// Mirrors misaki `G2P.__call__()` from en.py:679-738.
     pub fn convert(&self, text: &str) -> Result<String, G2pError> {
         // 1. Tokenize (spaCy preferred, simple fallback)
-        let tokens = tokenizer::tokenize(text);
+        let tokens = tokenizer::tokenize(text, &self.config.uv_path);
 
         // 2. fold_left: merge non-head tokens
         let tokens = tokenizer::fold_left(tokens);

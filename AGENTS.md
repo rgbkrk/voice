@@ -78,13 +78,13 @@ Configurable tool paths via `G2PConfig { uv_path, espeak_path }`.
 
 ```bash
 # Build
-cargo build --release -p voice-cli
+cargo build --release -p voice
 
 # Run TTS
 voice --text "Hello world" --voice af_heart --play
 
 # Run from source
-cargo run --release -p voice-cli -- --text "Hello world" --voice af_heart --play
+cargo run --release -p voice -- --text "Hello world" --voice af_heart --play
 
 # Run G2P tests (112 tests)
 cargo test -p voice-g2p

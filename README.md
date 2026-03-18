@@ -7,7 +7,7 @@ Faster time-to-first-speech than macOS `say`, with dramatically better audio qua
 ## Install
 
 ```bash
-cargo install voice-cli
+cargo install voice
 ```
 
 This puts the `voice` binary on your `$PATH`. Model weights (~312MB) are downloaded from HuggingFace Hub on first run and cached in `~/.cache/huggingface/hub/`. Seven popular voices and the model config are embedded in the binary — no network needed for common use.
@@ -201,7 +201,7 @@ fn main() -> voice_tts::Result<()> {
 
 | Crate | Description |
 |-------|-------------|
-| [`voice-cli`](https://crates.io/crates/voice-cli) | CLI binary — installs as `voice` |
+| [`voice`](https://crates.io/crates/voice) | CLI binary — installs as `voice` |
 | [`voice-tts`](https://crates.io/crates/voice-tts) | Core TTS library — model loading, inference, WAV output |
 | [`voice-nn`](https://crates.io/crates/voice-nn) | Neural network modules — ALBERT, BiLSTM, vocoder, prosody |
 | [`voice-dsp`](https://crates.io/crates/voice-dsp) | DSP primitives — STFT, iSTFT, overlap-add, windowing |

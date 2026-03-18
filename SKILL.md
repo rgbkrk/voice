@@ -47,7 +47,7 @@ voice --phonemes "həlˈO wˈɜɹld"
 ## Install
 
 ```bash
-cargo install voice-cli
+cargo install voice
 ```
 
 Requires macOS with Apple Silicon. Model weights download on first run (~312MB, cached).

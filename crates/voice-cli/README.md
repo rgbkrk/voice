@@ -1,11 +1,11 @@
-# voice-cli
+# voice
 
 Like `say`, but with [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M). A command-line TTS tool for macOS powered by MLX.
 
 ## Install
 
 ```bash
-cargo install voice-cli
+cargo install voice
 ```
 
 This puts the `voice` binary on your `$PATH`.

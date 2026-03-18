@@ -1,108 +1,116 @@
-# Agent context for voicers
+# Agent context for voice
 
 ## What this project is
 
-A Rust TTS (text-to-speech) library porting the Python [mlx-audio](https://github.com/lucasnewman/mlx-audio) Kokoro model to Rust using [mlx-rs](https://github.com/oxiglade/mlx-rs) (Rust bindings for Apple's MLX framework).
+A Rust TTS (text-to-speech) library implementing the [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) 82M-parameter model using [mlx-rs](https://github.com/oxiglade/mlx-rs) (Rust bindings for Apple's MLX framework). Includes a full misaki-compatible G2P pipeline for English text input.
 
 ## Current state
 
-End-to-end audio generation works. The model loads from HuggingFace Hub, processes phoneme input through the full Kokoro pipeline, and outputs 24kHz WAV audio. Audio quality has not been validated against the Python reference.
+Production-quality audio output. Whisper STT validates 7/7 test phrases correctly, matching Python mlx-audio reference. G2P handles dictionary lookup (183k entries), morphological decomposition, number handling, POS tagging via spaCy, and espeak-ng fallback.
 
-## Crate layout
+## Workspace layout
 
 | Crate | Purpose |
 |-------|---------|
-| `crates/voicers/` | Core library: model, modules, weights, DSP, public API |
-| `crates/voicers-cli/` | CLI binary with `--play` via rodio |
-| `crates/voicers-g2p/` | Stub for future grapheme-to-phoneme (espeak-ng) |
+| `crates/voice-tts/` | Core TTS library — model orchestration, config, weights, voice loading |
+| `crates/voice-nn/` | Neural network modules — ALBERT, BiLSTM, vocoder, prosody, text encoder |
+| `crates/voice-dsp/` | DSP primitives — STFT, iSTFT, overlap-add, hanning window |
+| `crates/voice-g2p/` | Grapheme-to-phoneme — misaki dictionary + espeak-ng fallback |
+| `crates/voice-cli/` | CLI binary (installs as `voice`) |
 
 ## Key files
 
 | File | What it does |
 |------|-------------|
-| `voicers/src/model.rs` | `KokoroModel` struct and `generate()` forward pass |
-| `voicers/src/weights.rs` | HF Hub download, weight sanitization (PyTorch -> mlx-rs key mapping) |
-| `voicers/src/config.rs` | `ModelConfig`, `AlbertConfig`, `ISTFTNetConfig` (serde from config.json) |
-| `voicers/src/dsp.rs` | STFT, iSTFT, hanning window, interpolate, mlx_angle, mlx_unwrap |
-| `voicers/src/voice.rs` | Voice embedding loading from safetensors |
-| `voicers/src/modules/albert.rs` | ALBERT transformer encoder (embeddings, attention, FFN) |
-| `voicers/src/modules/prosody.rs` | ProsodyPredictor, DurationEncoder (F0/voicing prediction) |
-| `voicers/src/modules/text_encoder.rs` | TextEncoder (Conv1d blocks + BiLSTM) |
-| `voicers/src/modules/lstm.rs` | BiLstm (bidirectional LSTM wrapping two mlx-rs Lstm) |
-| `voicers/src/modules/conv_weighted.rs` | Weight-normalized Conv1d/ConvTranspose1d |
-| `voicers/src/modules/ada_norm.rs` | InstanceNorm1d, AdaIN1d, AdaLayerNorm |
-| `voicers/src/modules/vocoder/decoder.rs` | Vocoder Decoder + AdainResBlk1d |
-| `voicers/src/modules/vocoder/generator.rs` | Generator (upsampling + iSTFT synthesis) |
-| `voicers/src/modules/vocoder/source.rs` | SineGen, SourceModuleHnNSF, AdaINResBlock1 |
+| `voice-tts/src/model.rs` | `KokoroModel::generate()` — full forward pass |
+| `voice-tts/src/weights.rs` | HF Hub download, weight sanitization (PyTorch -> mlx-rs) |
+| `voice-tts/src/config.rs` | `ModelConfig`, `AlbertConfig`, `ISTFTNetConfig` |
+| `voice-dsp/src/lib.rs` | STFT, iSTFT (with CPU overlap-add), hanning window, interpolate |
+| `voice-nn/src/lstm.rs` | BiLstm with custom `lstm_forward_recurrent()` — fixes mlx-rs recurrence bug |
+| `voice-nn/src/albert.rs` | ALBERT transformer encoder + `AlbertConfig` |
+| `voice-nn/src/prosody.rs` | ProsodyPredictor, DurationEncoder |
+| `voice-nn/src/text_encoder.rs` | TextEncoder (Conv1d + BiLSTM) |
+| `voice-nn/src/vocoder/` | Decoder, Generator (iSTFT synthesis), SineGen (harmonic source) |
+| `voice-g2p/src/lib.rs` | G2P pipeline + `G2PConfig` for custom tool paths |
+| `voice-g2p/src/lexicon.rs` | 90k gold + 93k silver dictionary lookup with morphology |
+| `voice-g2p/src/tokenizer.rs` | spaCy POS tagging (via `uv run`) + simple fallback |
+| `voice-g2p/src/espeak.rs` | Per-word espeak-ng fallback with misaki E2M mapping |
 
-## Python reference files
+## Critical implementation details
 
-The Python mlx-audio source was used as reference (attached to the workspace at the mlx-audio colombo-v2 workspace):
+### mlx-rs workarounds (voice-nn)
 
-| Rust module | Python source |
-|-------------|--------------|
-| model.rs | `mlx_audio/tts/models/kokoro/kokoro.py` |
-| modules/*.rs | `mlx_audio/tts/models/kokoro/modules.py` |
-| vocoder/*.rs | `mlx_audio/tts/models/kokoro/istftnet.py` |
-| dsp.rs | `mlx_audio/dsp.py` + `mlx_audio/tts/models/interpolate.py` |
-| weights.rs | `mlx_audio/tts/utils.py` + `kokoro.py::sanitize()` |
+- **LSTM recurrence**: mlx-rs `Lstm::step` doesn't propagate hidden/cell state between timesteps (Rust scoping issue — `let hidden = ...` shadows function param but doesn't feed back). Custom `lstm_forward_recurrent()` in `lstm.rs` fixes this.
+- **Dropout eval mode**: mlx-rs `Dropout` defaults to `training=true`. Must call `training_mode(false)` on all modules before inference. Python MLX defaults to eval mode.
+- **Intentional inference dropout**: The prosody predictor uses `mx.dropout(x, p=0.5)` at inference BY DESIGN. This is a raw function call, NOT `nn.Dropout`, so it's not affected by `training_mode`. Do not remove it.
 
-## Weight sanitization
+### iSTFT normalization
 
-The model weights from HuggingFace are in PyTorch format. Key transformations in `weights.rs::sanitize_weights()`:
+- `normalized=false` (simple window, not squared) matches Python mlx-audio
+- iSTFT uses CPU overlap-add because `scatter_add_single` isn't in mlx-rs 0.25.3
+
+### Weight sanitization (`voice-tts/src/weights.rs`)
 
 - `*.position_ids` -> skip
 - `.gamma` -> `.weight`, `.beta` -> `.bias` (LayerNorm)
-- LSTM keys: `weight_ih_l0` -> `forward.wx`, `weight_hh_l0` -> `forward.wh`, reverse variants -> `backward.*`
-- LSTM biases: `bias_ih + bias_hh` combined into single `bias`
+- LSTM: `weight_ih_l0` -> `forward_lstm.wx`, biases combined: `bias_ih + bias_hh`
 - Conv weights with wrong shape: transpose `(0, 2, 1)`
-- `F0_proj.weight`, `N_proj.weight`: transpose `(0, 2, 1)`
-- Decoder noise_convs weights: transpose `(0, 2, 1)`
+- `duration_proj.linear_layer.` -> `duration_proj.`
 
-## Voice embeddings
+### Voice embeddings
 
-Voice files are `(510, 1, 256)` tensors — a lookup table indexed by phoneme count. To get the style vector for N phonemes: `voice[N - 1]` gives `(1, 256)`. The first 128 dims are speaker style, the last 128 are prosody style.
+`(510, 1, 256)` lookup table indexed by `phoneme_count - 1`. First 128 dims = speaker style, last 128 = prosody style.
 
-## Known issues and next steps
+### G2P pipeline (voice-g2p)
 
-### Audio quality
-- Output audio plays but quality hasn't been A/B tested against Python
-- Weight sanitization may have edge cases (check `check_array_shape` logic for conv weight transposition)
-- The `istft` runs overlap-add on CPU because `scatter_add_single` isn't in mlx-rs 0.25.3 (only in unreleased local version). This works but is slower than a GPU-native approach.
+Ported from [misaki](https://github.com/hexgrad/misaki)'s `en.py`:
+1. Tokenize (spaCy via `uv run` preferred, whitespace fallback)
+2. `fold_left` — merge non-head tokens
+3. `retokenize` — subtokenize, handle punctuation/currency
+4. Right-to-left lexicon lookup with `TokenContext` (future_vowel, future_to)
+5. Morphological decomposition: `-s`, `-ed`, `-ing` suffix rules
+6. espeak-ng per-word fallback with E2M mapping table
+7. Legacy conversion: `ɾ→T`, `ʔ→t`
 
-### Missing features
-- **G2P**: `voicers-g2p` is a stub. Need espeak-ng bindings to convert text -> phonemes
-- **Streaming**: No streaming audio output yet
-- **Multiple languages**: Pipeline supports English phonemes only (no misaki/espeak G2P integration)
-- **Speed**: Release builds are fast but the CPU overlap-add in istft could be moved to GPU once mlx-rs publishes scatter_add support
-
-### mlx-rs API gaps (as of 0.25.3)
-- No `scatter_add_single` (available in local unreleased source at the mlx-rs workspace)
-- `Module` trait requires `training_mode()` method on all impls
-- `Builder` trait must be imported for `.build()` calls
-- `Array::from_f32()` for scalars, `Array::from_int()` for i32 scalars
-- `as_dtype()` instead of `as_type()` for type conversion
-- ConvWeighted uses `.T` (full axis reverse `[2,1,0]`) for conv_transpose1d weight matching
+Configurable tool paths via `G2PConfig { uv_path, espeak_path }`.
 
 ## Build and test
 
 ```bash
-# Check compilation
-cargo check --workspace
-
-# Build release
-cargo build --release -p voicers-cli
+# Build
+cargo build --release -p voice-cli
 
 # Run TTS
-cargo run --release -p voicers-cli -- \
-  --phonemes "h ɛ l oʊ" --voice af_heart --output test.wav --play
+voice --text "Hello world" --voice af_heart --play
+
+# Run from source
+cargo run --release -p voice-cli -- --text "Hello world" --voice af_heart --play
+
+# Run G2P tests (112 tests)
+cargo test -p voice-g2p
+
+# Run all tests
+cargo test --workspace
 ```
+
+## Python reference codebases
+
+| Reference | Workspace path |
+|-----------|---------------|
+| mlx-audio (Kokoro) | `colombo-v2` — `mlx_audio/tts/models/kokoro/` |
+| misaki (G2P) | `abuja-v4` — `misaki/en.py` |
+| kokoro (PyTorch) | `montevideo` — `kokoro/` |
+| spaCy | `edinburgh-v3` |
+| mlx-rs | `miami` — `mlx-rs/src/nn/recurrent.rs` (LSTM bug reference) |
 
 ## Dependencies
 
-- `mlx-rs 0.25.3` from crates.io (Metal GPU, safetensors support)
-- `mlx-macros 0.25.3` for `ModuleParameters` derive macro
-- `hf-hub 0.5` for HuggingFace model downloads
-- `hound 3` for WAV writing
-- `rodio 0.20` for audio playback (cli only)
-- `clap 4` for CLI args (cli only)
+- `mlx-rs 0.25.3` — Metal GPU, safetensors (crates.io)
+- `mlx-macros 0.25.3` — `ModuleParameters` derive
+- `hf-hub 0.5` — HuggingFace model downloads + caching
+- `hound 3` — WAV writing
+- `serde` / `serde_json` — config + dictionary parsing
+- `fancy-regex 0.14` — subtokenize with lookahead (G2P)
+- `unicode-normalization 0.1` — NFKC normalization (G2P)
+- `rodio 0.20` — audio playback (CLI only)
+- `clap 4` — CLI args (CLI only)

@@ -19,3 +19,4 @@ clap = { version = "4", features = ["derive"] }
 rodio = "0.22"
 hound = "3"
 pulldown-cmark = "0.13.1"
+ctrlc = "3.5.2"

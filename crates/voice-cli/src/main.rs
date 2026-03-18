@@ -332,6 +332,14 @@ fn collect_subs(
 }
 
 fn main() {
+    // Ctrl+C: print feedback and exit immediately, bypassing slow Drop teardown.
+    // Always prints, even in quiet mode — the user needs to know we heard them.
+    ctrlc::set_handler(|| {
+        eprintln!("\nInterrupted.");
+        std::process::exit(130);
+    })
+    .expect("Failed to set Ctrl+C handler");
+
     let args = Args::parse();
 
     if args.quiet {

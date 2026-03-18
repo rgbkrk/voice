@@ -6,6 +6,7 @@ rust-version = "1.85.0"
 description = "CLI for voice TTS — like say, but with Kokoro"
 license = "MIT"
 repository = "https://github.com/rgbkrk/voicers"
+readme = "../../README.md"
 
 [[bin]]
 name = "voice"

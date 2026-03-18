@@ -1,6 +1,6 @@
 [package]
 name = "voice-nn"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.85.0"
 description = "Neural network modules: ALBERT, BiLSTM, vocoder, prosody"
@@ -11,4 +11,4 @@ repository = "https://github.com/rgbkrk/voicers"
 mlx-rs = { version = "0.25" }
 mlx-macros = "0.25.3"
 serde = { version = "1", features = ["derive"] }
-voice-dsp = { version = "0.1.0", path = "../voice-dsp" }
+voice-dsp = { version = "0.1.1", path = "../voice-dsp" }

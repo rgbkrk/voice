@@ -1,6 +1,6 @@
 [package]
 name = "voice-g2p"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.85.0"
 description = "Grapheme-to-phoneme conversion: misaki dictionary + espeak-ng fallback"

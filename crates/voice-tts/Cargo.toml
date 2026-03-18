@@ -15,5 +15,5 @@ hf-hub = "0.5"
 hound = "3"
 thiserror = "2"
 mlx-macros = "0.25.3"
-voice-dsp = { version = "0.1.0", path = "../voice-dsp" }
-voice-nn = { version = "0.1.0", path = "../voice-nn" }
+voice-dsp = { version = "0.1.1", path = "../voice-dsp" }
+voice-nn = { version = "0.1.1", path = "../voice-nn" }

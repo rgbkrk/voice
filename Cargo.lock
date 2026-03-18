@@ -2930,14 +2930,14 @@ dependencies = [
 
 [[package]]
 name = "voice-dsp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlx-rs",
 ]
 
 [[package]]
 name = "voice-g2p"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fancy-regex",
  "serde",
@@ -2948,7 +2948,7 @@ dependencies = [
 
 [[package]]
 name = "voice-nn"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlx-macros",
  "mlx-rs",

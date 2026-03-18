@@ -1,6 +1,6 @@
 [package]
 name = "voice-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.85.0"
 description = "CLI for voice TTS — like say, but with Kokoro"
@@ -12,7 +12,7 @@ name = "voice"
 path = "src/main.rs"
 
 [dependencies]
-voice-tts = { version = "0.1.0", path = "../voice-tts" }
+voice-tts = { version = "0.1.1", path = "../voice-tts" }
 voice-g2p = { version = "0.1.0", path = "../voice-g2p" }
 clap = { version = "4", features = ["derive"] }
 rodio = "0.22"

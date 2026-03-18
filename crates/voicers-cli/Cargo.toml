@@ -10,3 +10,4 @@ voicers = { path = "../voicers" }
 voicers-g2p = { path = "../voicers-g2p" }
 clap = { version = "4", features = ["derive"] }
 rodio = "0.20"
+hound = "3"

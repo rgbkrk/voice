@@ -2696,40 +2696,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "voicers"
-version = "0.1.0"
-dependencies = [
- "hf-hub",
- "hound",
- "mlx-macros",
- "mlx-rs",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "voicers-dsp",
- "voicers-nn",
-]
-
-[[package]]
-name = "voicers-cli"
+name = "voice-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
  "hound",
  "rodio",
- "voicers",
- "voicers-g2p",
+ "voice-g2p",
+ "voice-tts",
 ]
 
 [[package]]
-name = "voicers-dsp"
+name = "voice-dsp"
 version = "0.1.0"
 dependencies = [
  "mlx-rs",
 ]
 
 [[package]]
-name = "voicers-g2p"
+name = "voice-g2p"
 version = "0.1.0"
 dependencies = [
  "fancy-regex",
@@ -2740,13 +2725,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "voicers-nn"
+name = "voice-nn"
 version = "0.1.0"
 dependencies = [
  "mlx-macros",
  "mlx-rs",
  "serde",
- "voicers-dsp",
+ "voice-dsp",
+]
+
+[[package]]
+name = "voice-tts"
+version = "0.1.0"
+dependencies = [
+ "hf-hub",
+ "hound",
+ "mlx-macros",
+ "mlx-rs",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "voice-dsp",
+ "voice-nn",
 ]
 
 [[package]]

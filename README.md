@@ -1,28 +1,25 @@
-# voicers
+# voice
 
 Rust TTS library backed by [mlx-rs](https://github.com/oxiglade/mlx-rs) (Apple MLX). Currently implements the [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) 82M-parameter TTS model with misaki-compatible G2P.
 
 ## Quick start
 
 ```bash
-# Text to speech (recommended)
-cargo run --release -p voicers-cli -- \
-  --text "Hello world, this is voicers speaking." \
-  --voice af_heart \
-  --play
+# Text to speech
+voice --text "Hello world, this is voice speaking." --voice af_heart --play
 
 # Save to file with different voice and speed
-cargo run --release -p voicers-cli -- \
-  --text "The quick brown fox jumps over the lazy dog." \
-  --voice am_onyx \
-  --speed 0.9 \
-  --output speech.wav
+voice --text "The quick brown fox jumps over the lazy dog." \
+  --voice am_onyx --speed 0.9 --output speech.wav
 
 # Raw phoneme input (advanced)
-cargo run --release -p voicers-cli -- \
-  --phonemes "həlˈO wˈɜɹld" \
-  --voice af_heart \
-  --play
+voice --phonemes "həlˈO wˈɜɹld" --voice af_heart --play
+```
+
+### From source
+
+```bash
+cargo run --release -p voice-cli -- --text "Hello world" --voice af_heart --play
 ```
 
 Model weights are automatically downloaded from HuggingFace Hub and cached in `~/.cache/huggingface/hub/` (shared with Python's `huggingface_hub`).
@@ -32,14 +29,14 @@ Model weights are automatically downloaded from HuggingFace Hub and cached in `~
 ```rust
 use std::path::Path;
 
-fn main() -> voicers::Result<()> {
+fn main() -> voice_tts::Result<()> {
     // Load model and voice (cached from HuggingFace Hub)
-    let mut model = voicers::load_model("prince-canuma/Kokoro-82M")?;
-    let voice = voicers::load_voice("af_heart", None)?;
+    let mut model = voice_tts::load_model("prince-canuma/Kokoro-82M")?;
+    let voice = voice_tts::load_voice("af_heart", None)?;
 
     // Generate from phonemes
-    let audio = voicers::generate(&mut model, "həlˈO wˈɜɹld", &voice, 1.0)?;
-    voicers::save_wav(&audio, Path::new("output.wav"), 24000)?;
+    let audio = voice_tts::generate(&mut model, "həlˈO wˈɜɹld", &voice, 1.0)?;
+    voice_tts::save_wav(&audio, Path::new("output.wav"), 24000)?;
 
     Ok(())
 }
@@ -48,18 +45,18 @@ fn main() -> voicers::Result<()> {
 ### With G2P (text to phonemes)
 
 ```rust
-fn main() -> voicers::Result<()> {
-    let mut model = voicers::load_model("prince-canuma/Kokoro-82M")?;
-    let voice = voicers::load_voice("af_heart", None)?;
+fn main() -> voice_tts::Result<()> {
+    let mut model = voice_tts::load_model("prince-canuma/Kokoro-82M")?;
+    let voice = voice_tts::load_voice("af_heart", None)?;
 
     // Convert text to phoneme chunks (handles the 510-char model limit)
-    let chunks = voicers_g2p::text_to_phoneme_chunks("Hello world, this is a test.")
+    let chunks = voice_g2p::text_to_phoneme_chunks("Hello world, this is a test.")
         .expect("G2P failed");
 
     // Generate and concatenate audio for each chunk
     let mut all_samples: Vec<f32> = Vec::new();
     for phonemes in &chunks {
-        let audio = voicers::generate(&mut model, phonemes, &voice, 1.0)?;
+        let audio = voice_tts::generate(&mut model, phonemes, &voice, 1.0)?;
         all_samples.extend_from_slice(audio.as_slice());
     }
 
@@ -83,7 +80,7 @@ fn main() -> voicers::Result<()> {
 ## CLI options
 
 ```
-voicers-cli [OPTIONS]
+voice [OPTIONS]
 
 Options:
   --text <TEXT>        Plain English text to synthesize
@@ -101,16 +98,16 @@ Options:
 
 ```
 crates/
-  voicers/        Core TTS library — model, config, weights, voice loading
-  voicers-nn/     Neural network modules — ALBERT, BiLSTM, vocoder, prosody
-  voicers-dsp/    DSP primitives — STFT, iSTFT, overlap-add, windowing
-  voicers-g2p/    Grapheme-to-phoneme — misaki dictionary + espeak-ng fallback
-  voicers-cli/    CLI with --play support via rodio
+  voice-tts/    Core TTS library — model, config, weights, voice loading
+  voice-nn/     Neural network modules — ALBERT, BiLSTM, vocoder, prosody
+  voice-dsp/    DSP primitives — STFT, iSTFT, overlap-add, windowing
+  voice-g2p/    Grapheme-to-phoneme — misaki dictionary + espeak-ng fallback
+  voice-cli/    CLI binary (installs as `voice`)
 ```
 
 ## G2P pipeline
 
-The `voicers-g2p` crate ports [misaki](https://github.com/hexgrad/misaki)'s English G2P, which Kokoro was trained on:
+The `voice-g2p` crate ports [misaki](https://github.com/hexgrad/misaki)'s English G2P, which Kokoro was trained on:
 
 - **Dictionary lookup**: 90k gold + 93k silver pronunciation entries embedded at compile time
 - **Morphological decomposition**: -s, -ed, -ing suffix rules with voicing logic

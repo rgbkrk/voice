@@ -7,7 +7,7 @@ use mlx_rs::ops::indexing::IndexOp;
 use mlx_rs::ops::{cumsum, sin, tanh};
 use mlx_rs::Array;
 
-use voicers_dsp::interpolate;
+use voice_dsp::interpolate;
 use crate::ada_norm::AdaIN1d;
 use crate::conv_weighted::ConvWeighted;
 

@@ -2,7 +2,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "voicers", about = "Kokoro TTS from the command line")]
+#[command(name = "voice", about = "Kokoro TTS from the command line")]
 struct Args {
     /// HuggingFace model repo or local path
     #[arg(long, default_value = "prince-canuma/Kokoro-82M")]
@@ -39,7 +39,7 @@ fn main() {
     // Resolve phoneme chunks from either --text or --phonemes
     let phoneme_chunks: Vec<String> = if let Some(text) = &args.text {
         eprintln!("Converting text to phonemes...");
-        match voicers_g2p::text_to_phoneme_chunks(text) {
+        match voice_g2p::text_to_phoneme_chunks(text) {
             Ok(chunks) => {
                 for (i, chunk) in chunks.iter().enumerate() {
                     eprintln!("  chunk {}: {}", i + 1, chunk);
@@ -59,10 +59,10 @@ fn main() {
     };
 
     eprintln!("Loading model from {}...", args.model);
-    let mut model = voicers::load_model(&args.model).expect("Failed to load model");
+    let mut model = voice_tts::load_model(&args.model).expect("Failed to load model");
 
     eprintln!("Loading voice '{}'...", args.voice);
-    let voice = voicers::load_voice(&args.voice, Some(&args.model)).expect("Failed to load voice");
+    let voice = voice_tts::load_voice(&args.voice, Some(&args.model)).expect("Failed to load voice");
 
     let sample_rate = model.sample_rate as u32;
 
@@ -77,7 +77,7 @@ fn main() {
         if phoneme_chunks.len() > 1 {
             eprintln!("  generating chunk {}/{}...", i + 1, phoneme_chunks.len());
         }
-        let audio = voicers::generate(&mut model, phonemes, &voice, args.speed)
+        let audio = voice_tts::generate(&mut model, phonemes, &voice, args.speed)
             .expect("Failed to generate audio");
 
         let samples: Vec<f32> = audio.as_slice().to_vec();

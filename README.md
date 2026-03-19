@@ -20,7 +20,7 @@ cargo install --path crates/voice-cli
 cargo install voice
 ```
 
-> **Note:** `cargo install voice` may fail at runtime with `Failed to load the default metallib` on Apple Silicon. This is an [upstream mlx-sys issue](https://github.com/oxiglade/mlx-rs/issues/100) — the Metal shader library path is baked in at compile time and points to a temp directory that gets cleaned up. Building from source (above) avoids this. If you hit the error, copy the metallib next to the binary:
+> **Note:** `cargo install voice` may fail at runtime with `Failed to load the default metallib` on Apple Silicon. This is an [upstream mlx-sys issue](https://github.com/oxiglade/mlx-rs/issues/327) — the Metal shader library path is baked in at compile time and points to a temp directory that gets cleaned up. Building from source (above) avoids this. If you hit the error, copy the metallib next to the binary:
 >
 > ```bash
 > cp target/release/build/mlx-sys-*/out/build/_deps/mlx-build/mlx/backend/metal/kernels/mlx.metallib ~/.cargo/bin/

@@ -6,9 +6,25 @@ Faster time-to-first-speech than macOS `say`, with dramatically better audio qua
 
 ## Install
 
+### From source (recommended)
+
+```bash
+git clone https://github.com/rgbkrk/voicers.git
+cd voicers
+cargo install --path crates/voice-cli
+```
+
+### From crates.io
+
 ```bash
 cargo install voice
 ```
+
+> **Note:** `cargo install voice` may fail at runtime with `Failed to load the default metallib` on Apple Silicon. This is an [upstream mlx-sys issue](https://github.com/oxiglade/mlx-rs/issues/100) — the Metal shader library path is baked in at compile time and points to a temp directory that gets cleaned up. Building from source (above) avoids this. If you hit the error, copy the metallib next to the binary:
+>
+> ```bash
+> cp target/release/build/mlx-sys-*/out/build/_deps/mlx-build/mlx/backend/metal/kernels/mlx.metallib ~/.cargo/bin/
+> ```
 
 This puts the `voice` binary on your `$PATH`. Model weights (~312MB) are downloaded from HuggingFace Hub on first run and cached in `~/.cache/huggingface/hub/`. Seven popular voices and the model config are embedded in the binary — no network needed for common use.
 

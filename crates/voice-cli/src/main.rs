@@ -422,9 +422,28 @@ fn main() {
     let mut model = match model_handle.join().expect("model loading thread panicked") {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Failed to load model: {e}");
-            eprintln!("The model will be downloaded from HuggingFace on first run.");
-            eprintln!("Check your network connection and try again.");
+            let msg = format!("{e}");
+            if msg.contains("metallib") || msg.contains("metal") {
+                eprintln!("Failed to load model: {e}");
+                eprintln!();
+                eprintln!("This is a known issue with `cargo install` on Apple Silicon.");
+                eprintln!("The MLX Metal shader library (mlx.metallib) was not copied");
+                eprintln!("next to the installed binary.");
+                eprintln!();
+                eprintln!("Fix: build from source instead:");
+                eprintln!();
+                eprintln!("  git clone https://github.com/rgbkrk/voicers.git");
+                eprintln!("  cd voicers");
+                eprintln!("  cargo install --path crates/voice-cli");
+                eprintln!();
+                eprintln!("Or copy the metallib manually:");
+                eprintln!();
+                eprintln!("  cp target/release/build/mlx-sys-*/out/build/_deps/mlx-build/mlx/backend/metal/kernels/mlx.metallib ~/.cargo/bin/");
+            } else {
+                eprintln!("Failed to load model: {e}");
+                eprintln!("The model will be downloaded from HuggingFace on first run.");
+                eprintln!("Check your network connection and try again.");
+            }
             std::process::exit(1);
         }
     };

@@ -1237,7 +1237,7 @@ mod tests {
 
     #[test]
     fn test_float_to_words() {
-        let result = float_to_words(3.14);
+        let result = float_to_words(std::f64::consts::PI);
         assert!(result.starts_with("three point"));
     }
 

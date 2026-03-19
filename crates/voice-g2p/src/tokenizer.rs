@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn subtokenize_apostrophe() {
         let result = subtokenize("don't");
-        assert!(result.len() >= 1, "Should handle apostrophe: {:?}", result);
+        assert!(!result.is_empty(), "Should handle apostrophe: {:?}", result);
     }
 
     #[test]

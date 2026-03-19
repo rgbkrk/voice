@@ -10,7 +10,7 @@ fn test_istft_roundtrip() {
     let signal: Vec<f32> = (0..n_samples)
         .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin() * 0.5)
         .collect();
-    let signal_arr = Array::from_slice(&signal, &[n_samples as i32]);
+    let signal_arr = Array::from_slice(&signal, &[n_samples]);
 
     let n_fft = 20;
     let hop = 5;

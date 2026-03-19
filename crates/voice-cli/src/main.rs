@@ -2,7 +2,7 @@ use clap::Parser;
 use pulldown_cmark::{Event, Options, Parser as MdParser, Tag, TagEnd};
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
@@ -337,7 +337,56 @@ fn collect_subs(
     (text_subs, phoneme_overrides)
 }
 
+/// Ensure `mlx.metallib` is co-located with the voice binary.
+///
+/// MLX searches for the metallib next to the running binary before falling back
+/// to the compile-time `METAL_PATH`. When installed via `cargo install`, the
+/// compile-time path points to a deleted temp directory. This function copies
+/// the metallib from `~/.mlx/lib/` (where our build.rs places it) to sit next
+/// to the binary, making the co-located search succeed.
+fn ensure_metallib() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let exe_dir = match exe.parent() {
+        Some(d) => d,
+        None => return,
+    };
+
+    let colocated = exe_dir.join("mlx.metallib");
+    if colocated.exists() {
+        return; // Already there — nothing to do
+    }
+
+    // Check the stable location where build.rs copies it
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let stable = Path::new(&home)
+        .join(".mlx")
+        .join("lib")
+        .join("mlx.metallib");
+    if !stable.exists() {
+        return; // Not available — the error will be caught later with a helpful message
+    }
+
+    // Copy to sit next to the binary
+    if let Err(e) = std::fs::copy(&stable, &colocated) {
+        // Non-fatal — the model load error handler will print guidance
+        eprintln!(
+            "Note: could not copy mlx.metallib to {}: {}",
+            colocated.display(),
+            e
+        );
+    }
+}
+
 fn main() {
+    // Ensure MLX metallib is discoverable (fixes `cargo install` from crates.io)
+    ensure_metallib();
+
     // Ctrl+C: set flag for cooperative cancellation. The generation loops
     // check this between chunks and exit cleanly, letting MLX finish its
     // current kernel before tearing down. Always prints, even in quiet mode.

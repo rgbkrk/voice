@@ -17,6 +17,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Force bindgen to use Xcode's clang instead of homebrew's llvm@15,
+      # which lacks __bf16 support needed by mlx-sys.
+      - name: Set LIBCLANG_PATH
+        run: |
+          TOOLCHAIN=$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain
+          echo "LIBCLANG_PATH=${TOOLCHAIN}/usr/lib" >> "$GITHUB_ENV"
+
       - uses: actions/cache@v5
         with:
           path: |

@@ -1,5 +1,10 @@
 //! Microphone recording and speech-to-text transcription.
 //!
+//! Debug: set `VOICE_SAVE_RECORDING=1` to save mic audio to `/tmp/voice_recording.wav`.
+//!
+//! Leading silence is automatically trimmed to handle Bluetooth mic latency
+//! (AirPods can take ~0.5-1s before the mic starts capturing real audio).
+//!
 //! Captures audio from the default input device, then runs Moonshine STT
 //! to produce a transcription. Two modes:
 //!
@@ -149,30 +154,118 @@ pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
             samples.len(),
             sample_rate
         );
+
+        // Audio level diagnostics
+        if !samples.is_empty() {
+            let max_abs = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+            let nonzero = samples.iter().filter(|s| s.abs() > 1e-8).count();
+            eprintln!(
+                "Audio levels: peak={:.6}, rms={:.6}, nonzero={}/{}",
+                max_abs,
+                rms,
+                nonzero,
+                samples.len()
+            );
+            if max_abs < 0.001 {
+                eprintln!(
+                    "⚠️  Audio is nearly silent (peak={:.6}). Check your mic input level.",
+                    max_abs
+                );
+            }
+        }
+    }
+
+    // Save recording to WAV for debugging if requested
+    if std::env::var("VOICE_SAVE_RECORDING").is_ok() {
+        let debug_path = "/tmp/voice_recording.wav";
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        if let Ok(mut writer) = hound::WavWriter::create(debug_path, spec) {
+            for &s in &samples {
+                let _ = writer.write_sample(s);
+            }
+            let _ = writer.finalize();
+            eprintln!("Saved recording to {debug_path}");
+        }
     }
 
     Ok((samples, sample_rate))
 }
 
+/// Trim leading and trailing silence from audio samples.
+///
+/// Bluetooth microphones (e.g. AirPods) can take ~0.5-1s before audio
+/// actually flows, producing a block of zeros at the start. Moonshine
+/// is sensitive to the silence-to-speech ratio, especially on short
+/// recordings — trimming silence dramatically improves accuracy.
+///
+/// Uses a simple energy threshold: finds the first and last sample
+/// whose absolute value exceeds `threshold`, then keeps a small
+/// `padding` of extra samples on each side for natural attack/release.
+fn trim_silence(samples: &[f32], sample_rate: u32) -> Vec<f32> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+
+    // Threshold: samples below this absolute value are considered silence.
+    // -40 dBFS ≈ 0.01 amplitude — conservative enough to keep quiet speech.
+    let threshold: f32 = 0.01;
+
+    // Padding: keep 100ms of context around detected speech edges.
+    let padding = (sample_rate as usize) / 10;
+
+    let first_voice = samples.iter().position(|s| s.abs() > threshold);
+    let last_voice = samples.iter().rposition(|s| s.abs() > threshold);
+
+    match (first_voice, last_voice) {
+        (Some(start), Some(end)) => {
+            let start = start.saturating_sub(padding);
+            let end = (end + padding).min(samples.len());
+            samples[start..end].to_vec()
+        }
+        _ => {
+            // All silence — return empty
+            Vec::new()
+        }
+    }
+}
+
+/// Default STT model. Override with `STT_MODEL` env var.
+/// moonshine-base (61M) is noticeably better than tiny (27M) for real mic audio.
+const DEFAULT_STT_MODEL: &str = "UsefulSensors/moonshine-base";
+
+fn stt_model_repo() -> String {
+    std::env::var("STT_MODEL").unwrap_or_else(|_| DEFAULT_STT_MODEL.to_string())
+}
+
 /// Record from mic, transcribe with Moonshine, and print the result.
 ///
 /// This is the main entry point for `voice listen`.
+///
+/// Uses moonshine-base by default. Override with `STT_MODEL` env var:
+///   STT_MODEL=UsefulSensors/moonshine-tiny voice listen
 pub fn listen_and_transcribe() {
-    // Load the STT model
+    let repo = stt_model_repo();
+
     if !QUIET.load(Ordering::Relaxed) {
-        eprintln!("Loading speech-to-text model...");
+        eprintln!("Loading speech-to-text model ({repo})...");
     }
 
-    let mut model = match voice_stt::load_model("UsefulSensors/moonshine-tiny") {
+    let mut model = match voice_stt::load_model(&repo) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Failed to load STT model: {e}");
-            eprintln!("Model weights (~108MB) will be downloaded from HuggingFace on first run.");
+            eprintln!("Model weights will be downloaded from HuggingFace on first run.");
             std::process::exit(1);
         }
     };
 
-    let tokenizer = match voice_stt::load_tokenizer("UsefulSensors/moonshine-tiny") {
+    let tokenizer = match voice_stt::load_tokenizer(&repo) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("Failed to load tokenizer: {e}");
@@ -198,9 +291,29 @@ pub fn listen_and_transcribe() {
         return;
     }
 
+    // Trim leading/trailing silence (Bluetooth mic latency, pauses)
+    let original_len = samples.len();
+    let samples = trim_silence(&samples, sample_rate);
+    let trimmed_duration = samples.len() as f32 / sample_rate as f32;
+
+    if !QUIET.load(Ordering::Relaxed) {
+        let original_duration = original_len as f32 / sample_rate as f32;
+        if samples.len() < original_len {
+            eprintln!(
+                "Trimmed silence: {:.1}s → {:.1}s of speech",
+                original_duration, trimmed_duration
+            );
+        }
+    }
+
+    if samples.is_empty() {
+        eprintln!("No speech detected in recording.");
+        return;
+    }
+
     // Transcribe
     if !QUIET.load(Ordering::Relaxed) {
-        eprintln!("Transcribing...");
+        eprintln!("Transcribing {:.1}s of audio...", trimmed_duration);
     }
 
     let result = match voice_stt::transcribe_audio_with_tokenizer(
@@ -232,11 +345,13 @@ pub fn listen_and_transcribe() {
 ///
 /// Entry point for `voice --transcribe <file>`.
 pub fn transcribe_file(path: &str) {
+    let repo = stt_model_repo();
+
     if !QUIET.load(Ordering::Relaxed) {
-        eprintln!("Loading speech-to-text model...");
+        eprintln!("Loading speech-to-text model ({repo})...");
     }
 
-    let mut model = match voice_stt::load_model("UsefulSensors/moonshine-tiny") {
+    let mut model = match voice_stt::load_model(&repo) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Failed to load STT model: {e}");
@@ -244,7 +359,7 @@ pub fn transcribe_file(path: &str) {
         }
     };
 
-    let tokenizer = match voice_stt::load_tokenizer("UsefulSensors/moonshine-tiny") {
+    let tokenizer = match voice_stt::load_tokenizer(&repo) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("Failed to load tokenizer: {e}");

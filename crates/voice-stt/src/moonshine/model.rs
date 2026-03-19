@@ -53,11 +53,7 @@ impl MoonshineRotaryEmbedding {
     /// - Returns: `(cos, sin)` each shape `[B, T, rotary_ndims]`
     pub fn forward(&self, position_ids: &Array) -> Result<(Array, Array), Exception> {
         // position_ids: [B, T] -> [B, T, 1]
-        let pos = position_ids.reshape(&[
-            position_ids.shape()[0] as i32,
-            position_ids.shape()[1] as i32,
-            1,
-        ])?;
+        let pos = position_ids.reshape(&[position_ids.shape()[0], position_ids.shape()[1], 1])?;
         let pos = pos.as_dtype(mlx_rs::Dtype::Float32)?;
 
         // inv_freq: [dim/2] -> [1, 1, dim/2]
@@ -168,6 +164,7 @@ pub struct MoonshineAttention {
 }
 
 impl MoonshineAttention {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         hidden_size: usize,
         num_heads: usize,
@@ -232,8 +229,8 @@ impl MoonshineAttention {
         cache: Option<&(Array, Array)>,
         position_ids: Option<&Array>,
     ) -> Result<(Array, (Array, Array)), Exception> {
-        let b = x.shape()[0] as i32;
-        let t = x.shape()[1] as i32;
+        let b = x.shape()[0];
+        let t = x.shape()[1];
         let is_cross_attention = encoder_hidden_states.is_some();
 
         let q = self.q_proj.forward(x)?;
@@ -249,7 +246,7 @@ impl MoonshineAttention {
 
         // Reshape to [B, T, num_heads, head_dim] then transpose to [B, num_heads, T, head_dim]
         let q = q.reshape(&[b, t, nh, hd])?.transpose_axes(&[0, 2, 1, 3])?;
-        let s = k.shape()[1] as i32;
+        let s = k.shape()[1];
         let mut k = k.reshape(&[b, s, nkv, hd])?.transpose_axes(&[0, 2, 1, 3])?;
         let mut v = v.reshape(&[b, s, nkv, hd])?.transpose_axes(&[0, 2, 1, 3])?;
 
@@ -259,12 +256,12 @@ impl MoonshineAttention {
                 p.clone()
             } else {
                 let offset = if let Some(c) = cache {
-                    c.0.shape()[2] as i32
+                    c.0.shape()[2]
                 } else {
                     0
                 };
                 let pos_range = Array::from_iter(offset..offset + t, &[t]);
-                pos_range.reshape(&[1, t as i32])?
+                pos_range.reshape(&[1, t])?
             };
 
             let (cos, sin) = self.rotary_emb.forward(&pos)?;
@@ -301,7 +298,7 @@ impl MoonshineAttention {
         // Causal mask for decoder self-attention
         let mask = if self.is_causal && t > 1 {
             let causal = nn::MultiHeadAttention::create_additive_causal_mask::<f32>(t)?;
-            let klen = k_exp.shape()[2] as i32;
+            let klen = k_exp.shape()[2];
             if klen > t {
                 // Prefix zeros for cached keys
                 let prefix = Array::zeros::<f32>(&[t, klen - t])?;
@@ -393,7 +390,7 @@ impl MoonshineDecoderMLP {
 
     pub fn forward(&mut self, x: &Array) -> Result<Array, Exception> {
         let h = self.fc1.forward(x)?;
-        let mid = h.shape().last().copied().unwrap_or(0) as i32;
+        let mid = h.shape().last().copied().unwrap_or(0);
         let half = mid / 2;
 
         // Split into value and gate halves
@@ -476,6 +473,9 @@ impl MoonshineEncoderLayer {
 // Decoder layer
 // ---------------------------------------------------------------------------
 
+/// Output of a single decoder layer: `(hidden_states, self_attn_cache, cross_attn_cache)`.
+type DecoderLayerOutput = (Array, (Array, Array), (Array, Array));
+
 /// A single Moonshine decoder transformer layer.
 ///
 /// Three sub-blocks:
@@ -551,7 +551,7 @@ impl MoonshineDecoderLayer {
         encoder_hidden_states: &Array,
         self_attn_cache: Option<&(Array, Array)>,
         cross_attn_cache: Option<&(Array, Array)>,
-    ) -> Result<(Array, (Array, Array), (Array, Array)), Exception> {
+    ) -> Result<DecoderLayerOutput, Exception> {
         // 1. Causal self-attention
         let residual = x.clone();
         let h = self.input_layernorm.forward(x)?;
@@ -650,7 +650,7 @@ impl MoonshineEncoder {
         };
 
         // [B, T] -> [B, T, 1] for Conv1d (channel-last in MLX)
-        let x = audio.reshape(&[audio.shape()[0] as i32, audio.shape()[1] as i32, 1])?;
+        let x = audio.reshape(&[audio.shape()[0], audio.shape()[1], 1])?;
 
         // Conv frontend with progressive downsampling
         let x = self.conv1.forward(&x)?;
@@ -890,7 +890,7 @@ impl MoonshineModel {
         for (key, value) in weights {
             // Strip "model." prefix
             let new_key = if key.starts_with("model.") {
-                key[6..].to_string()
+                key.strip_prefix("model.").unwrap().to_string()
             } else if key.starts_with("proj_out.") && self.config.tie_word_embeddings {
                 continue;
             } else {

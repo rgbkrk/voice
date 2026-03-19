@@ -6,25 +6,22 @@ Faster time-to-first-speech than macOS `say`, with dramatically better audio qua
 
 ## Install
 
-### From source (recommended)
+Build from source (requires Git LFS for embedded voice/model data):
 
 ```bash
+# Install git-lfs if you don't have it
+brew install git-lfs
+git lfs install
+
+# Clone and build
 git clone https://github.com/rgbkrk/voicers.git
 cd voicers
 cargo install --path crates/voice-cli
 ```
 
-### From crates.io
+> **Why not `cargo install voice`?** The Metal shader library path is baked in at compile time by mlx-sys and points to a temp directory that gets cleaned up after install. This is an [upstream mlx-rs issue](https://github.com/oxiglade/mlx-rs/issues/327). Building from source avoids this entirely.
 
-```bash
-cargo install voice
-```
-
-> **Note:** `cargo install voice` may fail at runtime with `Failed to load the default metallib` on Apple Silicon. This is an [upstream mlx-sys issue](https://github.com/oxiglade/mlx-rs/issues/327) — the Metal shader library path is baked in at compile time and points to a temp directory that gets cleaned up. Building from source (above) avoids this. If you hit the error, copy the metallib next to the binary:
->
-> ```bash
-> cp target/release/build/mlx-sys-*/out/build/_deps/mlx-build/mlx/backend/metal/kernels/mlx.metallib ~/.cargo/bin/
-> ```
+> **Why git-lfs?** Voice data (`.safetensors`) and tagger weights are stored with Git LFS. Without it, those files are tiny pointers instead of actual data — the build will catch this and tell you what to do.
 
 This puts the `voice` binary on your `$PATH`. Model weights (~312MB) are downloaded from HuggingFace Hub on first run and cached in `~/.cache/huggingface/hub/`. Seven popular voices and the model config are embedded in the binary — no network needed for common use.
 
@@ -54,12 +51,6 @@ voice --markdown -f blog-post.mdx
 
 # Raw phoneme input
 voice --phonemes "həlˈO wˈɜɹld"
-```
-
-### From source
-
-```bash
-cargo install --path crates/voice-cli
 ```
 
 ## CLI options
@@ -243,18 +234,16 @@ Model loading runs in a background thread while text resolution, G2P, and voice 
 
 - macOS with Apple Silicon (MLX requirement)
 - Rust 1.85+
+- Git LFS (`brew install git-lfs && git lfs install`)
 - Xcode command line tools (for MLX Metal compilation)
 - Xcode license accepted: `sudo xcodebuild -license`
 - Metal Toolchain (Xcode 17+): `xcodebuild -downloadComponent MetalToolchain`
 - espeak-ng (optional, for G2P fallback on unknown words): `brew install espeak-ng`
-- git-lfs when building from source: `brew install git-lfs; git lfs install; git lfs install --system`
 
-> **Fresh Mac?** If `cargo install voice` fails with linker errors mentioning
-> "You have not agreed to the Xcode license agreements", run
-> `sudo xcodebuild -license`. If it fails with "cannot execute tool 'metal'
-> due to missing Metal Toolchain", run
-> `xcodebuild -downloadComponent MetalToolchain`. Then retry the install.
-> Also, when compiling from source, a "Failed to parse tagger weights.json" error indicates git-lfs was not installed before the repo was cloned (several large files in the repo will only have internal git-lfs references rather than the full file contents).
+> **Fresh Mac?** If the build fails with linker errors mentioning "You have not
+> agreed to the Xcode license agreements", run `sudo xcodebuild -license`.
+> If it fails with "cannot execute tool 'metal' due to missing Metal Toolchain",
+> run `xcodebuild -downloadComponent MetalToolchain`. Then retry the build.
 
 ## License
 

@@ -1,0 +1,18 @@
+[package]
+name = "voice-stt"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+description = "Speech-to-text library backed by MLX, starting with Moonshine"
+license = "MIT"
+repository = "https://github.com/rgbkrk/voicers"
+
+[dependencies]
+mlx-rs = { version = "0.25", features = ["safetensors"] }
+mlx-macros = "0.25.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hf-hub = "0.5"
+hound = "3"
+thiserror = "2"
+tokenizers = "0.21"

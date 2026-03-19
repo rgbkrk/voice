@@ -62,15 +62,26 @@ fn find_metallib(build_dir: &Path) -> Option<PathBuf> {
     // build_dir is something like: target/release/build/voice-HASH/out
     // We want:                     target/release/build/mlx-sys-HASH/out/build/lib/mlx.metallib
     // So go up to target/release/build/ and glob from there.
-    let build_root = build_dir
-        .parent()? // voice-HASH/
-        .parent()?; // build/
+    println!("cargo:warning=[metallib] OUT_DIR = {}", build_dir.display());
+
+    let voice_hash = build_dir.parent()?; // voice-HASH/
+    let build_root = voice_hash.parent()?; // build/
+
+    println!(
+        "cargo:warning=[metallib] scanning build root: {}",
+        build_root.display()
+    );
 
     let entries = fs::read_dir(build_root).ok()?;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         if name_str.starts_with("mlx-sys-") {
+            println!(
+                "cargo:warning=[metallib] found mlx-sys dir: {}",
+                entry.path().display()
+            );
+
             // Check the known locations where CMake puts the metallib
             let candidates = [
                 entry.path().join("out/build/lib/mlx.metallib"),
@@ -79,13 +90,55 @@ fn find_metallib(build_dir: &Path) -> Option<PathBuf> {
                     .join("out/build/_deps/mlx-build/mlx/backend/metal/kernels/mlx.metallib"),
             ];
             for candidate in &candidates {
-                if candidate.exists() {
+                let exists = candidate.exists();
+                println!(
+                    "cargo:warning=[metallib]   {} (exists={})",
+                    candidate.display(),
+                    exists
+                );
+                if exists {
                     return Some(candidate.clone());
                 }
             }
+
+            // Neither known path worked — walk the mlx-sys output to find it
+            println!("cargo:warning=[metallib]   known paths missed, walking mlx-sys output...");
+            if let Some(found) = walk_for_metallib(&entry.path()) {
+                println!(
+                    "cargo:warning=[metallib]   found via walk: {}",
+                    found.display()
+                );
+                return Some(found);
+            }
+            println!("cargo:warning=[metallib]   walk found nothing");
         }
     }
 
+    println!("cargo:warning=[metallib] no mlx-sys directory found in build root");
+    None
+}
+
+/// Recursively walk a directory tree looking for a file named `mlx.metallib`.
+fn walk_for_metallib(dir: &Path) -> Option<PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = match fs::read_dir(&current) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .file_name()
+                .map(|f| f == "mlx.metallib")
+                .unwrap_or(false)
+            {
+                return Some(path);
+            }
+        }
+    }
     None
 }
 
@@ -104,10 +157,13 @@ fn main() {
 
     // Find the metallib from mlx-sys's build output
     let metallib_src = match find_metallib(&out_dir) {
-        Some(p) => p,
+        Some(p) => {
+            println!("cargo:warning=[metallib] using: {}", p.display());
+            p
+        }
         None => {
             println!(
-                "cargo:warning=Could not find mlx.metallib in build output. \
+                "cargo:warning=[metallib] Could not find mlx.metallib in build output. \
                  `cargo install` users may need to copy it manually."
             );
             return;

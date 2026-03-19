@@ -2984,13 +2984,15 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voice"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "clap",
  "ctrlc",
  "hound",
  "pulldown-cmark",
  "rodio",
+ "serde",
+ "serde_json",
  "voice-g2p",
  "voice-tts",
 ]
@@ -3004,7 +3006,7 @@ dependencies = [
 
 [[package]]
 name = "voice-g2p"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "fancy-regex",
  "serde",
@@ -3025,7 +3027,7 @@ dependencies = [
 
 [[package]]
 name = "voice-tts"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hf-hub",
  "hound",

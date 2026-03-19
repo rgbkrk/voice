@@ -578,7 +578,7 @@ pub fn listen_and_transcribe_vad(
             }
         };
 
-    if samples.is_empty() {
+    if INTERRUPTED.load(Ordering::Relaxed) || samples.is_empty() {
         return None;
     }
 

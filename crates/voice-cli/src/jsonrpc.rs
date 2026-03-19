@@ -403,11 +403,16 @@ fn handle_cancel() -> Result<Value, RpcErr> {
 }
 
 fn handle_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
-    let p: ListenParams = serde_json::from_value(params).unwrap_or(ListenParams {
-        max_duration_ms: None,
-        silence_timeout_ms: None,
-        silence_threshold: None,
-    });
+    let p: ListenParams = if params.is_null() {
+        ListenParams {
+            max_duration_ms: None,
+            silence_timeout_ms: None,
+            silence_threshold: None,
+        }
+    } else {
+        serde_json::from_value(params)
+            .map_err(|e| RpcErr::invalid_params(format!("bad listen params: {e}")))?
+    };
 
     let max_duration = p.max_duration_ms.unwrap_or(30_000);
     let silence_timeout = p.silence_timeout_ms.unwrap_or(2_000);

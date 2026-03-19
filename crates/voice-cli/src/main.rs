@@ -94,11 +94,11 @@ struct Args {
 
     /// Record from microphone and transcribe (speech-to-text).
     /// Also triggered by `voice listen` as the first positional arg.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["text", "input_file", "phonemes", "jsonrpc", "transcribe"])]
     listen: bool,
 
     /// Transcribe a WAV audio file (speech-to-text).
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["text", "input_file", "phonemes", "jsonrpc", "listen"])]
     transcribe: Option<PathBuf>,
 }
 

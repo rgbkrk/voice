@@ -6,9 +6,9 @@ The agent responds with a simple echo/commentary for now — swap in an
 LLM API call to make it actually intelligent.
 
 Usage:
-    python3 .context/conversation.py
-    python3 .context/conversation.py --voice am_michael
-    python3 .context/conversation.py --max-turns 5
+    python3 examples/conversation.py
+    python3 examples/conversation.py --voice am_michael
+    python3 examples/conversation.py --max-turns 5
 """
 
 import argparse

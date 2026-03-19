@@ -891,11 +891,14 @@ impl MoonshineModel {
             // Strip "model." prefix
             let new_key = if key.starts_with("model.") {
                 key.strip_prefix("model.").unwrap().to_string()
-            } else if key.starts_with("proj_out.") && self.config.tie_word_embeddings {
-                continue;
             } else {
                 key
             };
+
+            // Skip proj_out when tied embeddings (checked after prefix strip)
+            if new_key.starts_with("proj_out.") && self.config.tie_word_embeddings {
+                continue;
+            }
 
             // Transpose Conv1d weights: PyTorch [out, in, kernel] -> MLX [out, kernel, in]
             let value =

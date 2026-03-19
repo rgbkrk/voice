@@ -168,13 +168,13 @@ pub fn transcribe_audio(
     samples: &[f32],
     sample_rate: u32,
 ) -> Result<TranscribeResult> {
-    if sample_rate != 16000 {
-        return Err(SttError::Audio(format!(
-            "Expected 16kHz audio, got {sample_rate}Hz. Resampling not yet implemented."
-        )));
-    }
+    let samples = if sample_rate != 16000 {
+        resample_linear(samples, sample_rate, 16000)
+    } else {
+        samples.to_vec()
+    };
 
-    let audio = Array::from_slice(samples, &[samples.len() as i32]);
+    let audio = Array::from_slice(&samples, &[samples.len() as i32]);
 
     let tokens = model.generate(&audio, 200).map_err(SttError::Mlx)?;
 
@@ -201,13 +201,13 @@ pub fn transcribe_audio_with_tokenizer(
     sample_rate: u32,
     tokenizer: &tokenizers::Tokenizer,
 ) -> Result<TranscribeResult> {
-    if sample_rate != 16000 {
-        return Err(SttError::Audio(format!(
-            "Expected 16kHz audio, got {sample_rate}Hz. Resampling not yet implemented."
-        )));
-    }
+    let samples = if sample_rate != 16000 {
+        resample_linear(samples, sample_rate, 16000)
+    } else {
+        samples.to_vec()
+    };
 
-    let audio = Array::from_slice(samples, &[samples.len() as i32]);
+    let audio = Array::from_slice(&samples, &[samples.len() as i32]);
 
     let tokens = model.generate(&audio, 200).map_err(SttError::Mlx)?;
 
@@ -286,15 +286,46 @@ fn load_wav_as_f32(path: &Path) -> Result<Vec<f32>> {
         samples
     };
 
-    // Resample if needed (for now, just check)
-    if spec.sample_rate != 16000 {
-        return Err(SttError::Audio(format!(
-            "WAV sample rate is {}Hz, expected 16000Hz. Resampling not yet implemented.",
-            spec.sample_rate
-        )));
-    }
+    // Resample to 16kHz if needed
+    let mono = if spec.sample_rate != 16000 {
+        resample_linear(&mono, spec.sample_rate, 16000)
+    } else {
+        mono
+    };
 
     Ok(mono)
+}
+
+/// Linear interpolation resampling.
+///
+/// Good enough for STT which is robust to minor audio artifacts.
+/// For production quality, consider `rubato` or polyphase filtering.
+pub fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    if from_rate == to_rate || samples.is_empty() {
+        return samples.to_vec();
+    }
+
+    let ratio = from_rate as f64 / to_rate as f64;
+    let out_len = (samples.len() as f64 / ratio).ceil() as usize;
+    let mut output = Vec::with_capacity(out_len);
+
+    for i in 0..out_len {
+        let src_pos = i as f64 * ratio;
+        let idx = src_pos as usize;
+        let frac = src_pos - idx as f64;
+
+        let sample = if idx + 1 < samples.len() {
+            samples[idx] as f64 * (1.0 - frac) + samples[idx + 1] as f64 * frac
+        } else if idx < samples.len() {
+            samples[idx] as f64
+        } else {
+            0.0
+        };
+
+        output.push(sample as f32);
+    }
+
+    output
 }
 
 /// Fallback token decoder when no tokenizer is available.

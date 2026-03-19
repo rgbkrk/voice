@@ -244,7 +244,15 @@ Model loading runs in a background thread while text resolution, G2P, and voice 
 - macOS with Apple Silicon (MLX requirement)
 - Rust 1.85+
 - Xcode command line tools (for MLX Metal compilation)
+- Xcode license accepted: `sudo xcodebuild -license`
+- Metal Toolchain (Xcode 17+): `xcodebuild -downloadComponent MetalToolchain`
 - espeak-ng (optional, for G2P fallback on unknown words): `brew install espeak-ng`
+
+> **Fresh Mac?** If `cargo install voice` fails with linker errors mentioning
+> "You have not agreed to the Xcode license agreements", run
+> `sudo xcodebuild -license`. If it fails with "cannot execute tool 'metal'
+> due to missing Metal Toolchain", run
+> `xcodebuild -downloadComponent MetalToolchain`. Then retry the install.
 
 ## License
 

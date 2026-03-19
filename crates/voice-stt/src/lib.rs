@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 pub use error::{Result, SttError};
 pub use mlx_rs::Array;
 pub use moonshine::{MoonshineConfig, MoonshineModel};
+pub use tokenizers;
 
 /// Result of a transcription.
 #[derive(Debug, Clone)]

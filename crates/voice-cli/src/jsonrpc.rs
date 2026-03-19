@@ -7,7 +7,8 @@
 //! ## Methods
 //!
 //! - `speak`        — Generate and play audio from text or phonemes.
-//! - `cancel`       — Interrupt the current utterance's playback.
+//! - `listen`       — Record from mic (VAD auto-stop), transcribe, return text.
+//! - `cancel`       — Interrupt the current utterance's playback or recording.
 //! - `set_voice`    — Change the session's default voice.
 //! - `set_speed`    — Change the session's default speed.
 //! - `list_voices`  — Return the list of builtin voice names.
@@ -43,8 +44,8 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use crate::{
-    apply_substitutions, apply_tech_subs, collect_subs, interrupted, strip_markdown, INTERRUPTED,
-    QUIET,
+    apply_substitutions, apply_tech_subs, collect_subs, interrupted, listen, strip_markdown,
+    INTERRUPTED, QUIET,
 };
 
 // ── JSON-RPC 2.0 types ────────────────────────────────────────────────
@@ -149,6 +150,16 @@ struct SetSpeedParams {
     speed: f32,
 }
 
+#[derive(Debug, Deserialize)]
+struct ListenParams {
+    /// Maximum recording duration in milliseconds (default: 30000).
+    max_duration_ms: Option<u64>,
+    /// Stop after this many ms of silence following speech (default: 2000).
+    silence_timeout_ms: Option<u64>,
+    /// Amplitude threshold for voice activity detection (default: 0.01).
+    silence_threshold: Option<f32>,
+}
+
 // ── Session state ──────────────────────────────────────────────────────
 
 struct Session {
@@ -162,6 +173,10 @@ struct Session {
     phoneme_overrides: HashMap<String, String>,
     /// Cache of loaded voices so we don't re-load on every `speak`.
     voice_cache: HashMap<String, voice_tts::Array>,
+    /// Lazily-loaded STT model (only initialized on first `listen` call).
+    stt_model: Option<voice_stt::MoonshineModel>,
+    /// Lazily-loaded STT tokenizer.
+    stt_tokenizer: Option<voice_stt::tokenizers::Tokenizer>,
 }
 
 impl Session {
@@ -218,6 +233,8 @@ pub fn run(config: ServerConfig) {
         subs,
         phoneme_overrides,
         voice_cache,
+        stt_model: None,
+        stt_tokenizer: None,
     };
 
     let mut stdout = io::stdout();
@@ -330,6 +347,7 @@ fn dispatch(
 ) -> Option<Response> {
     let result = match method {
         "speak" => handle_speak(session, stdout, params),
+        "listen" => handle_listen(session, params),
         "cancel" => handle_cancel(),
         "set_voice" => handle_set_voice(session, params),
         "set_speed" => handle_set_speed(session, params),
@@ -382,6 +400,71 @@ impl RpcErr {
 fn handle_cancel() -> Result<Value, RpcErr> {
     INTERRUPTED.store(true, Ordering::SeqCst);
     Ok(serde_json::json!({"cancelled": true}))
+}
+
+fn handle_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
+    let p: ListenParams = serde_json::from_value(params).unwrap_or(ListenParams {
+        max_duration_ms: None,
+        silence_timeout_ms: None,
+        silence_threshold: None,
+    });
+
+    let max_duration = p.max_duration_ms.unwrap_or(30_000);
+    let silence_timeout = p.silence_timeout_ms.unwrap_or(2_000);
+    let threshold = p.silence_threshold.unwrap_or(0.01);
+
+    // Lazily load STT model on first listen call
+    if session.stt_model.is_none() {
+        let repo = std::env::var("STT_MODEL")
+            .unwrap_or_else(|_| "UsefulSensors/moonshine-base".to_string());
+
+        if !QUIET.load(Ordering::Relaxed) {
+            eprintln!("Loading STT model ({repo})...");
+        }
+
+        let model = voice_stt::load_model(&repo)
+            .map_err(|e| RpcErr::internal(format!("Failed to load STT model: {e}")))?;
+        let tokenizer = voice_stt::load_tokenizer(&repo)
+            .map_err(|e| RpcErr::internal(format!("Failed to load tokenizer: {e}")))?;
+
+        session.stt_model = Some(model);
+        session.stt_tokenizer = Some(tokenizer);
+
+        if !QUIET.load(Ordering::Relaxed) {
+            eprintln!("STT model loaded.");
+        }
+    }
+
+    let stt_model = session.stt_model.as_mut().unwrap();
+    let stt_tokenizer = session.stt_tokenizer.as_ref().unwrap();
+
+    let started = Instant::now();
+
+    let result = listen::listen_and_transcribe_vad(
+        stt_model,
+        stt_tokenizer,
+        max_duration,
+        silence_timeout,
+        threshold,
+    );
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    // Reset interrupt flag after listen completes
+    INTERRUPTED.store(false, Ordering::Relaxed);
+
+    match result {
+        Some(r) => Ok(serde_json::json!({
+            "text": r.text,
+            "tokens": r.tokens.len(),
+            "duration_ms": duration_ms,
+        })),
+        None => Ok(serde_json::json!({
+            "text": "",
+            "tokens": 0,
+            "duration_ms": duration_ms,
+        })),
+    }
 }
 
 fn handle_speak(

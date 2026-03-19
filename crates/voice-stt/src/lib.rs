@@ -22,6 +22,7 @@
 //! Moonshine uses a learned Conv1d audio frontend instead of mel spectrograms,
 //! so raw 16kHz audio goes directly into the encoder with no DSP preprocessing.
 
+pub mod builtin;
 pub mod error;
 pub mod moonshine;
 
@@ -56,9 +57,14 @@ pub fn load_model(path_or_repo: &str) -> Result<MoonshineModel> {
         download_model(path_or_repo)?
     };
 
-    let config_path = model_dir.join("config.json");
-    let config_str = std::fs::read_to_string(&config_path)?;
-    let config: MoonshineConfig = serde_json::from_str(&config_str)?;
+    // Use embedded config if available, otherwise read from disk
+    let config: MoonshineConfig = if let Some(result) = builtin::config_for_repo(path_or_repo) {
+        result?
+    } else {
+        let config_path = model_dir.join("config.json");
+        let config_str = std::fs::read_to_string(&config_path)?;
+        serde_json::from_str(&config_str)?
+    };
 
     let mut model = MoonshineModel::new(&config).map_err(SttError::Mlx)?;
 
@@ -109,6 +115,11 @@ pub fn load_model(path_or_repo: &str) -> Result<MoonshineModel> {
 ///
 /// Moonshine uses a HuggingFace fast tokenizer stored as `tokenizer.json`.
 pub fn load_tokenizer(path_or_repo: &str) -> Result<tokenizers::Tokenizer> {
+    // Use embedded tokenizer if available
+    if let Some(result) = builtin::tokenizer_for_repo(path_or_repo) {
+        return result;
+    }
+
     let model_dir = if Path::new(path_or_repo).exists() {
         PathBuf::from(path_or_repo)
     } else {
@@ -167,9 +178,14 @@ pub fn transcribe_audio(
 
     let tokens = model.generate(&audio, 200).map_err(SttError::Mlx)?;
 
-    // Decode tokens to text using the tokenizer if available,
-    // otherwise fall back to a basic ASCII decode.
-    let text = decode_tokens_fallback(&tokens);
+    // Try embedded tokenizer first, then fall back to ASCII decode
+    let text = if let Ok(tokenizer) = builtin::builtin_tokenizer() {
+        tokenizer
+            .decode(&tokens, true)
+            .unwrap_or_else(|_| decode_tokens_fallback(&tokens))
+    } else {
+        decode_tokens_fallback(&tokens)
+    };
 
     Ok(TranscribeResult {
         text,

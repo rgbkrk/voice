@@ -1,3 +1,6 @@
 [workspace]
 members = ["crates/*"]
 resolver = "2"
+
+[patch.crates-io]
+mlx-sys = { git = "https://github.com/rgbkrk/mlx-rs.git", branch = "fix/metallib-cargo-install-v0.25" }

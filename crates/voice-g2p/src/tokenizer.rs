@@ -14,21 +14,38 @@ use crate::tagger;
 use crate::token::MToken;
 
 /// Characters that should be split off the **end** of a word token.
-const TRAILING_PUNCT: &str = ".!?…,;:)—\u{201D}\u{201E}\u{2019}";
+const TRAILING_PUNCT: &str = ".!?…,;:)—\"\u{201D}\u{201E}\u{2019}";
 
 /// Characters that should be split off the **start** of a word token.
-const LEADING_PUNCT: &str = "($£€¥\u{201C}\u{2018}";
+const LEADING_PUNCT: &str = "($£€¥\"\u{201C}\u{2018}";
 
 /// Returns true if every character in `s` is a punctuation character from PUNCTS.
 fn is_all_puncts(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| PUNCTS.contains(c))
 }
 
-/// Returns true if every character in `s` is a digit, comma, or dot.
+/// Returns true if `s` looks like a number (digits with optional commas/dots).
+///
+/// A trailing dot with no digit after it is NOT number-like — that's a
+/// sentence-ending period (e.g. `"3."` → `["3", "."]`), matching spaCy's
+/// behaviour. Internal dots with digits on both sides are fine (`"3.14"`).
 fn is_number_like(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_digit() || c == ',' || c == '.')
+    if s.is_empty() {
+        return false;
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == ',' || c == '.')
+    {
+        return false;
+    }
+    // Must contain at least one digit
+    if !s.chars().any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    // Trailing dot/comma without a following digit → not a number
+    // (e.g. "3." is sentence-ending, "3," is a list)
+    !s.ends_with('.') && !s.ends_with(',')
 }
 
 /// Returns true if every character in `s` is a currency symbol.
@@ -40,6 +57,10 @@ fn is_currency(s: &str) -> bool {
 fn simple_tag(text: &str) -> &'static str {
     if is_currency(text) {
         "$"
+    } else if text == "(" {
+        "-LRB-"
+    } else if text == ")" {
+        "-RRB-"
     } else if is_all_puncts(text) {
         // Classify punctuation
         let first = text.chars().next().unwrap();
@@ -59,21 +80,68 @@ fn simple_tag(text: &str) -> &'static str {
     }
 }
 
+/// Assign a POS tag for a leading (opening) punctuation character.
+///
+/// Matches spaCy's tagging: `(` → `-LRB-`, `"` → ` `` `, etc.
+fn leading_punct_tag(text: &str) -> &'static str {
+    match text {
+        "(" => "-LRB-",
+        "\"" | "\u{201C}" | "\u{2018}" => "``",
+        _ => simple_tag(text),
+    }
+}
+
+/// Assign a POS tag for a trailing (closing) punctuation character.
+///
+/// Matches spaCy's tagging: `)` → `-RRB-`, `"` → `''`, etc.
+fn trailing_punct_tag(text: &str) -> &'static str {
+    match text {
+        ")" => "-RRB-",
+        "\"" | "\u{201D}" | "\u{201E}" | "\u{2019}" => "''",
+        _ => simple_tag(text),
+    }
+}
+
 /// Split leading and trailing punctuation from a word token into separate tokens.
 ///
 /// For example, `"Hello,"` (with whitespace `" "`) becomes:
 ///   - `MToken { text: "Hello", whitespace: "", tag: "DEFAULT" }`
 ///   - `MToken { text: ",",     whitespace: " ", tag: "," }`
 ///
-/// Tokens that are already pure punctuation, pure numbers, or pure currency
-/// are returned as-is (no splitting).
+/// Pure-punctuation tokens like `"!?!?"` or `"..."` are split into individual
+/// characters so each one maps to its own model pause token.
+///
+/// Number-like and currency tokens are returned as-is.
 fn split_punct(word: &str, whitespace: &str) -> Vec<MToken> {
-    // Don't split tokens that are already classified as non-word
-    if is_all_puncts(word) || is_number_like(word) || is_currency(word) || word.is_empty() {
+    if word.is_empty() || is_number_like(word) || is_currency(word) {
         let tag = simple_tag(word);
         let mut tok = MToken::new(word, tag, whitespace);
         tok.underscore.is_head = true;
         return vec![tok];
+    }
+
+    // Pure-punctuation tokens: split into individual characters so each maps
+    // to its own model vocab entry (e.g. "!?!?" → ["!", "?", "!", "?"],
+    // "..." → [".", ".", "."]). Single-char punct passes through as-is.
+    if is_all_puncts(word) {
+        let chars: Vec<char> = word.chars().collect();
+        if chars.len() == 1 {
+            let tag = simple_tag(word);
+            let mut tok = MToken::new(word, tag, whitespace);
+            tok.underscore.is_head = true;
+            return vec![tok];
+        }
+        let mut result = Vec::new();
+        for (i, ch) in chars.iter().enumerate() {
+            let s: String = std::iter::once(*ch).collect();
+            let is_last = i == chars.len() - 1;
+            let tok_ws = if is_last { whitespace } else { "" };
+            let tag = simple_tag(&s);
+            let mut tok = MToken::new(&s, tag, tok_ws);
+            tok.underscore.is_head = true;
+            result.push(tok);
+        }
+        return result;
     }
 
     let chars: Vec<char> = word.chars().collect();
@@ -92,12 +160,25 @@ fn split_punct(word: &str, whitespace: &str) -> Vec<MToken> {
         .take_while(|c| TRAILING_PUNCT.contains(**c))
         .count();
 
-    // If splitting would consume the entire token, don't split
+    // If leading + trailing consume the entire token (e.g. "()", "\"\""),
+    // emit each character individually with positional tags rather than
+    // returning the whole thing as one opaque token.
     if leading + trailing >= len {
-        let tag = simple_tag(word);
-        let mut tok = MToken::new(word, tag, whitespace);
-        tok.underscore.is_head = true;
-        return vec![tok];
+        let mut result = Vec::new();
+        for (i, ch) in chars.iter().enumerate() {
+            let s: String = std::iter::once(*ch).collect();
+            let is_last = i == chars.len() - 1;
+            let tok_ws = if is_last { whitespace } else { "" };
+            let tag = if LEADING_PUNCT.contains(*ch) {
+                leading_punct_tag(&s)
+            } else {
+                trailing_punct_tag(&s)
+            };
+            let mut tok = MToken::new(&s, tag, tok_ws);
+            tok.underscore.is_head = true;
+            result.push(tok);
+        }
+        return result;
     }
 
     let mut result = Vec::new();
@@ -105,7 +186,7 @@ fn split_punct(word: &str, whitespace: &str) -> Vec<MToken> {
     // Emit leading punct tokens (one per character, like spaCy)
     for i in 0..leading {
         let ch: String = chars[i..=i].iter().collect();
-        let tag = simple_tag(&ch);
+        let tag = leading_punct_tag(&ch);
         let mut tok = MToken::new(&ch, tag, "");
         tok.underscore.is_head = true;
         result.push(tok);
@@ -126,7 +207,7 @@ fn split_punct(word: &str, whitespace: &str) -> Vec<MToken> {
             .collect();
         let is_last = i == trailing - 1;
         let tok_ws = if is_last { whitespace } else { "" };
-        let tag = simple_tag(&ch);
+        let tag = trailing_punct_tag(&ch);
         let mut tok = MToken::new(&ch, tag, tok_ws);
         tok.underscore.is_head = true;
         result.push(tok);
@@ -571,12 +652,99 @@ mod tests {
     }
 
     #[test]
-    fn pure_punct_not_split() {
+    fn pure_punct_split_into_chars() {
+        // "..." → three separate "." tokens
         let tokens = tokenize_simple("...");
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].text, ".");
+        assert_eq!(tokens[1].text, ".");
+        assert_eq!(tokens[2].text, ".");
+    }
+
+    #[test]
+    fn pure_mixed_punct_split() {
+        let tokens = tokenize_simple("!?!?");
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0].text, "!");
+        assert_eq!(tokens[1].text, "?");
+        assert_eq!(tokens[2].text, "!");
+        assert_eq!(tokens[3].text, "?");
+    }
+
+    #[test]
+    fn single_punct_not_split_further() {
+        let tokens = tokenize_simple(".");
         assert_eq!(tokens.len(), 1);
-        assert_eq!(tokens[0].text, "...");
+        assert_eq!(tokens[0].text, ".");
         assert_eq!(tokens[0].tag, ".");
     }
+
+    #[test]
+    fn split_parens_with_tags() {
+        let tokens = tokenize_simple("(Hello)");
+        assert_eq!(tokens[0].text, "(");
+        assert_eq!(tokens[0].tag, "-LRB-");
+        assert_eq!(tokens[2].text, ")");
+        assert_eq!(tokens[2].tag, "-RRB-");
+    }
+
+    #[test]
+    fn split_ascii_quotes() {
+        let tokens = tokenize_simple("\"Hello\"");
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].text, "\"");
+        assert_eq!(tokens[0].tag, "``"); // opening
+        assert_eq!(tokens[2].text, "\"");
+        assert_eq!(tokens[2].tag, "''"); // closing
+    }
+
+    #[test]
+    fn split_quoted_sentence_with_period() {
+        // She said, "hello." → She | said | , | " | hello | . | "
+        let tokens = tokenize_simple("She said, \"hello.\"");
+        let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+        assert!(texts.contains(&","), "comma should be split: {texts:?}");
+        assert!(texts.contains(&"."), "period should be split: {texts:?}");
+        assert!(
+            texts.iter().filter(|t| **t == "\"").count() == 2,
+            "two quotes should be split: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn split_number_trailing_period() {
+        // "3." at end of sentence → ["3", "."] (period is sentence-ending, not decimal)
+        // Matches spaCy: "I have 3." → [I, have, 3, .]
+        let tokens = tokenize_simple("I have 3.");
+        let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+        assert!(texts.contains(&"3"), "number should be separate: {texts:?}");
+        assert!(texts.contains(&"."), "period should be split: {texts:?}");
+    }
+
+    #[test]
+    fn no_split_decimal_number() {
+        // "3.14" stays together — dot has digits on both sides
+        let tokens = tokenize_simple("He scored 3.14 points.");
+        let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+        assert!(
+            texts.contains(&"3.14"),
+            "decimal should stay together: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn split_number_trailing_comma() {
+        // "Buy 3, get 1" → "3" and "," split
+        let tokens = tokenize_simple("Buy 3, get 1.");
+        let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+        assert!(texts.contains(&"3"), "number should be separate: {texts:?}");
+        assert!(texts.contains(&","), "comma should be split: {texts:?}");
+    }
+
+    // Known edge cases: pure-punctuation inputs like "...", "()", "!?!?" are
+    // degenerate (no words). They pass through as single tokens via
+    // is_all_puncts/simple_tag but may produce empty or unexpected phonemes
+    // downstream. This is acceptable — these inputs don't occur in real speech.
 
     #[test]
     fn simple_currency() {

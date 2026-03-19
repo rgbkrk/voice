@@ -7,6 +7,7 @@
 //! ## Methods
 //!
 //! - `speak`        — Generate and play audio from text or phonemes.
+//! - `cancel`       — Interrupt the current utterance's playback.
 //! - `set_voice`    — Change the session's default voice.
 //! - `set_speed`    — Change the session's default speed.
 //! - `list_voices`  — Return the list of builtin voice names.
@@ -36,6 +37,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::num::NonZero;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::time::Instant;
 
 use crate::{
@@ -186,7 +188,18 @@ pub struct ServerConfig {
     pub sub_file_path: Option<std::path::PathBuf>,
 }
 
+/// Parsed message from the stdin reader thread.
+enum StdinMsg {
+    Request(Request),
+    ParseError(String),
+    Closed,
+}
+
 /// Run the JSON-RPC stdio server. Blocks until stdin is closed or interrupted.
+///
+/// Stdin is read on a dedicated thread so that `cancel` requests can arrive
+/// while a `speak` call is still generating/playing audio. The main loop
+/// pulls parsed messages from an mpsc channel.
 pub fn run(config: ServerConfig) {
     let (subs, phoneme_overrides) = collect_subs(&config.cli_subs, config.sub_file_path.as_deref());
 
@@ -205,56 +218,102 @@ pub fn run(config: ServerConfig) {
         voice_cache,
     };
 
-    let stdin = io::stdin();
     let mut stdout = io::stdout();
 
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("voice jsonrpc server ready");
     }
 
-    for line in stdin.lock().lines() {
-        if interrupted() {
-            break;
-        }
-
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("stdin read error: {e}");
+    // Spawn a reader thread so stdin isn't blocked while speak is running.
+    // This lets `cancel` arrive mid-playback.
+    let (tx, rx) = mpsc::channel::<StdinMsg>();
+    std::thread::spawn(move || {
+        let stdin = io::stdin();
+        for line in stdin.lock().lines() {
+            let msg = match line {
+                Ok(l) => {
+                    let l = l.trim().to_string();
+                    if l.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<Request>(&l) {
+                        Ok(req) => {
+                            // Set the interrupt flag immediately on the reader
+                            // thread so it takes effect while speak is blocked
+                            // on the main thread.
+                            if req.method == "cancel" {
+                                INTERRUPTED.store(true, Ordering::SeqCst);
+                            }
+                            StdinMsg::Request(req)
+                        }
+                        Err(e) => StdinMsg::ParseError(format!("Parse error: {e}")),
+                    }
+                }
+                Err(_) => StdinMsg::Closed,
+            };
+            let is_closed = matches!(msg, StdinMsg::Closed);
+            if tx.send(msg).is_err() || is_closed {
                 break;
             }
-        };
-
-        let line = line.trim().to_string();
-        if line.is_empty() {
-            continue;
         }
+        // EOF — signal the main loop
+        let _ = tx.send(StdinMsg::Closed);
+    });
 
-        // Parse JSON
-        let req: Request = match serde_json::from_str(&line) {
-            Ok(r) => r,
-            Err(e) => {
-                let resp = Response::error(Value::Null, PARSE_ERROR, format!("Parse error: {e}"));
-                write_response(&mut stdout, &resp);
-                continue;
-            }
-        };
-
-        let is_notification = req.id.is_none();
-        let id = req.id.clone().unwrap_or(Value::Null);
-
-        let resp = dispatch(&mut session, &req.method, req.params, id);
-
-        // Notifications don't get responses per JSON-RPC 2.0
-        if !is_notification {
-            if let Some(resp) = resp {
+    // Main dispatch loop — drains the channel, handles requests.
+    // Between speak chunks we also drain any queued cancel requests
+    // via the interrupted() flag (set by handle_cancel or Ctrl+C).
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            StdinMsg::Closed => break,
+            StdinMsg::ParseError(e) => {
+                let resp = Response::error(Value::Null, PARSE_ERROR, e);
                 write_response(&mut stdout, &resp);
             }
-        }
+            StdinMsg::Request(req) => {
+                let is_notification = req.id.is_none();
+                let id = req.id.clone().unwrap_or(Value::Null);
 
-        // Reset interrupt flag so Ctrl+C during playback only cancels the
-        // current utterance, not the whole server.
-        INTERRUPTED.store(false, Ordering::Relaxed);
+                let resp = dispatch(&mut session, &req.method, req.params, id);
+
+                if !is_notification {
+                    if let Some(resp) = resp {
+                        write_response(&mut stdout, &resp);
+                    }
+                }
+
+                // Reset so the next speak isn't pre-cancelled.
+                INTERRUPTED.store(false, Ordering::Relaxed);
+
+                // Drain any requests that arrived while we were busy (e.g.
+                // a cancel that came in right at the tail end of playback).
+                drain_pending(&rx, &mut session, &mut stdout);
+            }
+        }
+    }
+}
+
+/// Process any already-queued messages without blocking.
+fn drain_pending(rx: &mpsc::Receiver<StdinMsg>, session: &mut Session, stdout: &mut io::Stdout) {
+    loop {
+        match rx.try_recv() {
+            Ok(StdinMsg::Request(req)) => {
+                let is_notification = req.id.is_none();
+                let id = req.id.clone().unwrap_or(Value::Null);
+                let resp = dispatch(session, &req.method, req.params, id);
+                if !is_notification {
+                    if let Some(resp) = resp {
+                        write_response(stdout, &resp);
+                    }
+                }
+                INTERRUPTED.store(false, Ordering::Relaxed);
+            }
+            Ok(StdinMsg::ParseError(e)) => {
+                let resp = Response::error(Value::Null, PARSE_ERROR, e);
+                write_response(stdout, &resp);
+            }
+            _ => break, // empty or closed
+        }
     }
 }
 
@@ -263,6 +322,7 @@ pub fn run(config: ServerConfig) {
 fn dispatch(session: &mut Session, method: &str, params: Value, id: Value) -> Option<Response> {
     let result = match method {
         "speak" => handle_speak(session, params),
+        "cancel" => handle_cancel(),
         "set_voice" => handle_set_voice(session, params),
         "set_speed" => handle_set_speed(session, params),
         "list_voices" => handle_list_voices(),
@@ -310,6 +370,11 @@ impl RpcErr {
 }
 
 // ── Method handlers ────────────────────────────────────────────────────
+
+fn handle_cancel() -> Result<Value, RpcErr> {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+    Ok(serde_json::json!({"cancelled": true}))
+}
 
 fn handle_speak(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
     let p: SpeakParams =

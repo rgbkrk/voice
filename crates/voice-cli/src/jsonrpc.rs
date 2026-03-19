@@ -19,8 +19,10 @@
 //! → {"jsonrpc":"2.0","method":"speak","params":{"text":"Hello world"},"id":1}
 //! ← {"jsonrpc":"2.0","result":{"duration_ms":1840,"chunks":1},"id":1}
 //!
-//! → {"jsonrpc":"2.0","method":"speak","params":{"text":"# Heading\n\nSome *bold* text","markdown":true,"detail":"full"},"id":2}
-//! ← {"jsonrpc":"2.0","result":{"duration_ms":2100,"chunks":1,"phonemes":["..."]},"id":2}
+//! → {"jsonrpc":"2.0","method":"speak","params":{"text":"Hello. How are you?","detail":"full"},"id":2}
+//! ← {"jsonrpc":"2.0","method":"speak.progress","params":{"chunk":1,"total":2,"phonemes":"həlˈO."}}
+//! ← {"jsonrpc":"2.0","method":"speak.progress","params":{"chunk":2,"total":2,"phonemes":"hˌaʊ ɑːɹ ɪU?"}}
+//! ← {"jsonrpc":"2.0","result":{"duration_ms":2100,"chunks":2,"phonemes":["həlˈO.","hˌaʊ ɑːɹ ɪU?"]},"id":2}
 //!
 //! → {"jsonrpc":"2.0","method":"set_voice","params":{"voice":"am_michael"},"id":3}
 //! ← {"jsonrpc":"2.0","result":{"voice":"am_michael"},"id":3}
@@ -274,7 +276,7 @@ pub fn run(config: ServerConfig) {
                 let is_notification = req.id.is_none();
                 let id = req.id.clone().unwrap_or(Value::Null);
 
-                let resp = dispatch(&mut session, &req.method, req.params, id);
+                let resp = dispatch(&mut session, &mut stdout, &req.method, req.params, id);
 
                 if !is_notification {
                     if let Some(resp) = resp {
@@ -300,7 +302,7 @@ fn drain_pending(rx: &mpsc::Receiver<StdinMsg>, session: &mut Session, stdout: &
             Ok(StdinMsg::Request(req)) => {
                 let is_notification = req.id.is_none();
                 let id = req.id.clone().unwrap_or(Value::Null);
-                let resp = dispatch(session, &req.method, req.params, id);
+                let resp = dispatch(session, stdout, &req.method, req.params, id);
                 if !is_notification {
                     if let Some(resp) = resp {
                         write_response(stdout, &resp);
@@ -319,9 +321,15 @@ fn drain_pending(rx: &mpsc::Receiver<StdinMsg>, session: &mut Session, stdout: &
 
 // ── Dispatch ───────────────────────────────────────────────────────────
 
-fn dispatch(session: &mut Session, method: &str, params: Value, id: Value) -> Option<Response> {
+fn dispatch(
+    session: &mut Session,
+    stdout: &mut io::Stdout,
+    method: &str,
+    params: Value,
+    id: Value,
+) -> Option<Response> {
     let result = match method {
-        "speak" => handle_speak(session, params),
+        "speak" => handle_speak(session, stdout, params),
         "cancel" => handle_cancel(),
         "set_voice" => handle_set_voice(session, params),
         "set_speed" => handle_set_speed(session, params),
@@ -376,7 +384,11 @@ fn handle_cancel() -> Result<Value, RpcErr> {
     Ok(serde_json::json!({"cancelled": true}))
 }
 
-fn handle_speak(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
+fn handle_speak(
+    session: &mut Session,
+    stdout: &mut io::Stdout,
+    params: Value,
+) -> Result<Value, RpcErr> {
     let p: SpeakParams =
         serde_json::from_value(params).map_err(|e| RpcErr::invalid_params(e.to_string()))?;
 
@@ -422,8 +434,9 @@ fn handle_speak(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
     };
 
     // Generate and play
+    let detail_full = p.detail == Detail::Full;
     let started = Instant::now();
-    stream_chunks(session, voice, &chunks, speed)?;
+    stream_chunks(session, stdout, voice, &chunks, speed, detail_full)?;
     let duration_ms = started.elapsed().as_millis() as u64;
 
     let mut result = serde_json::json!({
@@ -479,9 +492,11 @@ fn handle_list_voices() -> Result<Value, RpcErr> {
 
 fn stream_chunks(
     session: &mut Session,
+    stdout: &mut io::Stdout,
     voice: &voice_tts::Array,
     chunks: &[String],
     speed: f32,
+    progress: bool,
 ) -> Result<(), RpcErr> {
     use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
 
@@ -502,6 +517,17 @@ fn stream_chunks(
         }
         if chunks.len() > 1 && !QUIET.load(Ordering::Relaxed) {
             eprintln!("  generating chunk {}/{}...", i + 1, chunks.len());
+        }
+        if progress {
+            write_notification(
+                stdout,
+                "speak.progress",
+                serde_json::json!({
+                    "chunk": i + 1,
+                    "total": chunks.len(),
+                    "phonemes": phonemes,
+                }),
+            );
         }
         match voice_tts::generate(&mut session.model, phonemes, voice, speed) {
             Ok(audio) => {
@@ -535,6 +561,18 @@ fn stream_chunks(
 fn write_response(stdout: &mut io::Stdout, resp: &Response) {
     // Unwrap is fine — our Response type is always serializable.
     let json = serde_json::to_string(resp).unwrap();
+    let _ = writeln!(stdout, "{json}");
+    let _ = stdout.flush();
+}
+
+/// Emit a server-initiated notification (no `id`).
+fn write_notification(stdout: &mut io::Stdout, method: &str, params: Value) {
+    let msg = serde_json::json!({
+        "jsonrpc": JSONRPC_VERSION,
+        "method": method,
+        "params": params,
+    });
+    let json = serde_json::to_string(&msg).unwrap();
     let _ = writeln!(stdout, "{json}");
     let _ = stdout.flush();
 }

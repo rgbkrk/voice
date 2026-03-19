@@ -141,7 +141,7 @@ fn resolve_text(args: &Args) -> Result<String, String> {
 /// Keeps text content from paragraphs, headings, list items, and block quotes.
 /// Drops code blocks, inline code, images, HTML, and link URLs (keeps link text).
 /// Handles YAML frontmatter (--- delimited) by skipping it before parsing.
-fn strip_markdown(text: &str) -> String {
+pub(crate) fn strip_markdown(text: &str) -> String {
     // Strip YAML frontmatter before passing to pulldown-cmark
     let text = strip_frontmatter(text);
 
@@ -510,16 +510,16 @@ fn main() {
 
     if args.jsonrpc {
         let sub_file = args.sub_file.clone().or_else(find_sub_file);
-        jsonrpc::run(
+        jsonrpc::run(jsonrpc::ServerConfig {
             model,
             voice,
-            args.voice.clone(),
-            args.speed,
+            voice_name: args.voice.clone(),
+            speed: args.speed,
             sample_rate,
-            MODEL_REPO,
-            &args.subs,
-            sub_file.as_deref(),
-        );
+            repo_id: MODEL_REPO.to_string(),
+            cli_subs: args.subs.clone(),
+            sub_file_path: sub_file,
+        });
         return;
     }
 

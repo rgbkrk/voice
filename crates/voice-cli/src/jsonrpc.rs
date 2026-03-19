@@ -16,13 +16,13 @@
 //!
 //! ```jsonl
 //! → {"jsonrpc":"2.0","method":"speak","params":{"text":"Hello world"},"id":1}
-//! ← {"jsonrpc":"2.0","result":{"duration_ms":1840},"id":1}
+//! ← {"jsonrpc":"2.0","result":{"duration_ms":1840,"chunks":1},"id":1}
 //!
-//! → {"jsonrpc":"2.0","method":"set_voice","params":{"voice":"am_michael"},"id":2}
-//! ← {"jsonrpc":"2.0","result":{"voice":"am_michael"},"id":2}
+//! → {"jsonrpc":"2.0","method":"speak","params":{"text":"# Heading\n\nSome *bold* text","markdown":true,"return_phonemes":true},"id":2}
+//! ← {"jsonrpc":"2.0","result":{"duration_ms":2100,"chunks":1,"phonemes":["..."]},"id":2}
 //!
-//! → {"jsonrpc":"2.0","method":"speak","params":{"text":"Now in a different voice"},"id":3}
-//! ← {"jsonrpc":"2.0","result":{"duration_ms":2100},"id":3}
+//! → {"jsonrpc":"2.0","method":"set_voice","params":{"voice":"am_michael"},"id":3}
+//! ← {"jsonrpc":"2.0","result":{"voice":"am_michael"},"id":3}
 //!
 //! → {"jsonrpc":"2.0","method":"list_voices","id":4}
 //! ← {"jsonrpc":"2.0","result":{"voices":["af_heart","af_bella","af_sarah","af_sky","am_michael","am_adam","bf_emma"]},"id":4}
@@ -38,7 +38,10 @@ use std::num::NonZero;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use crate::{apply_substitutions, apply_tech_subs, collect_subs, interrupted, INTERRUPTED, QUIET};
+use crate::{
+    apply_substitutions, apply_tech_subs, collect_subs, interrupted, strip_markdown, INTERRUPTED,
+    QUIET,
+};
 
 // ── JSON-RPC 2.0 types ────────────────────────────────────────────────
 
@@ -116,6 +119,12 @@ struct SpeakParams {
     voice: Option<String>,
     /// Override speed for this utterance only.
     speed: Option<f32>,
+    /// Strip markdown/MDX formatting before G2P conversion.
+    #[serde(default)]
+    markdown: bool,
+    /// Include the phoneme chunks in the response.
+    #[serde(default)]
+    return_phonemes: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,29 +165,33 @@ impl Session {
 
 // ── Public entry point ─────────────────────────────────────────────────
 
+/// Configuration for starting the JSON-RPC server, bundled to avoid
+/// passing too many positional arguments.
+pub struct ServerConfig {
+    pub model: voice_tts::KokoroModel,
+    pub voice: voice_tts::Array,
+    pub voice_name: String,
+    pub speed: f32,
+    pub sample_rate: u32,
+    pub repo_id: String,
+    pub cli_subs: Vec<String>,
+    pub sub_file_path: Option<std::path::PathBuf>,
+}
+
 /// Run the JSON-RPC stdio server. Blocks until stdin is closed or interrupted.
-pub fn run(
-    model: voice_tts::KokoroModel,
-    voice: voice_tts::Array,
-    voice_name: String,
-    speed: f32,
-    sample_rate: u32,
-    repo_id: &str,
-    cli_subs: &[String],
-    sub_file_path: Option<&std::path::Path>,
-) {
-    let (subs, phoneme_overrides) = collect_subs(cli_subs, sub_file_path);
+pub fn run(config: ServerConfig) {
+    let (subs, phoneme_overrides) = collect_subs(&config.cli_subs, config.sub_file_path.as_deref());
 
     let mut voice_cache = HashMap::new();
-    voice_cache.insert(voice_name.clone(), voice.clone());
+    voice_cache.insert(config.voice_name.clone(), config.voice.clone());
 
     let mut session = Session {
-        model,
-        voice,
-        voice_name,
-        speed,
-        sample_rate,
-        repo_id: repo_id.to_string(),
+        model: config.model,
+        voice: config.voice,
+        voice_name: config.voice_name,
+        speed: config.speed,
+        sample_rate: config.sample_rate,
+        repo_id: config.repo_id,
         subs,
         phoneme_overrides,
         voice_cache,
@@ -298,9 +311,7 @@ fn handle_speak(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
 
     // Determine which voice to use
     let voice_ref: *const voice_tts::Array = if let Some(ref name) = p.voice {
-        session
-            .get_voice(name)
-            .map_err(|e| RpcErr::invalid_params(e))? as *const _
+        session.get_voice(name).map_err(RpcErr::invalid_params)? as *const _
     } else {
         &session.voice as *const _
     };
@@ -314,7 +325,12 @@ fn handle_speak(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
     let chunks: Vec<String> = if let Some(ref phonemes) = p.phonemes {
         vec![phonemes.clone()]
     } else if let Some(ref text) = p.text {
-        let text = apply_tech_subs(text);
+        let text = if p.markdown {
+            strip_markdown(text)
+        } else {
+            text.clone()
+        };
+        let text = apply_tech_subs(&text);
         let text = if session.subs.is_empty() {
             text
         } else {
@@ -337,10 +353,16 @@ fn handle_speak(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
     stream_chunks(session, voice, &chunks, speed)?;
     let duration_ms = started.elapsed().as_millis() as u64;
 
-    Ok(serde_json::json!({
+    let mut result = serde_json::json!({
         "duration_ms": duration_ms,
         "chunks": chunks.len(),
-    }))
+    });
+
+    if p.return_phonemes {
+        result["phonemes"] = serde_json::json!(chunks);
+    }
+
+    Ok(result)
 }
 
 fn handle_set_voice(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
@@ -350,7 +372,7 @@ fn handle_set_voice(session: &mut Session, params: Value) -> Result<Value, RpcEr
     // Pre-load to validate the voice exists
     let voice = session
         .get_voice(&p.voice)
-        .map_err(|e| RpcErr::invalid_params(e))?
+        .map_err(RpcErr::invalid_params)?
         .clone();
 
     session.voice = voice;

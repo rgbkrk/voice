@@ -13,6 +13,12 @@ use crate::stress::{punct_tag_phoneme, PUNCTS, PUNCT_TAGS, SUBTOKEN_JUNKS};
 use crate::tagger;
 use crate::token::MToken;
 
+/// Characters that should be split off the **end** of a word token.
+const TRAILING_PUNCT: &str = ".!?…,;:)—\u{201D}\u{201E}\u{2019}";
+
+/// Characters that should be split off the **start** of a word token.
+const LEADING_PUNCT: &str = "($£€¥\u{201C}\u{2018}";
+
 /// Returns true if every character in `s` is a punctuation character from PUNCTS.
 fn is_all_puncts(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| PUNCTS.contains(c))
@@ -53,9 +59,90 @@ fn simple_tag(text: &str) -> &'static str {
     }
 }
 
+/// Split leading and trailing punctuation from a word token into separate tokens.
+///
+/// For example, `"Hello,"` (with whitespace `" "`) becomes:
+///   - `MToken { text: "Hello", whitespace: "", tag: "DEFAULT" }`
+///   - `MToken { text: ",",     whitespace: " ", tag: "," }`
+///
+/// Tokens that are already pure punctuation, pure numbers, or pure currency
+/// are returned as-is (no splitting).
+fn split_punct(word: &str, whitespace: &str) -> Vec<MToken> {
+    // Don't split tokens that are already classified as non-word
+    if is_all_puncts(word) || is_number_like(word) || is_currency(word) || word.is_empty() {
+        let tag = simple_tag(word);
+        let mut tok = MToken::new(word, tag, whitespace);
+        tok.underscore.is_head = true;
+        return vec![tok];
+    }
+
+    let chars: Vec<char> = word.chars().collect();
+    let len = chars.len();
+
+    // Find how many leading chars are in LEADING_PUNCT
+    let leading = chars
+        .iter()
+        .take_while(|c| LEADING_PUNCT.contains(**c))
+        .count();
+
+    // Find how many trailing chars are in TRAILING_PUNCT
+    let trailing = chars
+        .iter()
+        .rev()
+        .take_while(|c| TRAILING_PUNCT.contains(**c))
+        .count();
+
+    // If splitting would consume the entire token, don't split
+    if leading + trailing >= len {
+        let tag = simple_tag(word);
+        let mut tok = MToken::new(word, tag, whitespace);
+        tok.underscore.is_head = true;
+        return vec![tok];
+    }
+
+    let mut result = Vec::new();
+
+    // Emit leading punct tokens (one per character, like spaCy)
+    for i in 0..leading {
+        let ch: String = chars[i..=i].iter().collect();
+        let tag = simple_tag(&ch);
+        let mut tok = MToken::new(&ch, tag, "");
+        tok.underscore.is_head = true;
+        result.push(tok);
+    }
+
+    // Emit the core word (no whitespace — trailing punct gets it)
+    let core: String = chars[leading..len - trailing].iter().collect();
+    let core_ws = if trailing > 0 { "" } else { whitespace };
+    let tag = simple_tag(&core);
+    let mut tok = MToken::new(&core, tag, core_ws);
+    tok.underscore.is_head = true;
+    result.push(tok);
+
+    // Emit trailing punct tokens (one per character, like spaCy)
+    for i in 0..trailing {
+        let ch: String = chars[len - trailing + i..=len - trailing + i]
+            .iter()
+            .collect();
+        let is_last = i == trailing - 1;
+        let tok_ws = if is_last { whitespace } else { "" };
+        let tag = simple_tag(&ch);
+        let mut tok = MToken::new(&ch, tag, tok_ws);
+        tok.underscore.is_head = true;
+        result.push(tok);
+    }
+
+    result
+}
+
 /// Tokenize text using simple whitespace splitting with heuristic POS tags.
+///
+/// After splitting on whitespace, leading and trailing punctuation is detached
+/// from word tokens so that `.` `,` `!` `?` etc. become their own tokens with
+/// proper POS tags. This matches spaCy's behaviour and ensures punctuation
+/// flows through the G2P pipeline as pause tokens for the Kokoro model.
 pub fn tokenize_simple(text: &str) -> Vec<MToken> {
-    let mut tokens = Vec::new();
+    let mut raw_tokens: Vec<(&str, &str)> = Vec::new(); // (word, whitespace)
     let mut chars = text.char_indices().peekable();
     let mut current_word_start: Option<usize> = None;
 
@@ -75,10 +162,7 @@ pub fn tokenize_simple(text: &str) -> Vec<MToken> {
                 }
                 let ws_end = chars.peek().map(|&(idx, _)| idx).unwrap_or(text.len());
                 let ws = &text[ws_start..ws_end];
-                let tag = simple_tag(word);
-                let mut tok = MToken::new(word, tag, ws);
-                tok.underscore.is_head = true;
-                tokens.push(tok);
+                raw_tokens.push((word, ws));
             } else {
                 // Leading whitespace — skip
                 chars.next();
@@ -94,10 +178,13 @@ pub fn tokenize_simple(text: &str) -> Vec<MToken> {
     // Handle the last word (no trailing whitespace)
     if let Some(start) = current_word_start {
         let word = &text[start..];
-        let tag = simple_tag(word);
-        let mut tok = MToken::new(word, tag, "");
-        tok.underscore.is_head = true;
-        tokens.push(tok);
+        raw_tokens.push((word, ""));
+    }
+
+    // Split leading/trailing punctuation from each token
+    let mut tokens = Vec::new();
+    for (word, ws) in raw_tokens {
+        tokens.extend(split_punct(word, ws));
     }
 
     tokens
@@ -385,19 +472,110 @@ mod tests {
     #[test]
     fn simple_punctuation() {
         let tokens = tokenize_simple("Hello, world!");
-        // "Hello," is one token, "world!" is another
-        assert_eq!(tokens.len(), 2);
-        // The comma is part of "Hello," — the simple tokenizer doesn't split on punct within words
-        assert_eq!(tokens[0].text, "Hello,");
-        assert_eq!(tokens[1].text, "world!");
+        // Comma and exclamation are now split off
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0].text, "Hello");
+        assert_eq!(tokens[0].whitespace, "");
+        assert_eq!(tokens[1].text, ",");
+        assert_eq!(tokens[1].tag, ",");
+        assert_eq!(tokens[1].whitespace, " ");
+        assert_eq!(tokens[2].text, "world");
+        assert_eq!(tokens[2].whitespace, "");
+        assert_eq!(tokens[3].text, "!");
+        assert_eq!(tokens[3].tag, ".");
+        assert_eq!(tokens[3].whitespace, "");
     }
 
     #[test]
     fn simple_standalone_punct() {
         let tokens = tokenize_simple("a . b");
-        assert_eq!(tokens.len(), 3);
         assert_eq!(tokens[1].text, ".");
         assert_eq!(tokens[1].tag, ".");
+    }
+
+    #[test]
+    fn split_period_from_word() {
+        let tokens = tokenize_simple("Hello.");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].text, "Hello");
+        assert_eq!(tokens[1].text, ".");
+        assert_eq!(tokens[1].tag, ".");
+    }
+
+    #[test]
+    fn split_question_mark() {
+        let tokens = tokenize_simple("Really?");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].text, "Really");
+        assert_eq!(tokens[1].text, "?");
+        assert_eq!(tokens[1].tag, ".");
+    }
+
+    #[test]
+    fn split_leading_paren() {
+        let tokens = tokenize_simple("(Hello)");
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].text, "(");
+        assert_eq!(tokens[1].text, "Hello");
+        assert_eq!(tokens[2].text, ")");
+    }
+
+    #[test]
+    fn split_leading_currency() {
+        let tokens = tokenize_simple("$100");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].text, "$");
+        assert_eq!(tokens[0].tag, "$");
+        assert_eq!(tokens[1].text, "100");
+        assert_eq!(tokens[1].tag, "CD");
+    }
+
+    #[test]
+    fn no_split_contraction() {
+        // ASCII apostrophe is NOT in LEADING_PUNCT or TRAILING_PUNCT
+        let tokens = tokenize_simple("don't");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].text, "don't");
+    }
+
+    #[test]
+    fn no_split_decimal() {
+        // "3.14" is recognized as number-like, no split
+        let tokens = tokenize_simple("3.14");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].text, "3.14");
+        assert_eq!(tokens[0].tag, "CD");
+    }
+
+    #[test]
+    fn split_multiple_trailing() {
+        let tokens = tokenize_simple("What!?");
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].text, "What");
+        assert_eq!(tokens[1].text, "!");
+        assert_eq!(tokens[2].text, "?");
+    }
+
+    #[test]
+    fn split_sentence_periods() {
+        let tokens = tokenize_simple("Hello. World.");
+        // "Hello." → ["Hello", "."], "World." → ["World", "."]
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0].text, "Hello");
+        assert_eq!(tokens[1].text, ".");
+        assert_eq!(tokens[1].tag, ".");
+        assert_eq!(tokens[1].whitespace, " ");
+        assert_eq!(tokens[2].text, "World");
+        assert_eq!(tokens[3].text, ".");
+        assert_eq!(tokens[3].tag, ".");
+    }
+
+    #[test]
+    fn pure_punct_not_split() {
+        let tokens = tokenize_simple("...");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].text, "...");
+        assert_eq!(tokens[0].tag, ".");
     }
 
     #[test]

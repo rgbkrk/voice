@@ -645,4 +645,83 @@ mod tests {
         let phonemes = result.unwrap();
         assert!(!phonemes.is_empty());
     }
+
+    // -- Punctuation preservation tests --------------------------------------
+
+    #[test]
+    fn test_period_preserved() {
+        let result = english_to_phonemes("Hello.").unwrap();
+        assert!(
+            result.contains('.'),
+            "Period should appear in phonemes: {result}"
+        );
+    }
+
+    #[test]
+    fn test_comma_preserved() {
+        let result = english_to_phonemes("Hello, world.").unwrap();
+        assert!(
+            result.contains(','),
+            "Comma should appear in phonemes: {result}"
+        );
+        assert!(
+            result.contains('.'),
+            "Period should appear in phonemes: {result}"
+        );
+    }
+
+    #[test]
+    fn test_question_mark_preserved() {
+        let result = english_to_phonemes("Hello?").unwrap();
+        assert!(
+            result.contains('?'),
+            "Question mark should appear in phonemes: {result}"
+        );
+    }
+
+    #[test]
+    fn test_exclamation_preserved() {
+        let result = english_to_phonemes("Hello!").unwrap();
+        assert!(
+            result.contains('!'),
+            "Exclamation mark should appear in phonemes: {result}"
+        );
+    }
+
+    #[test]
+    fn test_two_sentences_have_period_between() {
+        let result = english_to_phonemes("Hello. World.").unwrap();
+        // Should have at least one period (ideally two) in the phoneme output
+        let period_count = result.chars().filter(|c| *c == '.').count();
+        assert!(
+            period_count >= 1,
+            "Expected period(s) between sentences, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_mixed_punctuation() {
+        let result = english_to_phonemes("Wait! What? Really.").unwrap();
+        assert!(
+            result.contains('!'),
+            "Exclamation should appear in phonemes: {result}"
+        );
+        assert!(
+            result.contains('?'),
+            "Question mark should appear in phonemes: {result}"
+        );
+        assert!(
+            result.contains('.'),
+            "Period should appear in phonemes: {result}"
+        );
+    }
+
+    #[test]
+    fn test_semicolon_preserved() {
+        let result = english_to_phonemes("Hello; world.").unwrap();
+        assert!(
+            result.contains(';'),
+            "Semicolon should appear in phonemes: {result}"
+        );
+    }
 }

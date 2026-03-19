@@ -247,12 +247,14 @@ Model loading runs in a background thread while text resolution, G2P, and voice 
 - Xcode license accepted: `sudo xcodebuild -license`
 - Metal Toolchain (Xcode 17+): `xcodebuild -downloadComponent MetalToolchain`
 - espeak-ng (optional, for G2P fallback on unknown words): `brew install espeak-ng`
+- git-lfs when building from source: `brew install git-lfs; git lfs install; git lfs install --system`
 
 > **Fresh Mac?** If `cargo install voice` fails with linker errors mentioning
 > "You have not agreed to the Xcode license agreements", run
 > `sudo xcodebuild -license`. If it fails with "cannot execute tool 'metal'
 > due to missing Metal Toolchain", run
 > `xcodebuild -downloadComponent MetalToolchain`. Then retry the install.
+> Also, when compiling from source, a "Failed to parse tagger weights.json" error indicates git-lfs was not installed before the repo was cloned (several large files in the repo will only have internal git-lfs references rather than the full file contents).
 
 ## License
 

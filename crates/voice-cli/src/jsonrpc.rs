@@ -18,7 +18,7 @@
 //! → {"jsonrpc":"2.0","method":"speak","params":{"text":"Hello world"},"id":1}
 //! ← {"jsonrpc":"2.0","result":{"duration_ms":1840,"chunks":1},"id":1}
 //!
-//! → {"jsonrpc":"2.0","method":"speak","params":{"text":"# Heading\n\nSome *bold* text","markdown":true,"return_phonemes":true},"id":2}
+//! → {"jsonrpc":"2.0","method":"speak","params":{"text":"# Heading\n\nSome *bold* text","markdown":true,"detail":"full"},"id":2}
 //! ← {"jsonrpc":"2.0","result":{"duration_ms":2100,"chunks":1,"phonemes":["..."]},"id":2}
 //!
 //! → {"jsonrpc":"2.0","method":"set_voice","params":{"voice":"am_michael"},"id":3}
@@ -122,9 +122,17 @@ struct SpeakParams {
     /// Strip markdown/MDX formatting before G2P conversion.
     #[serde(default)]
     markdown: bool,
-    /// Include the phoneme chunks in the response.
+    /// Response detail level: "normal" (default) or "full" (includes phonemes).
     #[serde(default)]
-    return_phonemes: bool,
+    detail: Detail,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum Detail {
+    #[default]
+    Normal,
+    Full,
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,7 +366,7 @@ fn handle_speak(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
         "chunks": chunks.len(),
     });
 
-    if p.return_phonemes {
+    if p.detail == Detail::Full {
         result["phonemes"] = serde_json::json!(chunks);
     }
 

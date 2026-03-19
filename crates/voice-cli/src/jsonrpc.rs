@@ -1,0 +1,445 @@
+//! JSON-RPC 2.0 stdio server for voice TTS.
+//!
+//! Reads newline-delimited JSON-RPC requests from stdin, writes responses to
+//! stdout. The model and a default voice are loaded once at startup; callers
+//! can switch voices mid-session.
+//!
+//! ## Methods
+//!
+//! - `speak`        — Generate and play audio from text or phonemes.
+//! - `set_voice`    — Change the session's default voice.
+//! - `set_speed`    — Change the session's default speed.
+//! - `list_voices`  — Return the list of builtin voice names.
+//! - `ping`         — Health check, returns `"pong"`.
+//!
+//! ## Example session (stdin → stdout)
+//!
+//! ```jsonl
+//! → {"jsonrpc":"2.0","method":"speak","params":{"text":"Hello world"},"id":1}
+//! ← {"jsonrpc":"2.0","result":{"duration_ms":1840},"id":1}
+//!
+//! → {"jsonrpc":"2.0","method":"set_voice","params":{"voice":"am_michael"},"id":2}
+//! ← {"jsonrpc":"2.0","result":{"voice":"am_michael"},"id":2}
+//!
+//! → {"jsonrpc":"2.0","method":"speak","params":{"text":"Now in a different voice"},"id":3}
+//! ← {"jsonrpc":"2.0","result":{"duration_ms":2100},"id":3}
+//!
+//! → {"jsonrpc":"2.0","method":"list_voices","id":4}
+//! ← {"jsonrpc":"2.0","result":{"voices":["af_heart","af_bella","af_sarah","af_sky","am_michael","am_adam","bf_emma"]},"id":4}
+//! ```
+//!
+//! Notifications (requests without `id`) are executed but produce no response.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::io::{self, BufRead, Write};
+use std::num::NonZero;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
+
+use crate::{apply_substitutions, apply_tech_subs, collect_subs, interrupted, INTERRUPTED, QUIET};
+
+// ── JSON-RPC 2.0 types ────────────────────────────────────────────────
+
+const JSONRPC_VERSION: &str = "2.0";
+
+#[derive(Debug, Deserialize)]
+struct Request {
+    #[allow(dead_code)]
+    jsonrpc: Option<String>,
+    method: String,
+    #[serde(default)]
+    params: Value,
+    id: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct Response {
+    jsonrpc: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<RpcError>,
+    id: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct RpcError {
+    code: i64,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+}
+
+// Standard JSON-RPC error codes
+const PARSE_ERROR: i64 = -32700;
+#[allow(dead_code)]
+const INVALID_REQUEST: i64 = -32600;
+const METHOD_NOT_FOUND: i64 = -32601;
+const INVALID_PARAMS: i64 = -32602;
+const INTERNAL_ERROR: i64 = -32603;
+
+impl Response {
+    fn success(id: Value, result: Value) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION,
+            result: Some(result),
+            error: None,
+            id,
+        }
+    }
+
+    fn error(id: Value, code: i64, message: impl Into<String>) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION,
+            result: None,
+            error: Some(RpcError {
+                code,
+                message: message.into(),
+                data: None,
+            }),
+            id,
+        }
+    }
+}
+
+// ── Method params ──────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct SpeakParams {
+    /// Text to speak (mutually exclusive with `phonemes`).
+    text: Option<String>,
+    /// Raw phoneme string, bypasses G2P.
+    phonemes: Option<String>,
+    /// Override voice for this utterance only.
+    voice: Option<String>,
+    /// Override speed for this utterance only.
+    speed: Option<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetVoiceParams {
+    voice: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetSpeedParams {
+    speed: f32,
+}
+
+// ── Session state ──────────────────────────────────────────────────────
+
+struct Session {
+    model: voice_tts::KokoroModel,
+    voice: voice_tts::Array,
+    voice_name: String,
+    speed: f32,
+    sample_rate: u32,
+    repo_id: String,
+    subs: Vec<(String, String)>,
+    phoneme_overrides: HashMap<String, String>,
+    /// Cache of loaded voices so we don't re-load on every `speak`.
+    voice_cache: HashMap<String, voice_tts::Array>,
+}
+
+impl Session {
+    fn get_voice(&mut self, name: &str) -> Result<&voice_tts::Array, String> {
+        if !self.voice_cache.contains_key(name) {
+            let v = voice_tts::load_voice(name, Some(&self.repo_id))
+                .map_err(|e| format!("Failed to load voice '{name}': {e}"))?;
+            self.voice_cache.insert(name.to_string(), v);
+        }
+        Ok(&self.voice_cache[name])
+    }
+}
+
+// ── Public entry point ─────────────────────────────────────────────────
+
+/// Run the JSON-RPC stdio server. Blocks until stdin is closed or interrupted.
+pub fn run(
+    model: voice_tts::KokoroModel,
+    voice: voice_tts::Array,
+    voice_name: String,
+    speed: f32,
+    sample_rate: u32,
+    repo_id: &str,
+    cli_subs: &[String],
+    sub_file_path: Option<&std::path::Path>,
+) {
+    let (subs, phoneme_overrides) = collect_subs(cli_subs, sub_file_path);
+
+    let mut voice_cache = HashMap::new();
+    voice_cache.insert(voice_name.clone(), voice.clone());
+
+    let mut session = Session {
+        model,
+        voice,
+        voice_name,
+        speed,
+        sample_rate,
+        repo_id: repo_id.to_string(),
+        subs,
+        phoneme_overrides,
+        voice_cache,
+    };
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("voice jsonrpc server ready");
+    }
+
+    for line in stdin.lock().lines() {
+        if interrupted() {
+            break;
+        }
+
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("stdin read error: {e}");
+                break;
+            }
+        };
+
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+
+        // Parse JSON
+        let req: Request = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                let resp = Response::error(Value::Null, PARSE_ERROR, format!("Parse error: {e}"));
+                write_response(&mut stdout, &resp);
+                continue;
+            }
+        };
+
+        let is_notification = req.id.is_none();
+        let id = req.id.clone().unwrap_or(Value::Null);
+
+        let resp = dispatch(&mut session, &req.method, req.params, id);
+
+        // Notifications don't get responses per JSON-RPC 2.0
+        if !is_notification {
+            if let Some(resp) = resp {
+                write_response(&mut stdout, &resp);
+            }
+        }
+
+        // Reset interrupt flag so Ctrl+C during playback only cancels the
+        // current utterance, not the whole server.
+        INTERRUPTED.store(false, Ordering::Relaxed);
+    }
+}
+
+// ── Dispatch ───────────────────────────────────────────────────────────
+
+fn dispatch(session: &mut Session, method: &str, params: Value, id: Value) -> Option<Response> {
+    let result = match method {
+        "speak" => handle_speak(session, params),
+        "set_voice" => handle_set_voice(session, params),
+        "set_speed" => handle_set_speed(session, params),
+        "list_voices" => handle_list_voices(),
+        "ping" => Ok(serde_json::json!("pong")),
+        _ => {
+            return Some(Response::error(
+                id,
+                METHOD_NOT_FOUND,
+                format!("Unknown method: {method}"),
+            ));
+        }
+    };
+
+    Some(match result {
+        Ok(value) => Response::success(id, value),
+        Err(e) => e.into_response(id),
+    })
+}
+
+// ── Error helper ───────────────────────────────────────────────────────
+
+struct RpcErr {
+    code: i64,
+    message: String,
+}
+
+impl RpcErr {
+    fn invalid_params(msg: impl Into<String>) -> Self {
+        Self {
+            code: INVALID_PARAMS,
+            message: msg.into(),
+        }
+    }
+
+    fn internal(msg: impl Into<String>) -> Self {
+        Self {
+            code: INTERNAL_ERROR,
+            message: msg.into(),
+        }
+    }
+
+    fn into_response(self, id: Value) -> Response {
+        Response::error(id, self.code, self.message)
+    }
+}
+
+// ── Method handlers ────────────────────────────────────────────────────
+
+fn handle_speak(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
+    let p: SpeakParams =
+        serde_json::from_value(params).map_err(|e| RpcErr::invalid_params(e.to_string()))?;
+
+    let speed = p.speed.unwrap_or(session.speed);
+
+    // Determine which voice to use
+    let voice_ref: *const voice_tts::Array = if let Some(ref name) = p.voice {
+        session
+            .get_voice(name)
+            .map_err(|e| RpcErr::invalid_params(e))? as *const _
+    } else {
+        &session.voice as *const _
+    };
+    // SAFETY: voice_ref points into session.voice or session.voice_cache,
+    // both of which live for the duration of this call. We use a raw pointer
+    // to avoid borrow-checker conflicts with the mutable session borrow for
+    // the model below.
+    let voice = unsafe { &*voice_ref };
+
+    // Resolve phoneme chunks
+    let chunks: Vec<String> = if let Some(ref phonemes) = p.phonemes {
+        vec![phonemes.clone()]
+    } else if let Some(ref text) = p.text {
+        let text = apply_tech_subs(text);
+        let text = if session.subs.is_empty() {
+            text
+        } else {
+            apply_substitutions(&text, &session.subs)
+        };
+        let result = if session.phoneme_overrides.is_empty() {
+            voice_g2p::text_to_phoneme_chunks(&text)
+        } else {
+            voice_g2p::text_to_phoneme_chunks_with_overrides(&text, &session.phoneme_overrides)
+        };
+        result.map_err(|e| RpcErr::internal(format!("G2P error: {e}")))?
+    } else {
+        return Err(RpcErr::invalid_params(
+            "Either 'text' or 'phonemes' is required",
+        ));
+    };
+
+    // Generate and play
+    let started = Instant::now();
+    stream_chunks(session, voice, &chunks, speed)?;
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    Ok(serde_json::json!({
+        "duration_ms": duration_ms,
+        "chunks": chunks.len(),
+    }))
+}
+
+fn handle_set_voice(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
+    let p: SetVoiceParams =
+        serde_json::from_value(params).map_err(|e| RpcErr::invalid_params(e.to_string()))?;
+
+    // Pre-load to validate the voice exists
+    let voice = session
+        .get_voice(&p.voice)
+        .map_err(|e| RpcErr::invalid_params(e))?
+        .clone();
+
+    session.voice = voice;
+    session.voice_name = p.voice.clone();
+
+    Ok(serde_json::json!({ "voice": p.voice }))
+}
+
+fn handle_set_speed(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
+    let p: SetSpeedParams =
+        serde_json::from_value(params).map_err(|e| RpcErr::invalid_params(e.to_string()))?;
+
+    if p.speed <= 0.0 || p.speed > 5.0 {
+        return Err(RpcErr::invalid_params(
+            "Speed must be between 0.0 (exclusive) and 5.0 (inclusive)",
+        ));
+    }
+
+    session.speed = p.speed;
+
+    Ok(serde_json::json!({ "speed": p.speed }))
+}
+
+fn handle_list_voices() -> Result<Value, RpcErr> {
+    Ok(serde_json::json!({
+        "voices": voice_tts::builtin::BUILTIN_VOICES,
+    }))
+}
+
+// ── Audio playback ─────────────────────────────────────────────────────
+
+fn stream_chunks(
+    session: &mut Session,
+    voice: &voice_tts::Array,
+    chunks: &[String],
+    speed: f32,
+) -> Result<(), RpcErr> {
+    use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
+
+    let mut stream =
+        DeviceSinkBuilder::open_default_sink().map_err(|e| RpcErr::internal(e.to_string()))?;
+    stream.log_on_drop(false);
+    let player = Player::connect_new(stream.mixer());
+
+    let channels = NonZero::new(1u16).unwrap();
+    let rate = NonZero::new(session.sample_rate).unwrap();
+
+    for (i, phonemes) in chunks.iter().enumerate() {
+        if interrupted() {
+            break;
+        }
+        if phonemes.is_empty() {
+            continue;
+        }
+        if chunks.len() > 1 && !QUIET.load(Ordering::Relaxed) {
+            eprintln!("  generating chunk {}/{}...", i + 1, chunks.len());
+        }
+        match voice_tts::generate(&mut session.model, phonemes, voice, speed) {
+            Ok(audio) => {
+                let samples: Vec<f32> = audio.as_slice().to_vec();
+                let source = SamplesBuffer::new(channels, rate, samples);
+                player.append(source);
+            }
+            Err(e) => {
+                return Err(RpcErr::internal(format!(
+                    "Generation failed on chunk {}: {e}",
+                    i + 1
+                )));
+            }
+        }
+    }
+
+    // Wait for playback, checking for Ctrl+C
+    while !player.empty() {
+        if interrupted() {
+            player.stop();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    Ok(())
+}
+
+// ── IO ─────────────────────────────────────────────────────────────────
+
+fn write_response(stdout: &mut io::Stdout, resp: &Response) {
+    // Unwrap is fine — our Response type is always serializable.
+    let json = serde_json::to_string(resp).unwrap();
+    let _ = writeln!(stdout, "{json}");
+    let _ = stdout.flush();
+}

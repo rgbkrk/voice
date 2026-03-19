@@ -1,3 +1,5 @@
+mod jsonrpc;
+
 use clap::Parser;
 use pulldown_cmark::{Event, Options, Parser as MdParser, Tag, TagEnd};
 use std::collections::HashMap;
@@ -82,6 +84,10 @@ struct Args {
     /// Errors are always printed.
     #[arg(short, long)]
     quiet: bool,
+
+    /// Run as a JSON-RPC 2.0 server on stdin/stdout.
+    #[arg(long)]
+    jsonrpc: bool,
 }
 
 fn resolve_text(args: &Args) -> Result<String, String> {
@@ -408,7 +414,10 @@ fn main() {
 
     // Resolve phoneme chunks (text resolution + G2P are fast with the
     // embedded perceptron tagger, ~1-2ms total).
-    let phoneme_chunks: Vec<String> = if let Some(phonemes) = &args.phonemes {
+    // In JSON-RPC mode, text is resolved per-request.
+    let phoneme_chunks: Vec<String> = if args.jsonrpc {
+        Vec::new()
+    } else if let Some(phonemes) = &args.phonemes {
         vec![phonemes.clone()]
     } else {
         match resolve_text(&args) {
@@ -498,6 +507,21 @@ fn main() {
     };
 
     let sample_rate = model.sample_rate as u32;
+
+    if args.jsonrpc {
+        let sub_file = args.sub_file.clone().or_else(find_sub_file);
+        jsonrpc::run(
+            model,
+            voice,
+            args.voice.clone(),
+            args.speed,
+            sample_rate,
+            MODEL_REPO,
+            &args.subs,
+            sub_file.as_deref(),
+        );
+        return;
+    }
 
     if let Some(output_path) = &args.output {
         // File output: batch generate all chunks, then write WAV

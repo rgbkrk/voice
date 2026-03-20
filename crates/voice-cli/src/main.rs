@@ -97,6 +97,11 @@ struct Args {
     #[arg(long, conflicts_with_all = ["text", "input_file", "phonemes", "jsonrpc", "transcribe"])]
     listen: bool,
 
+    /// Continuous listen mode — record and transcribe segments as you speak.
+    /// Segments are split on silence and transcribed in the background.
+    #[arg(long, conflicts_with_all = ["text", "input_file", "phonemes", "jsonrpc", "transcribe"])]
+    continuous: bool,
+
     /// Transcribe a WAV audio file (speech-to-text).
     #[arg(long, value_name = "FILE", conflicts_with_all = ["text", "input_file", "phonemes", "jsonrpc", "listen"])]
     transcribe: Option<PathBuf>,
@@ -427,8 +432,18 @@ fn main() {
     let is_listen =
         args.listen || (args.text.len() == 1 && args.text[0].eq_ignore_ascii_case("listen"));
 
+    if is_listen && args.continuous {
+        listen::listen_continuous();
+        return;
+    }
+
     if is_listen {
         listen::listen_and_transcribe();
+        return;
+    }
+
+    if args.continuous {
+        listen::listen_continuous();
         return;
     }
 

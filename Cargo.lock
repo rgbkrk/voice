@@ -3607,7 +3607,7 @@ dependencies = [
 
 [[package]]
 name = "voice"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "clap",
  "cpal 0.15.3",

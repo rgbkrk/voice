@@ -1,6 +1,6 @@
 [package]
 name = "voice"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version = "1.85.0"
 description = "CLI for voice TTS — like say, but with Kokoro"
@@ -16,6 +16,7 @@ path = "src/main.rs"
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
+disabled-strategies = ["quick-install"]
 
 [package.metadata.binstall.signing]
 algorithm = "minisign"

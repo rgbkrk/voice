@@ -2,11 +2,14 @@
 //!
 //! These tests spawn the `voice` binary with `--jsonrpc` and communicate
 //! over stdin/stdout. They test protocol compliance — correct response
-//! structure, error codes, notification handling — without requiring
-//! audio hardware or model downloads (for non-audio methods).
+//! structure, error codes, notification handling.
 //!
-//! Tests that require model downloads are marked `#[ignore]` and can be
-//! run with `cargo test -p voice --test jsonrpc_protocol -- --ignored`.
+//! **All tests require the TTS model** (~312MB, downloaded from HuggingFace
+//! on first run) because the `voice --jsonrpc` server loads it at startup.
+//! They are marked `#[ignore]` to avoid blocking CI.
+//!
+//! Run them locally with:
+//!   cargo test -p voice --test jsonrpc_protocol -- --ignored
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -39,11 +42,18 @@ impl Server {
         let stdout = child.stdout.take().expect("Failed to open stdout");
         let reader = BufReader::new(stdout);
 
-        Server {
+        let mut server = Server {
             child,
             stdin,
             reader,
-        }
+        };
+
+        // Wait for the server to be fully ready (model loaded) before
+        // returning. This prevents tests from racing against startup.
+        let resp = server.request("ping", None, 0);
+        assert_eq!(resp["result"], "pong", "Server failed to start");
+
+        server
     }
 
     /// Find the voice binary — prefer the cargo-built one in target/.
@@ -143,6 +153,7 @@ impl Drop for Server {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_ping() {
     let mut server = Server::spawn();
     let resp = server.request("ping", None, 1);
@@ -154,6 +165,7 @@ fn test_jsonrpc_ping() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_ping_string_id() {
     let mut server = Server::spawn();
 
@@ -171,6 +183,7 @@ fn test_jsonrpc_ping_string_id() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_unknown_method() {
     let mut server = Server::spawn();
     let resp = server.request("nonexistent_method", None, 1);
@@ -186,6 +199,7 @@ fn test_jsonrpc_unknown_method() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_parse_error() {
     let mut server = Server::spawn();
     let resp = server.send_raw("this is not json at all");
@@ -197,6 +211,7 @@ fn test_jsonrpc_parse_error() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_parse_error_partial_json() {
     let mut server = Server::spawn();
     let resp = server.send_raw("{\"jsonrpc\": \"2.0\", \"method\":");
@@ -205,16 +220,27 @@ fn test_jsonrpc_parse_error_partial_json() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_cancel() {
     let mut server = Server::spawn();
+
+    // Send a ping first to ensure the server is fully ready
+    let warmup = server.request("ping", None, 99);
+    assert_eq!(warmup["result"], "pong");
+
     let resp = server.request("cancel", None, 1);
 
     assert_eq!(resp["jsonrpc"], "2.0");
     assert_eq!(resp["id"], 1);
     assert_eq!(resp["result"]["cancelled"], true);
+
+    // Verify the server stays alive after cancel (INTERRUPTED resets)
+    let resp2 = server.request("ping", None, 2);
+    assert_eq!(resp2["result"], "pong");
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_set_speed_valid() {
     let mut server = Server::spawn();
     let resp = server.request("set_speed", Some(json!({"speed": 1.5})), 1);
@@ -223,6 +249,7 @@ fn test_jsonrpc_set_speed_valid() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_set_speed_too_high() {
     let mut server = Server::spawn();
     let resp = server.request("set_speed", Some(json!({"speed": 10.0})), 1);
@@ -231,6 +258,7 @@ fn test_jsonrpc_set_speed_too_high() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_set_speed_zero() {
     let mut server = Server::spawn();
     let resp = server.request("set_speed", Some(json!({"speed": 0.0})), 1);
@@ -239,6 +267,7 @@ fn test_jsonrpc_set_speed_zero() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_set_speed_negative() {
     let mut server = Server::spawn();
     let resp = server.request("set_speed", Some(json!({"speed": -1.0})), 1);
@@ -247,6 +276,7 @@ fn test_jsonrpc_set_speed_negative() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_set_speed_missing_param() {
     let mut server = Server::spawn();
     let resp = server.request("set_speed", Some(json!({})), 1);
@@ -255,6 +285,7 @@ fn test_jsonrpc_set_speed_missing_param() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_notification_no_response() {
     let mut server = Server::spawn();
 
@@ -270,6 +301,7 @@ fn test_jsonrpc_notification_no_response() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_empty_line_ignored() {
     let mut server = Server::spawn();
 
@@ -285,6 +317,7 @@ fn test_jsonrpc_empty_line_ignored() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_sequential_requests() {
     let mut server = Server::spawn();
 
@@ -296,6 +329,7 @@ fn test_jsonrpc_sequential_requests() {
 }
 
 #[test]
+#[ignore = "requires TTS model"]
 fn test_jsonrpc_list_voices() {
     let mut server = Server::spawn();
     let resp = server.request("list_voices", None, 1);

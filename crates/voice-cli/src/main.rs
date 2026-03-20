@@ -30,22 +30,50 @@ macro_rules! info {
 #[derive(Parser, Debug)]
 #[command(
     name = "voice",
-    about = "Kokoro TTS from the command line",
-    after_help = "If no text, --phonemes, or -f is given, reads from stdin.\n\
-                  A .voice-subs file is auto-discovered from the working directory upward.\n\n\
-                  Examples:\n  \
+    about = "Rust TTS & STT on Apple Silicon",
+    after_help = "Examples:\n  \
                   voice Hello world\n  \
-                  voice -v am_adam \"How are you today?\"\n  \
-                  echo \"Hello\" | voice\n  \
-                  voice -f speech.txt -o output.wav\n  \
-                  voice --phonemes \"hɛloʊ wɜːld\"\n  \
-                  voice --markdown -f post.mdx\n  \
-                  voice --sub nteract=enteract -f post.mdx\n  \
-                  voice --sub-file .voice-subs --markdown -f post.mdx\n  \
+                  voice say -v am_adam \"How are you today?\"\n  \
+                  echo \"Hello\" | voice say\n  \
+                  voice say -f speech.txt -o output.wav\n  \
+                  voice say --phonemes \"hɛloʊ wɜːld\"\n  \
+                  voice say --markdown -f post.mdx\n  \
                   voice listen\n  \
-                  voice --transcribe recording.wav"
+                  voice listen --continuous\n  \
+                  voice transcribe recording.wav\n  \
+                  voice serve -v am_michael"
 )]
 struct Args {
+    /// Suppress progress output (phonemes, chunk info, loading messages).
+    /// Errors are always printed.
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    /// Text to speak (shorthand for `voice say <text>`)
+    #[arg(trailing_var_arg = true)]
+    text: Vec<String>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Speak text aloud (default when no subcommand given)
+    Say(SayArgs),
+
+    /// Record from microphone and transcribe (speech-to-text)
+    Listen(ListenArgs),
+
+    /// Transcribe a WAV audio file
+    Transcribe(TranscribeArgs),
+
+    /// Run as a JSON-RPC 2.0 server on stdin/stdout
+    Serve(ServeArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct SayArgs {
     /// Text to speak
     #[arg(trailing_var_arg = true)]
     text: Vec<String>,
@@ -82,39 +110,49 @@ struct Args {
     /// If not set, .voice-subs is auto-discovered from the working directory upward.
     #[arg(long = "sub-file", value_name = "PATH")]
     sub_file: Option<PathBuf>,
-
-    /// Suppress progress output (phonemes, chunk info, loading messages).
-    /// Errors are always printed.
-    #[arg(short, long)]
-    quiet: bool,
-
-    /// Run as a JSON-RPC 2.0 server on stdin/stdout.
-    #[arg(long)]
-    jsonrpc: bool,
-
-    /// Record from microphone and transcribe (speech-to-text).
-    /// Also triggered by `voice listen` as the first positional arg.
-    #[arg(long, conflicts_with_all = ["text", "input_file", "phonemes", "jsonrpc", "transcribe"])]
-    listen: bool,
-
-    /// Continuous listen mode — record and transcribe segments as you speak.
-    /// Segments are split on silence and transcribed in the background.
-    #[arg(long, conflicts_with_all = ["text", "input_file", "phonemes", "jsonrpc", "transcribe"])]
-    continuous: bool,
-
-    /// Transcribe a WAV audio file (speech-to-text).
-    #[arg(long, value_name = "FILE", conflicts_with_all = ["text", "input_file", "phonemes", "jsonrpc", "listen"])]
-    transcribe: Option<PathBuf>,
 }
 
-fn resolve_text(args: &Args) -> Result<String, String> {
+#[derive(clap::Args, Debug)]
+struct ListenArgs {
+    /// Continuous mode — record and transcribe segments as you speak.
+    /// Segments are split on silence and transcribed in the background.
+    #[arg(long)]
+    continuous: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct TranscribeArgs {
+    /// Path to WAV audio file
+    file: PathBuf,
+}
+
+#[derive(clap::Args, Debug)]
+struct ServeArgs {
+    /// Voice name (e.g. af_heart, am_adam)
+    #[arg(short, long, default_value = "af_heart")]
+    voice: String,
+
+    /// Speech speed factor (1.0 = normal)
+    #[arg(short, long, default_value = "1.0")]
+    speed: f32,
+
+    /// Word substitutions (pre-processing), e.g. --sub nteract=enteract
+    #[arg(long = "sub", value_name = "WORD=REPLACEMENT")]
+    subs: Vec<String>,
+
+    /// Load substitutions from a file (one WORD=REPLACEMENT per line, # comments).
+    #[arg(long = "sub-file", value_name = "PATH")]
+    sub_file: Option<PathBuf>,
+}
+
+fn resolve_text(say: &SayArgs) -> Result<String, String> {
     // --phonemes takes a completely separate path
-    if args.phonemes.is_some() {
+    if say.phonemes.is_some() {
         return Err("phonemes".into()); // sentinel, not a real error
     }
 
     // -f / --input-file
-    if let Some(path) = &args.input_file {
+    if let Some(path) = &say.input_file {
         let text = if path.to_str() == Some("-") {
             let mut buf = String::new();
             io::stdin()
@@ -133,11 +171,32 @@ fn resolve_text(args: &Args) -> Result<String, String> {
     }
 
     // Positional text args
-    if !args.text.is_empty() {
-        return Ok(args.text.join(" "));
+    if !say.text.is_empty() {
+        return Ok(say.text.join(" "));
     }
 
     // Fall back to stdin if it's not a TTY
+    if io::stdin().is_terminal() {
+        return Err("No text provided. Pass text as arguments, use -f, or pipe to stdin.".into());
+    }
+
+    let mut buf = String::new();
+    io::stdin()
+        .read_to_string(&mut buf)
+        .map_err(|e| format!("Failed to read stdin: {e}"))?;
+    let text = buf.trim().to_string();
+    if text.is_empty() {
+        return Err("No text provided on stdin".into());
+    }
+    Ok(text)
+}
+
+/// Resolve text from bare positional args (backward compat: `voice Hello world`)
+fn resolve_text_from_bare(text: &[String]) -> Result<String, String> {
+    if !text.is_empty() {
+        return Ok(text.join(" "));
+    }
+
     if io::stdin().is_terminal() {
         return Err("No text provided. Pass text as arguments, use -f, or pipe to stdin.".into());
     }
@@ -425,60 +484,96 @@ fn main() {
         QUIET.store(true, Ordering::Relaxed);
     }
 
-    // -- STT modes: listen (mic) and transcribe (file) -----------------------
-    // These bypass the TTS pipeline entirely.
-
-    // Support `voice listen` as a positional arg shortcut for `--listen`
-    let is_listen =
-        args.listen || (args.text.len() == 1 && args.text[0].eq_ignore_ascii_case("listen"));
-
-    if is_listen && args.continuous {
-        listen::listen_continuous();
-        return;
+    match args.command {
+        Some(Command::Listen(listen_args)) => {
+            if listen_args.continuous {
+                listen::listen_continuous();
+            } else {
+                listen::listen_and_transcribe();
+            }
+        }
+        Some(Command::Transcribe(transcribe_args)) => {
+            listen::transcribe_file(&transcribe_args.file.display().to_string());
+        }
+        Some(Command::Serve(serve_args)) => {
+            run_serve(serve_args);
+        }
+        Some(Command::Say(say_args)) => {
+            run_say(say_args);
+        }
+        None => {
+            // Backward compatibility: `voice Hello world` = `voice say Hello world`
+            // Also: bare `voice` with piped stdin = `voice say` with stdin
+            if args.text.is_empty() && io::stdin().is_terminal() {
+                // No text, no pipe — show help
+                Args::parse_from(["voice", "--help"]);
+            } else {
+                let say_args = SayArgs {
+                    text: args.text,
+                    input_file: None,
+                    phonemes: None,
+                    voice: "af_heart".to_string(),
+                    output: None,
+                    speed: 1.0,
+                    markdown: false,
+                    subs: Vec::new(),
+                    sub_file: None,
+                };
+                run_say(say_args);
+            }
+        }
     }
+}
 
-    if is_listen {
-        listen::listen_and_transcribe();
-        return;
-    }
+fn run_serve(serve_args: ServeArgs) {
+    let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
 
-    if args.continuous {
-        listen::listen_continuous();
-        return;
-    }
+    let voice = match voice_tts::load_voice(&serve_args.voice, Some(MODEL_REPO)) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed to load voice '{}': {e}", serve_args.voice);
+            std::process::exit(1);
+        }
+    };
 
-    if let Some(ref path) = args.transcribe {
-        listen::transcribe_file(&path.display().to_string());
-        return;
-    }
+    let model = load_tts_model(model_handle);
+    let sample_rate = model.sample_rate as u32;
+    let sub_file = serve_args.sub_file.clone().or_else(find_sub_file);
 
-    // -- TTS pipeline --------------------------------------------------------
+    jsonrpc::run(jsonrpc::ServerConfig {
+        model,
+        voice,
+        voice_name: serve_args.voice,
+        speed: serve_args.speed,
+        sample_rate,
+        repo_id: MODEL_REPO.to_string(),
+        cli_subs: serve_args.subs,
+        sub_file_path: sub_file,
+    });
+}
 
+fn run_say(say_args: SayArgs) {
     // Start model loading in a background thread immediately — this is the
     // slowest startup step (~200ms) and can run while we resolve text + G2P.
     let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
 
     // Resolve phoneme chunks (text resolution + G2P are fast with the
     // embedded perceptron tagger, ~1-2ms total).
-    // In JSON-RPC mode, text is resolved per-request.
-    let phoneme_chunks: Vec<String> = if args.jsonrpc {
-        Vec::new()
-    } else if let Some(phonemes) = &args.phonemes {
+    let phoneme_chunks: Vec<String> = if let Some(phonemes) = &say_args.phonemes {
         vec![phonemes.clone()]
     } else {
-        match resolve_text(&args) {
+        match resolve_text(&say_args) {
             Ok(text) => {
-                let text = if args.markdown {
+                let text = if say_args.markdown {
                     strip_markdown(&text)
                 } else {
                     text
                 };
-                // Resolve sub file: explicit --sub-file, or auto-discover .voice-subs
-                let sub_file = args.sub_file.clone().or_else(find_sub_file);
+                let sub_file = say_args.sub_file.clone().or_else(find_sub_file);
                 if let Some(ref path) = sub_file {
                     info!("Using substitutions from {}", path.display());
                 }
-                let (subs, phoneme_overrides) = collect_subs(&args.subs, sub_file.as_deref());
+                let (subs, phoneme_overrides) = collect_subs(&say_args.subs, sub_file.as_deref());
                 let text = apply_tech_subs(&text);
                 let text = if subs.is_empty() {
                     text
@@ -512,18 +607,46 @@ fn main() {
     };
 
     // Load voice (fast for builtins — embedded in binary, ~5ms).
-    let voice = match voice_tts::load_voice(&args.voice, Some(MODEL_REPO)) {
+    let voice = match voice_tts::load_voice(&say_args.voice, Some(MODEL_REPO)) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Failed to load voice '{}': {e}", args.voice);
+            eprintln!("Failed to load voice '{}': {e}", say_args.voice);
             eprintln!("Available voices include: af_heart, af_bella, af_nicole, af_sarah, af_sky,");
             eprintln!("  am_adam, am_michael, bf_emma, bf_isabella, bm_george, bm_lewis");
             std::process::exit(1);
         }
     };
 
-    // Wait for model loading to finish.
-    let mut model = match model_handle.join().expect("model loading thread panicked") {
+    let mut model = load_tts_model(model_handle);
+    let sample_rate = model.sample_rate as u32;
+
+    if let Some(output_path) = &say_args.output {
+        generate_to_file(
+            &mut model,
+            &voice,
+            &phoneme_chunks,
+            say_args.speed,
+            sample_rate,
+            output_path,
+        );
+    } else {
+        stream_playback(
+            &mut model,
+            &voice,
+            &phoneme_chunks,
+            say_args.speed,
+            sample_rate,
+        );
+    }
+}
+
+/// Wait for TTS model loading to finish and handle errors.
+fn load_tts_model(
+    handle: std::thread::JoinHandle<
+        std::result::Result<voice_tts::KokoroModel, voice_tts::VoicersError>,
+    >,
+) -> voice_tts::KokoroModel {
+    match handle.join().expect("model loading thread panicked") {
         Ok(m) => m,
         Err(e) => {
             let msg = format!("{e}");
@@ -536,8 +659,8 @@ fn main() {
                 eprintln!();
                 eprintln!("Fix: build from source instead:");
                 eprintln!();
-                eprintln!("  git clone https://github.com/rgbkrk/voicers.git");
-                eprintln!("  cd voicers");
+                eprintln!("  git clone https://github.com/rgbkrk/voice.git");
+                eprintln!("  cd voice");
                 eprintln!("  cargo install --path crates/voice-cli");
                 eprintln!();
                 eprintln!("Or copy the metallib manually:");
@@ -550,41 +673,6 @@ fn main() {
             }
             std::process::exit(1);
         }
-    };
-
-    let sample_rate = model.sample_rate as u32;
-
-    if args.jsonrpc {
-        let sub_file = args.sub_file.clone().or_else(find_sub_file);
-        jsonrpc::run(jsonrpc::ServerConfig {
-            model,
-            voice,
-            voice_name: args.voice.clone(),
-            speed: args.speed,
-            sample_rate,
-            repo_id: MODEL_REPO.to_string(),
-            cli_subs: args.subs.clone(),
-            sub_file_path: sub_file,
-        });
-        return;
-    }
-
-    if let Some(output_path) = &args.output {
-        // File output: batch generate all chunks, then write WAV
-        // (WAV header needs total sample count upfront).
-        generate_to_file(
-            &mut model,
-            &voice,
-            &phoneme_chunks,
-            args.speed,
-            sample_rate,
-            output_path,
-        );
-    } else {
-        // Streaming playback: generate chunks and feed them to rodio as
-        // they're ready. The first chunk starts playing immediately while
-        // subsequent chunks are generated in the background.
-        stream_playback(&mut model, &voice, &phoneme_chunks, args.speed, sample_rate);
     }
 }
 

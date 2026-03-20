@@ -156,8 +156,16 @@ struct ListenParams {
     max_duration_ms: Option<u64>,
     /// Stop after this many ms of silence following speech (default: 2000).
     silence_timeout_ms: Option<u64>,
-    /// Amplitude threshold for voice activity detection (default: 0.01).
+    /// Minimum amplitude threshold for voice activity detection (default: 0.01).
+    /// The actual threshold is max(this, noise_floor × noise_multiplier).
     silence_threshold: Option<f32>,
+    /// Multiplier applied to the calibrated noise floor to set the adaptive
+    /// threshold (default: 3.0). Higher = less sensitive, lower = more sensitive.
+    noise_multiplier: Option<f32>,
+    /// Duration in milliseconds to calibrate the noise floor at the start
+    /// of recording (default: 500). Set to 0 to skip calibration and use
+    /// silence_threshold directly.
+    calibration_ms: Option<u64>,
 }
 
 // ── Session state ──────────────────────────────────────────────────────
@@ -408,6 +416,8 @@ fn handle_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> 
             max_duration_ms: None,
             silence_timeout_ms: None,
             silence_threshold: None,
+            noise_multiplier: None,
+            calibration_ms: None,
         }
     } else {
         serde_json::from_value(params)
@@ -417,6 +427,8 @@ fn handle_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> 
     let max_duration = p.max_duration_ms.unwrap_or(30_000);
     let silence_timeout = p.silence_timeout_ms.unwrap_or(2_000);
     let threshold = p.silence_threshold.unwrap_or(0.01);
+    let noise_multiplier = p.noise_multiplier.unwrap_or(3.0);
+    let calibration_ms = p.calibration_ms.unwrap_or(500);
 
     // Lazily load STT model on first listen call
     if session.stt_model.is_none() {
@@ -451,6 +463,8 @@ fn handle_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> 
         max_duration,
         silence_timeout,
         threshold,
+        noise_multiplier,
+        calibration_ms,
     );
 
     let duration_ms = started.elapsed().as_millis() as u64;

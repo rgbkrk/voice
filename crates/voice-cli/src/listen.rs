@@ -296,6 +296,8 @@ pub fn record_with_vad(
     max_duration_ms: u64,
     silence_timeout_ms: u64,
     silence_threshold: f32,
+    noise_multiplier: f32,
+    calibration_ms: u64,
 ) -> Result<(Vec<f32>, u32), String> {
     let (device, config) = open_input_device()?;
     let sample_rate = config.sample_rate().0;
@@ -333,6 +335,44 @@ pub fn record_with_vad(
     let max_dur = std::time::Duration::from_millis(max_duration_ms);
     let silence_dur = std::time::Duration::from_millis(silence_timeout_ms);
 
+    // Adaptive noise floor calibration
+    let adaptive_threshold = if calibration_ms > 0 {
+        let calibration_duration = std::time::Duration::from_millis(calibration_ms);
+        let mut max_ambient_peak: f32 = 0.0;
+
+        while start_time.elapsed() < calibration_duration {
+            if INTERRUPTED.load(Ordering::Relaxed) {
+                drop(stream);
+                let samples = extract_samples(buffer);
+                return Ok((samples, sample_rate));
+            }
+            let peak_bits = recent_peak.load(Ordering::Relaxed);
+            let current_peak = f32::from_bits(peak_bits);
+            max_ambient_peak = max_ambient_peak.max(current_peak);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        let threshold = (max_ambient_peak * noise_multiplier).max(silence_threshold);
+
+        if !QUIET.load(Ordering::Relaxed) {
+            eprintln!(
+                "Noise floor: {:.4}, threshold: {:.4} (×{:.1})",
+                max_ambient_peak, threshold, noise_multiplier
+            );
+        }
+
+        // Clear the calibration audio from the buffer
+        {
+            let mut guard = buffer.lock().unwrap();
+            guard.clear();
+        }
+
+        threshold
+    } else {
+        // Skip calibration, use raw threshold
+        silence_threshold
+    };
+
     loop {
         if INTERRUPTED.load(Ordering::Relaxed) {
             break;
@@ -347,7 +387,7 @@ pub fn record_with_vad(
 
         let peak_bits = recent_peak.load(Ordering::Relaxed);
         let current_peak = f32::from_bits(peak_bits);
-        let is_speech = current_peak > silence_threshold;
+        let is_speech = current_peak > adaptive_threshold;
 
         if is_speech {
             if !speech_started {
@@ -399,6 +439,8 @@ pub fn record_continuous(
     max_duration_ms: u64,
     min_segment_ms: u64,
     max_segment_ms: u64,
+    noise_multiplier: f32,
+    calibration_ms: u64,
 ) -> Result<(mpsc::Receiver<Segment>, u32, cpal::Stream), String> {
     let (device, config) = open_input_device()?;
     let sample_rate = config.sample_rate().0;
@@ -446,6 +488,45 @@ pub fn record_continuous(
         let max_dur = std::time::Duration::from_millis(max_duration_ms);
         let silence_dur = std::time::Duration::from_millis(silence_timeout_ms);
 
+        // Adaptive noise floor calibration
+        let adaptive_threshold = if calibration_ms > 0 {
+            let calibration_duration = std::time::Duration::from_millis(calibration_ms);
+            let mut max_ambient_peak: f32 = 0.0;
+
+            if !QUIET.load(Ordering::Relaxed) {
+                eprintln!("Calibrating noise floor...");
+            }
+
+            while start_time.elapsed() < calibration_duration {
+                if INTERRUPTED.load(Ordering::Relaxed) {
+                    return;
+                }
+                let peak_bits = recent_peak.load(Ordering::Relaxed);
+                let current_peak = f32::from_bits(peak_bits);
+                max_ambient_peak = max_ambient_peak.max(current_peak);
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+
+            let threshold = (max_ambient_peak * noise_multiplier).max(silence_threshold);
+
+            if !QUIET.load(Ordering::Relaxed) {
+                eprintln!(
+                    "Noise floor: {:.4}, threshold: {:.4} (×{:.1})",
+                    max_ambient_peak, threshold, noise_multiplier
+                );
+            }
+
+            // Clear the calibration audio from the segment buffer
+            {
+                let mut guard = segment_buffer.lock().unwrap();
+                guard.clear();
+            }
+
+            threshold
+        } else {
+            silence_threshold
+        };
+
         loop {
             if INTERRUPTED.load(Ordering::Relaxed) {
                 // Flush any remaining speech as a final segment
@@ -486,7 +567,7 @@ pub fn record_continuous(
 
             let peak_bits = recent_peak.load(Ordering::Relaxed);
             let current_peak = f32::from_bits(peak_bits);
-            let is_speech = current_peak > silence_threshold;
+            let is_speech = current_peak > adaptive_threshold;
 
             if is_speech {
                 if !speech_started {
@@ -648,6 +729,8 @@ pub fn listen_continuous() {
         300_000, // max_duration_ms (5 min)
         500,     // min_segment_ms
         30_000,  // max_segment_ms
+        3.0,     // noise_multiplier
+        500,     // calibration_ms
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -688,6 +771,8 @@ pub fn listen_continuous_for_rpc(
     tokenizer: voice_stt::tokenizers::Tokenizer,
     silence_timeout_ms: u64,
     max_duration_ms: u64,
+    noise_multiplier: f32,
+    calibration_ms: u64,
 ) -> Result<mpsc::Receiver<SegmentResult>, String> {
     let (segments_rx, _sample_rate, _stream) = record_continuous(
         silence_timeout_ms,
@@ -695,6 +780,8 @@ pub fn listen_continuous_for_rpc(
         max_duration_ms,
         500,    // min_segment_ms
         30_000, // max_segment_ms
+        noise_multiplier,
+        calibration_ms,
     )?;
 
     Ok(transcribe_segments(model, tokenizer, segments_rx))
@@ -912,15 +999,22 @@ pub fn listen_and_transcribe_vad(
     max_duration_ms: u64,
     silence_timeout_ms: u64,
     silence_threshold: f32,
+    noise_multiplier: f32,
+    calibration_ms: u64,
 ) -> Option<voice_stt::TranscribeResult> {
-    let (samples, sample_rate) =
-        match record_with_vad(max_duration_ms, silence_timeout_ms, silence_threshold) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Recording failed: {e}");
-                return None;
-            }
-        };
+    let (samples, sample_rate) = match record_with_vad(
+        max_duration_ms,
+        silence_timeout_ms,
+        silence_threshold,
+        noise_multiplier,
+        calibration_ms,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Recording failed: {e}");
+            return None;
+        }
+    };
 
     if INTERRUPTED.load(Ordering::Relaxed) || samples.is_empty() {
         return None;

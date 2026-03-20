@@ -398,13 +398,59 @@ fn collect_subs(
     (text_subs, phoneme_overrides)
 }
 
+/// Download `mlx.metallib` from the GitHub release matching this binary's version.
+///
+/// The release workflow uploads the metallib as a standalone asset alongside
+/// the binary tarball.  This lets `cargo binstall` users (who skip the build
+/// step entirely) get the Metal kernels on first run.
+fn download_metallib(dest: &Path) -> Result<(), String> {
+    let repo = env!("CARGO_PKG_REPOSITORY");
+    let version = env!("CARGO_PKG_VERSION");
+    let url = format!("{repo}/releases/download/v{version}/mlx.metallib");
+
+    info!("Downloading mlx.metallib from GitHub release v{version}...");
+
+    let resp = ureq::get(&url)
+        .call()
+        .map_err(|e| format!("Failed to download mlx.metallib: {e}"))?;
+
+    let size_msg = resp
+        .header("content-length")
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|len| format!(" ({} MB)", len / 1_048_576))
+        .unwrap_or_default();
+    info!("Downloading mlx.metallib{size_msg}...");
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+    }
+
+    // Write to a temp file then rename for atomicity
+    let tmp = dest.with_extension("metallib.tmp");
+    let mut file = std::fs::File::create(&tmp)
+        .map_err(|e| format!("Failed to create {}: {e}", tmp.display()))?;
+
+    std::io::copy(&mut resp.into_reader(), &mut file)
+        .map_err(|e| format!("Failed to write mlx.metallib: {e}"))?;
+
+    std::fs::rename(&tmp, dest)
+        .map_err(|e| format!("Failed to rename to {}: {e}", dest.display()))?;
+
+    info!("Saved mlx.metallib to {}", dest.display());
+    Ok(())
+}
+
 /// Ensure `mlx.metallib` is co-located with the voice binary.
 ///
 /// MLX searches for the metallib next to the running binary before falling back
 /// to the compile-time `METAL_PATH`. When installed via `cargo install`, the
-/// compile-time path points to a deleted temp directory. This function copies
+/// binary lands in `~/.cargo/bin/` but the build tree is gone — so we copy
 /// the metallib from `~/.mlx/lib/` (where our build.rs places it) to sit next
 /// to the binary, making the co-located search succeed.
+///
+/// When installed via `cargo binstall`, there's no build step at all — so we
+/// download the metallib from the matching GitHub release on first run.
 fn ensure_metallib() {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -429,8 +475,13 @@ fn ensure_metallib() {
         .join(".mlx")
         .join("lib")
         .join("mlx.metallib");
+
     if !stable.exists() {
-        return; // Not available — the error will be caught later with a helpful message
+        // Not built locally — try downloading from the GitHub release
+        if let Err(e) = download_metallib(&stable) {
+            eprintln!("{e}");
+            return;
+        }
     }
 
     // Copy to sit next to the binary

@@ -326,8 +326,8 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
 /// for high-quality anti-aliasing.
 fn resample_sinc(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
     use rubato::{
-        calculate_cutoff, Async, FixedAsync, Indexing, Resampler,
-        SincInterpolationParameters, SincInterpolationType, WindowFunction,
+        calculate_cutoff, Async, FixedAsync, Indexing, Resampler, SincInterpolationParameters,
+        SincInterpolationType, WindowFunction,
     };
 
     let sinc_len = 128;
@@ -360,20 +360,17 @@ fn resample_sinc(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f3
     let num_input_frames = input_f64.len();
 
     // Compute output size
-    let num_output_frames = (num_input_frames as f64 * ratio).ceil() as usize
-        + resampler.output_delay()
-        + 128; // padding
+    let num_output_frames =
+        (num_input_frames as f64 * ratio).ceil() as usize + resampler.output_delay() + 128; // padding
     let mut output_f64 = vec![0.0f64; num_output_frames];
 
     // Use InterleavedSlice adapters (1 channel = interleaved is same as planar)
     use audioadapter_buffers::direct::InterleavedSlice;
 
-    let input_adapter =
-        InterleavedSlice::new(&input_f64, 1, num_input_frames)
-            .map_err(|e| SttError::Audio(format!("Input adapter failed: {e}")))?;
-    let mut output_adapter =
-        InterleavedSlice::new_mut(&mut output_f64, 1, num_output_frames)
-            .map_err(|e| SttError::Audio(format!("Output adapter failed: {e}")))?;
+    let input_adapter = InterleavedSlice::new(&input_f64, 1, num_input_frames)
+        .map_err(|e| SttError::Audio(format!("Input adapter failed: {e}")))?;
+    let mut output_adapter = InterleavedSlice::new_mut(&mut output_f64, 1, num_output_frames)
+        .map_err(|e| SttError::Audio(format!("Output adapter failed: {e}")))?;
 
     let indexing = Indexing {
         input_offset: 0,

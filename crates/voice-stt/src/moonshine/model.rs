@@ -14,13 +14,13 @@
 //! - **Tied embeddings**: Output projection reuses the token embedding matrix.
 
 use mlx_macros::ModuleParameters;
-use mlx_rs::Array;
 use mlx_rs::builder::Builder;
 use mlx_rs::error::Exception;
 use mlx_rs::module::Module;
 use mlx_rs::nn::{self, Embedding, GroupNorm, LayerNorm, LayerNormBuilder, Linear, LinearBuilder};
 use mlx_rs::ops::indexing::{IndexOp, IntoStrideBy};
 use mlx_rs::ops::{concatenate_axis, expand_dims, stack_axis};
+use mlx_rs::Array;
 
 use super::config::MoonshineConfig;
 

@@ -472,10 +472,7 @@ mod tests {
 
         assert_eq!(output.len(), input.len());
         for (a, b) in input.iter().zip(output.iter()) {
-            assert!(
-                (a - b).abs() < 1e-6,
-                "samples differ: {a} vs {b}"
-            );
+            assert!((a - b).abs() < 1e-6, "samples differ: {a} vs {b}");
         }
     }
 
@@ -532,10 +529,7 @@ mod tests {
 
         // RMS must be well above zero (sine RMS ≈ 1/√2 ≈ 0.707)
         let rms = (output.iter().map(|s| s * s).sum::<f32>() / output.len() as f32).sqrt();
-        assert!(
-            rms > 0.5,
-            "RMS of resampled sine is too low: {rms}"
-        );
+        assert!(rms > 0.5, "RMS of resampled sine is too low: {rms}");
     }
 
     // -----------------------------------------------------------------------
@@ -556,10 +550,7 @@ mod tests {
         let sample_rate = 16000u32;
         // Known i16 samples
         let i16_samples: Vec<i16> = vec![0, 16383, -16384, 32767, -32768, 1000, -1000];
-        let expected_f32: Vec<f32> = i16_samples
-            .iter()
-            .map(|&s| s as f32 / 32768.0)
-            .collect();
+        let expected_f32: Vec<f32> = i16_samples.iter().map(|&s| s as f32 / 32768.0).collect();
 
         // Write WAV
         {

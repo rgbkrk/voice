@@ -1,0 +1,663 @@
+//! Microphone recording and speech-to-text transcription.
+//!
+//! Debug: set `VOICE_SAVE_RECORDING=1` to save mic audio to `/tmp/voice_recording_<timestamp>.wav`.
+//!
+//! Leading silence is automatically trimmed to handle Bluetooth mic latency
+//! (AirPods can take ~0.5-1s before the mic starts capturing real audio).
+//!
+//! A pleasant ding sound plays when the mic is ready to record, so you know
+//! when to start speaking (especially helpful with Bluetooth mic latency).
+//!
+//! Two recording modes:
+//!
+//! - **Manual stop** (`voice listen`): Records until Enter or Ctrl+C.
+//! - **VAD auto-stop** (`record_with_vad`): Records until speech is detected
+//!   and then silence follows for a configurable timeout. Used by the JSON-RPC
+//!   `listen` method so agents don't need to send a signal to stop recording.
+
+use std::io::{self, Write};
+use std::num::NonZero;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::SampleFormat;
+use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
+
+use crate::{INTERRUPTED, QUIET};
+
+// ── Ding sound ─────────────────────────────────────────────────────────
+
+/// Play a short pleasant ding to signal that recording has started.
+///
+/// Synthesizes a 880Hz (A5) sine tone with a gentle exponential decay
+/// over ~200ms. Quick enough to not be annoying, clear enough to hear.
+fn play_ding() {
+    let sample_rate = 44100u32;
+    let duration_ms = 200;
+    let num_samples = sample_rate as usize * duration_ms / 1000;
+    let freq = 880.0f32; // A5 — bright but not shrill
+
+    let mut samples = Vec::with_capacity(num_samples);
+    for i in 0..num_samples {
+        let t = i as f32 / sample_rate as f32;
+        // Sine wave with exponential decay (τ ≈ 60ms)
+        let envelope = (-t / 0.06).exp() * 0.3; // 0.3 peak volume
+        let sample = (2.0 * std::f32::consts::PI * freq * t).sin() * envelope;
+        samples.push(sample);
+    }
+
+    let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
+        return; // Silent failure — ding is optional
+    };
+    stream.log_on_drop(false);
+    let player = Player::connect_new(stream.mixer());
+
+    let channels = NonZero::new(1u16).unwrap();
+    let rate = NonZero::new(sample_rate).unwrap();
+    let source = SamplesBuffer::new(channels, rate, samples);
+    player.append(source);
+
+    // Wait for the ding to finish before returning
+    while !player.empty() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Brief pause so the ding decays fully before mic picks it up
+    std::thread::sleep(std::time::Duration::from_millis(50));
+}
+
+// ── Mic input helpers ──────────────────────────────────────────────────
+
+/// Open the default input device and return its config.
+fn open_input_device() -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .ok_or("No input device available")?;
+    let config = device
+        .default_input_config()
+        .map_err(|e| format!("Failed to get input config: {e}"))?;
+    Ok((device, config))
+}
+
+/// Build an input stream that writes mono f32 samples into `buffer`.
+///
+/// If `peak_out` is `Some`, each callback also writes the chunk's peak
+/// amplitude (as `f32::to_bits()`) into the atomic for VAD polling.
+fn build_input_stream(
+    device: &cpal::Device,
+    config: &cpal::SupportedStreamConfig,
+    buffer: Arc<Mutex<Vec<f32>>>,
+    peak_out: Option<Arc<std::sync::atomic::AtomicU32>>,
+) -> Result<cpal::Stream, String> {
+    let channels = config.channels() as usize;
+
+    match config.sample_format() {
+        SampleFormat::F32 => {
+            let buf = Arc::clone(&buffer);
+            let peak = peak_out.clone();
+            device
+                .build_input_stream(
+                    &config.clone().into(),
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        let mut guard = buf.lock().unwrap();
+                        let mut chunk_peak: f32 = 0.0;
+                        if channels == 1 {
+                            for &s in data {
+                                chunk_peak = chunk_peak.max(s.abs());
+                                guard.push(s);
+                            }
+                        } else {
+                            for chunk in data.chunks(channels) {
+                                let mono: f32 = chunk.iter().sum::<f32>() / channels as f32;
+                                chunk_peak = chunk_peak.max(mono.abs());
+                                guard.push(mono);
+                            }
+                        }
+                        if let Some(ref p) = peak {
+                            p.store(chunk_peak.to_bits(), Ordering::Relaxed);
+                        }
+                    },
+                    |err| eprintln!("Audio input error: {err}"),
+                    None,
+                )
+                .map_err(|e| format!("Failed to build input stream: {e}"))
+        }
+        SampleFormat::I16 => {
+            let buf = Arc::clone(&buffer);
+            let peak = peak_out.clone();
+            device
+                .build_input_stream(
+                    &config.clone().into(),
+                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        let mut guard = buf.lock().unwrap();
+                        let mut chunk_peak: f32 = 0.0;
+                        if channels == 1 {
+                            for &s in data {
+                                let f = s as f32 / 32768.0;
+                                chunk_peak = chunk_peak.max(f.abs());
+                                guard.push(f);
+                            }
+                        } else {
+                            for chunk in data.chunks(channels) {
+                                let mono: f32 =
+                                    chunk.iter().map(|&s| s as f32 / 32768.0).sum::<f32>()
+                                        / channels as f32;
+                                chunk_peak = chunk_peak.max(mono.abs());
+                                guard.push(mono);
+                            }
+                        }
+                        if let Some(ref p) = peak {
+                            p.store(chunk_peak.to_bits(), Ordering::Relaxed);
+                        }
+                    },
+                    |err| eprintln!("Audio input error: {err}"),
+                    None,
+                )
+                .map_err(|e| format!("Failed to build input stream: {e}"))
+        }
+        format => Err(format!("Unsupported sample format: {format:?}")),
+    }
+}
+
+/// Extract final samples from the shared buffer.
+fn extract_samples(buffer: Arc<Mutex<Vec<f32>>>) -> Vec<f32> {
+    match Arc::try_unwrap(buffer) {
+        Ok(mutex) => mutex.into_inner().unwrap(),
+        Err(arc) => arc.lock().unwrap().clone(),
+    }
+}
+
+/// Log recording stats to stderr (unless quiet).
+fn log_recording_stats(samples: &[f32], sample_rate: u32) {
+    if QUIET.load(Ordering::Relaxed) || samples.is_empty() {
+        return;
+    }
+
+    let duration = samples.len() as f32 / sample_rate as f32;
+    let max_abs = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    let nonzero = samples.iter().filter(|s| s.abs() > 1e-8).count();
+
+    eprintln!(
+        "Recorded {:.1}s ({} samples at {}Hz)",
+        duration,
+        samples.len(),
+        sample_rate
+    );
+    eprintln!(
+        "Audio levels: peak={:.6}, rms={:.6}, nonzero={}/{}",
+        max_abs,
+        rms,
+        nonzero,
+        samples.len()
+    );
+    if max_abs < 0.001 {
+        eprintln!(
+            "⚠️  Audio is nearly silent (peak={:.6}). Check your mic input level.",
+            max_abs
+        );
+    }
+}
+
+// ── Recording modes ────────────────────────────────────────────────────
+
+/// Record audio from the default input device until Enter or Ctrl+C.
+///
+/// Returns mono f32 samples at the device's native sample rate, plus the rate.
+pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
+    let (device, config) = open_input_device()?;
+    let sample_rate = config.sample_rate().0;
+
+    if !QUIET.load(Ordering::Relaxed) {
+        let name = device.name().unwrap_or_else(|_| "unknown".to_string());
+        eprintln!(
+            "Recording from: {name} ({sample_rate}Hz, {}ch)",
+            config.channels()
+        );
+    }
+
+    // Play ding before recording starts
+    play_ding();
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("Press Enter or Ctrl+C to stop recording...");
+    }
+
+    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let stream = build_input_stream(&device, &config, Arc::clone(&buffer), None)?;
+
+    stream
+        .play()
+        .map_err(|e| format!("Failed to start recording: {e}"))?;
+
+    // Wait for Enter key or Ctrl+C
+    let enter_pressed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let enter_clone = Arc::clone(&enter_pressed);
+
+    let stdin_thread = std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = io::stdin().read_line(&mut line);
+        enter_clone.store(true, Ordering::SeqCst);
+    });
+
+    loop {
+        if INTERRUPTED.load(Ordering::Relaxed) || enter_pressed.load(Ordering::Relaxed) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    drop(stream);
+    drop(stdin_thread);
+
+    let samples = extract_samples(buffer);
+    log_recording_stats(&samples, sample_rate);
+    maybe_save_recording(&samples, sample_rate);
+
+    Ok((samples, sample_rate))
+}
+
+/// Record audio with voice activity detection (auto-stop on silence).
+///
+/// Plays a ding, starts recording, waits for speech to begin, then
+/// auto-stops after `silence_timeout_ms` of silence following speech.
+/// Also stops on `INTERRUPTED` flag (Ctrl+C / cancel) or `max_duration_ms`.
+///
+/// Returns mono f32 samples at the device's native sample rate, plus the rate.
+pub fn record_with_vad(
+    max_duration_ms: u64,
+    silence_timeout_ms: u64,
+    silence_threshold: f32,
+) -> Result<(Vec<f32>, u32), String> {
+    let (device, config) = open_input_device()?;
+    let sample_rate = config.sample_rate().0;
+
+    if !QUIET.load(Ordering::Relaxed) {
+        let name = device.name().unwrap_or_else(|_| "unknown".to_string());
+        eprintln!(
+            "Recording from: {name} ({sample_rate}Hz, {}ch)",
+            config.channels()
+        );
+    }
+
+    // Play ding BEFORE starting the stream so it's not captured by the mic
+    play_ding();
+
+    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recent_peak: Arc<std::sync::atomic::AtomicU32> =
+        Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+    let stream = build_input_stream(
+        &device,
+        &config,
+        Arc::clone(&buffer),
+        Some(Arc::clone(&recent_peak)),
+    )?;
+
+    stream
+        .play()
+        .map_err(|e| format!("Failed to start recording: {e}"))?;
+
+    // VAD state machine
+    let mut speech_started = false;
+    let mut silence_start: Option<std::time::Instant> = None;
+    let start_time = std::time::Instant::now();
+    let max_dur = std::time::Duration::from_millis(max_duration_ms);
+    let silence_dur = std::time::Duration::from_millis(silence_timeout_ms);
+
+    loop {
+        if INTERRUPTED.load(Ordering::Relaxed) {
+            break;
+        }
+
+        if start_time.elapsed() >= max_dur {
+            if !QUIET.load(Ordering::Relaxed) {
+                eprintln!("Max recording duration reached.");
+            }
+            break;
+        }
+
+        let peak_bits = recent_peak.load(Ordering::Relaxed);
+        let current_peak = f32::from_bits(peak_bits);
+        let is_speech = current_peak > silence_threshold;
+
+        if is_speech {
+            if !speech_started {
+                speech_started = true;
+                if !QUIET.load(Ordering::Relaxed) {
+                    eprintln!("Speech detected...");
+                }
+            }
+            silence_start = None;
+        } else if speech_started {
+            if silence_start.is_none() {
+                silence_start = Some(std::time::Instant::now());
+            }
+            if let Some(ss) = silence_start {
+                if ss.elapsed() >= silence_dur {
+                    if !QUIET.load(Ordering::Relaxed) {
+                        eprintln!("Silence detected, stopping recording.");
+                    }
+                    break;
+                }
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    drop(stream);
+
+    let samples = extract_samples(buffer);
+    log_recording_stats(&samples, sample_rate);
+    maybe_save_recording(&samples, sample_rate);
+
+    Ok((samples, sample_rate))
+}
+
+// ── Audio processing ───────────────────────────────────────────────────
+
+/// Trim leading and trailing silence from audio samples.
+///
+/// Bluetooth microphones (e.g. AirPods) can take ~0.5-1s before audio
+/// actually flows, producing a block of zeros at the start. Moonshine
+/// is sensitive to the silence-to-speech ratio, especially on short
+/// recordings — trimming silence dramatically improves accuracy.
+fn trim_silence(samples: &[f32], sample_rate: u32) -> Vec<f32> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+
+    // Threshold: -40 dBFS ≈ 0.01 amplitude
+    let threshold: f32 = 0.01;
+    // Keep 100ms of context around detected speech edges
+    let padding = (sample_rate as usize) / 10;
+
+    let first_voice = samples.iter().position(|s| s.abs() > threshold);
+    let last_voice = samples.iter().rposition(|s| s.abs() > threshold);
+
+    match (first_voice, last_voice) {
+        (Some(start), Some(end)) => {
+            let start = start.saturating_sub(padding);
+            let end = (end + padding).min(samples.len());
+            samples[start..end].to_vec()
+        }
+        _ => Vec::new(),
+    }
+}
+
+// ── Debug recording save ───────────────────────────────────────────────
+
+/// Save samples to a timestamped WAV file in /tmp for debugging.
+/// Only runs if `VOICE_SAVE_RECORDING` env var is set.
+fn maybe_save_recording(samples: &[f32], sample_rate: u32) {
+    if std::env::var("VOICE_SAVE_RECORDING").is_err() || samples.is_empty() {
+        return;
+    }
+
+    let timestamp = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let days = secs / 86400;
+        let time_of_day = secs % 86400;
+        let hours = time_of_day / 3600;
+        let minutes = (time_of_day % 3600) / 60;
+        let seconds = time_of_day % 60;
+        let (year, month, day) = days_to_ymd(days);
+        format!("{year:04}{month:02}{day:02}_{hours:02}{minutes:02}{seconds:02}")
+    };
+
+    let debug_path = format!("/tmp/voice_recording_{timestamp}.wav");
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+
+    if let Ok(mut writer) = hound::WavWriter::create(&debug_path, spec) {
+        for &s in samples {
+            let _ = writer.write_sample(s);
+        }
+        let _ = writer.finalize();
+        if !QUIET.load(Ordering::Relaxed) {
+            eprintln!("Saved recording to {debug_path}");
+        }
+    }
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+// ── STT model helpers ──────────────────────────────────────────────────
+
+/// Default STT model. Override with `STT_MODEL` env var.
+/// moonshine-base (61M) is noticeably better than tiny (27M) for real mic audio.
+const DEFAULT_STT_MODEL: &str = "UsefulSensors/moonshine-base";
+
+fn stt_model_repo() -> String {
+    std::env::var("STT_MODEL").unwrap_or_else(|_| DEFAULT_STT_MODEL.to_string())
+}
+
+/// Load STT model and tokenizer. Prints progress to stderr unless quiet.
+fn load_stt() -> (voice_stt::MoonshineModel, voice_stt::tokenizers::Tokenizer) {
+    let repo = stt_model_repo();
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("Loading speech-to-text model ({repo})...");
+    }
+
+    let model = match voice_stt::load_model(&repo) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Failed to load STT model: {e}");
+            eprintln!("Model weights will be downloaded from HuggingFace on first run.");
+            std::process::exit(1);
+        }
+    };
+
+    let tokenizer = match voice_stt::load_tokenizer(&repo) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Failed to load tokenizer: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("Model loaded. Ready to listen.\n");
+    }
+
+    (model, tokenizer)
+}
+
+/// Run transcription on recorded audio with silence trimming.
+fn transcribe_samples(
+    model: &mut voice_stt::MoonshineModel,
+    tokenizer: &voice_stt::tokenizers::Tokenizer,
+    samples: &[f32],
+    sample_rate: u32,
+) -> Option<voice_stt::TranscribeResult> {
+    // Trim leading/trailing silence
+    let original_len = samples.len();
+    let trimmed = trim_silence(samples, sample_rate);
+    let trimmed_duration = trimmed.len() as f32 / sample_rate as f32;
+
+    if !QUIET.load(Ordering::Relaxed) && trimmed.len() < original_len {
+        let original_duration = original_len as f32 / sample_rate as f32;
+        eprintln!(
+            "Trimmed silence: {:.1}s → {:.1}s of speech",
+            original_duration, trimmed_duration
+        );
+    }
+
+    if trimmed.is_empty() {
+        eprintln!("No speech detected in recording.");
+        return None;
+    }
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("Transcribing {:.1}s of audio...", trimmed_duration);
+    }
+
+    match voice_stt::transcribe_audio_with_tokenizer(model, &trimmed, sample_rate, tokenizer) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            eprintln!("Transcription failed: {e}");
+            None
+        }
+    }
+}
+
+// ── Public entry points ────────────────────────────────────────────────
+
+/// Record from mic (manual stop), transcribe, print result.
+///
+/// Entry point for `voice listen`.
+pub fn listen_and_transcribe() {
+    let (mut model, tokenizer) = load_stt();
+
+    let (samples, sample_rate) = match record_until_interrupt() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Recording failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if samples.is_empty() {
+        eprintln!("No audio recorded.");
+        return;
+    }
+
+    // Reset interrupt so the process exits cleanly
+    INTERRUPTED.store(false, Ordering::Relaxed);
+
+    if let Some(result) = transcribe_samples(&mut model, &tokenizer, &samples, sample_rate) {
+        println!("{}", result.text);
+        if !QUIET.load(Ordering::Relaxed) {
+            let _ = io::stderr().flush();
+            eprintln!("\n({} tokens)", result.tokens.len());
+        }
+    }
+}
+
+/// Record from mic (VAD auto-stop), transcribe, return result.
+///
+/// Used by the JSON-RPC `listen` method. Returns `None` if no speech
+/// was detected or transcription failed.
+pub fn listen_and_transcribe_vad(
+    model: &mut voice_stt::MoonshineModel,
+    tokenizer: &voice_stt::tokenizers::Tokenizer,
+    max_duration_ms: u64,
+    silence_timeout_ms: u64,
+    silence_threshold: f32,
+) -> Option<voice_stt::TranscribeResult> {
+    let (samples, sample_rate) =
+        match record_with_vad(max_duration_ms, silence_timeout_ms, silence_threshold) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Recording failed: {e}");
+                return None;
+            }
+        };
+
+    if INTERRUPTED.load(Ordering::Relaxed) || samples.is_empty() {
+        return None;
+    }
+
+    transcribe_samples(model, tokenizer, &samples, sample_rate)
+}
+
+/// Transcribe a WAV file and print the result.
+///
+/// Entry point for `voice --transcribe <file>`.
+pub fn transcribe_file(path: &str) {
+    let (mut model, tokenizer) = load_stt();
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("Transcribing: {path}");
+    }
+
+    // Load WAV
+    let reader = match hound::WavReader::open(path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to open {path}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let spec = reader.spec();
+    let channels = spec.channels as usize;
+    let sample_rate = spec.sample_rate;
+
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let max_val = (1u32 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .into_samples::<i32>()
+                .map(|s| s.unwrap_or(0) as f32 / max_val)
+                .collect()
+        }
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .map(|s| s.unwrap_or(0.0))
+            .collect(),
+    };
+
+    // Mix to mono
+    let mono: Vec<f32> = if channels > 1 {
+        samples
+            .chunks(channels)
+            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+            .collect()
+    } else {
+        samples
+    };
+
+    let duration = mono.len() as f32 / sample_rate as f32;
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!(
+            "Audio: {:.1}s ({} samples at {}Hz)",
+            duration,
+            mono.len(),
+            sample_rate
+        );
+    }
+
+    let result = match voice_stt::transcribe_audio_with_tokenizer(
+        &mut model,
+        &mono,
+        sample_rate,
+        &tokenizer,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Transcription failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    println!("{}", result.text);
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("\n({} tokens)", result.tokens.len());
+    }
+}

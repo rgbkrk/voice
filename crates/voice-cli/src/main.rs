@@ -1,4 +1,5 @@
 mod jsonrpc;
+mod listen;
 
 use clap::Parser;
 use pulldown_cmark::{Event, Options, Parser as MdParser, Tag, TagEnd};
@@ -40,7 +41,9 @@ macro_rules! info {
                   voice --phonemes \"hɛloʊ wɜːld\"\n  \
                   voice --markdown -f post.mdx\n  \
                   voice --sub nteract=enteract -f post.mdx\n  \
-                  voice --sub-file .voice-subs --markdown -f post.mdx"
+                  voice --sub-file .voice-subs --markdown -f post.mdx\n  \
+                  voice listen\n  \
+                  voice --transcribe recording.wav"
 )]
 struct Args {
     /// Text to speak
@@ -88,6 +91,15 @@ struct Args {
     /// Run as a JSON-RPC 2.0 server on stdin/stdout.
     #[arg(long)]
     jsonrpc: bool,
+
+    /// Record from microphone and transcribe (speech-to-text).
+    /// Also triggered by `voice listen` as the first positional arg.
+    #[arg(long, conflicts_with_all = ["text", "input_file", "phonemes", "jsonrpc", "transcribe"])]
+    listen: bool,
+
+    /// Transcribe a WAV audio file (speech-to-text).
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["text", "input_file", "phonemes", "jsonrpc", "listen"])]
+    transcribe: Option<PathBuf>,
 }
 
 fn resolve_text(args: &Args) -> Result<String, String> {
@@ -407,6 +419,25 @@ fn main() {
     if args.quiet {
         QUIET.store(true, Ordering::Relaxed);
     }
+
+    // -- STT modes: listen (mic) and transcribe (file) -----------------------
+    // These bypass the TTS pipeline entirely.
+
+    // Support `voice listen` as a positional arg shortcut for `--listen`
+    let is_listen =
+        args.listen || (args.text.len() == 1 && args.text[0].eq_ignore_ascii_case("listen"));
+
+    if is_listen {
+        listen::listen_and_transcribe();
+        return;
+    }
+
+    if let Some(ref path) = args.transcribe {
+        listen::transcribe_file(&path.display().to_string());
+        return;
+    }
+
+    // -- TTS pipeline --------------------------------------------------------
 
     // Start model loading in a background thread immediately — this is the
     // slowest startup step (~200ms) and can run while we resolve text + G2P.

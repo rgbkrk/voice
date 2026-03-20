@@ -8,23 +8,52 @@
 //! A pleasant ding sound plays when the mic is ready to record, so you know
 //! when to start speaking (especially helpful with Bluetooth mic latency).
 //!
-//! Two recording modes:
+//! Three recording modes:
 //!
 //! - **Manual stop** (`voice listen`): Records until Enter or Ctrl+C.
 //! - **VAD auto-stop** (`record_with_vad`): Records until speech is detected
 //!   and then silence follows for a configurable timeout. Used by the JSON-RPC
 //!   `listen` method so agents don't need to send a signal to stop recording.
+//! - **Continuous** (`voice listen --continuous`): Records indefinitely,
+//!   splitting on silence into segments. Each segment is transcribed as it
+//!   completes while recording continues. Audio thread → segment queue →
+//!   transcription thread → output.
 
 use std::io::{self, Write};
 use std::num::NonZero;
+use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
 
 use crate::{INTERRUPTED, QUIET};
+
+// ── Segment types ──────────────────────────────────────────────────────
+
+/// A chunk of recorded audio delimited by silence boundaries.
+pub struct Segment {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub segment_id: u64,
+    /// Milliseconds since recording started.
+    pub timestamp_ms: u64,
+}
+
+/// Result of transcribing a single segment.
+#[allow(dead_code)]
+pub struct SegmentResult {
+    pub text: String,
+    pub tokens: Vec<u32>,
+    pub segment_id: u64,
+    pub timestamp_ms: u64,
+    /// How long inference took in milliseconds.
+    pub transcribe_ms: u64,
+}
 
 // ── Ding sound ─────────────────────────────────────────────────────────
 
@@ -269,6 +298,8 @@ pub fn record_with_vad(
     max_duration_ms: u64,
     silence_timeout_ms: u64,
     silence_threshold: f32,
+    noise_multiplier: f32,
+    calibration_ms: u64,
 ) -> Result<(Vec<f32>, u32), String> {
     let (device, config) = open_input_device()?;
     let sample_rate = config.sample_rate().0;
@@ -306,6 +337,44 @@ pub fn record_with_vad(
     let max_dur = std::time::Duration::from_millis(max_duration_ms);
     let silence_dur = std::time::Duration::from_millis(silence_timeout_ms);
 
+    // Adaptive noise floor calibration
+    let adaptive_threshold = if calibration_ms > 0 {
+        let calibration_duration = std::time::Duration::from_millis(calibration_ms);
+        let mut max_ambient_peak: f32 = 0.0;
+
+        while start_time.elapsed() < calibration_duration {
+            if INTERRUPTED.load(Ordering::Relaxed) {
+                drop(stream);
+                let samples = extract_samples(buffer);
+                return Ok((samples, sample_rate));
+            }
+            let peak_bits = recent_peak.load(Ordering::Relaxed);
+            let current_peak = f32::from_bits(peak_bits);
+            max_ambient_peak = max_ambient_peak.max(current_peak);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        let threshold = (max_ambient_peak * noise_multiplier).max(silence_threshold);
+
+        if !QUIET.load(Ordering::Relaxed) {
+            eprintln!(
+                "Noise floor: {:.4}, threshold: {:.4} (×{:.1})",
+                max_ambient_peak, threshold, noise_multiplier
+            );
+        }
+
+        // Clear the calibration audio from the buffer
+        {
+            let mut guard = buffer.lock().unwrap();
+            guard.clear();
+        }
+
+        threshold
+    } else {
+        // Skip calibration, use raw threshold
+        silence_threshold
+    };
+
     loop {
         if INTERRUPTED.load(Ordering::Relaxed) {
             break;
@@ -320,7 +389,7 @@ pub fn record_with_vad(
 
         let peak_bits = recent_peak.load(Ordering::Relaxed);
         let current_peak = f32::from_bits(peak_bits);
-        let is_speech = current_peak > silence_threshold;
+        let is_speech = current_peak > adaptive_threshold;
 
         if is_speech {
             if !speech_started {
@@ -354,6 +423,378 @@ pub fn record_with_vad(
     maybe_save_recording(&samples, sample_rate);
 
     Ok((samples, sample_rate))
+}
+
+// ── Continuous recording ───────────────────────────────────────────────
+
+/// Record continuously, splitting speech into segments by silence.
+///
+/// Returns a receiver that yields `Segment` values as each speech segment
+/// completes (silence detected after speech). Recording runs on the audio
+/// thread and never stops until `INTERRUPTED` is set or `max_duration_ms`
+/// is reached.
+///
+/// Plays a ding at the start. No dings between segments.
+pub fn record_continuous(
+    silence_timeout_ms: u64,
+    silence_threshold: f32,
+    max_duration_ms: u64,
+    min_segment_ms: u64,
+    max_segment_ms: u64,
+    noise_multiplier: f32,
+    calibration_ms: u64,
+) -> Result<(mpsc::Receiver<Segment>, u32, cpal::Stream), String> {
+    let (device, config) = open_input_device()?;
+    let sample_rate = config.sample_rate().0;
+
+    if !QUIET.load(Ordering::Relaxed) {
+        let name = device.name().unwrap_or_else(|_| "unknown".to_string());
+        eprintln!(
+            "Recording from: {name} ({sample_rate}Hz, {}ch)",
+            config.channels()
+        );
+    }
+
+    // Play ding once at the start
+    play_ding();
+
+    // Shared state between audio callback and VAD monitor
+    let segment_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recent_peak: Arc<std::sync::atomic::AtomicU32> =
+        Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+    let stream = build_input_stream(
+        &device,
+        &config,
+        Arc::clone(&segment_buffer),
+        Some(Arc::clone(&recent_peak)),
+    )?;
+
+    stream
+        .play()
+        .map_err(|e| format!("Failed to start recording: {e}"))?;
+
+    let (tx, rx) = mpsc::channel::<Segment>();
+
+    let min_samples = (sample_rate as u64 * min_segment_ms / 1000) as usize;
+    let max_samples = (sample_rate as u64 * max_segment_ms / 1000) as usize;
+
+    // VAD monitor thread — watches peak levels, snapshots segments
+    // Note: `stream` is NOT moved here — it's returned to the caller
+    // who must keep it alive for the duration of recording.
+    std::thread::spawn(move || {
+        let mut speech_started = false;
+        let mut silence_start: Option<Instant> = None;
+        let mut segment_id: u64 = 0;
+        let start_time = Instant::now();
+        let max_dur = std::time::Duration::from_millis(max_duration_ms);
+        let silence_dur = std::time::Duration::from_millis(silence_timeout_ms);
+
+        // Adaptive noise floor calibration
+        let adaptive_threshold = if calibration_ms > 0 {
+            let calibration_duration = std::time::Duration::from_millis(calibration_ms);
+            let mut max_ambient_peak: f32 = 0.0;
+
+            if !QUIET.load(Ordering::Relaxed) {
+                eprintln!("Calibrating noise floor...");
+            }
+
+            while start_time.elapsed() < calibration_duration {
+                if INTERRUPTED.load(Ordering::Relaxed) {
+                    return;
+                }
+                let peak_bits = recent_peak.load(Ordering::Relaxed);
+                let current_peak = f32::from_bits(peak_bits);
+                max_ambient_peak = max_ambient_peak.max(current_peak);
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+
+            let threshold = (max_ambient_peak * noise_multiplier).max(silence_threshold);
+
+            if !QUIET.load(Ordering::Relaxed) {
+                eprintln!(
+                    "Noise floor: {:.4}, threshold: {:.4} (×{:.1})",
+                    max_ambient_peak, threshold, noise_multiplier
+                );
+            }
+
+            // Clear the calibration audio from the segment buffer
+            {
+                let mut guard = segment_buffer.lock().unwrap();
+                guard.clear();
+            }
+
+            threshold
+        } else {
+            silence_threshold
+        };
+
+        loop {
+            if INTERRUPTED.load(Ordering::Relaxed) {
+                // Flush any remaining speech as a final segment
+                let mut guard = segment_buffer.lock().unwrap();
+                if guard.len() >= min_samples {
+                    segment_id += 1;
+                    let samples = std::mem::take(&mut *guard);
+                    let elapsed = start_time.elapsed().as_millis() as u64;
+                    let _ = tx.send(Segment {
+                        samples,
+                        sample_rate,
+                        segment_id,
+                        timestamp_ms: elapsed,
+                    });
+                }
+                break;
+            }
+
+            if start_time.elapsed() >= max_dur {
+                if !QUIET.load(Ordering::Relaxed) {
+                    eprintln!("Max recording duration reached.");
+                }
+                // Flush remaining
+                let mut guard = segment_buffer.lock().unwrap();
+                if guard.len() >= min_samples {
+                    segment_id += 1;
+                    let samples = std::mem::take(&mut *guard);
+                    let elapsed = start_time.elapsed().as_millis() as u64;
+                    let _ = tx.send(Segment {
+                        samples,
+                        sample_rate,
+                        segment_id,
+                        timestamp_ms: elapsed,
+                    });
+                }
+                break;
+            }
+
+            let peak_bits = recent_peak.load(Ordering::Relaxed);
+            let current_peak = f32::from_bits(peak_bits);
+            let is_speech = current_peak > adaptive_threshold;
+
+            if is_speech {
+                if !speech_started {
+                    speech_started = true;
+                }
+                silence_start = None;
+            } else if speech_started {
+                if silence_start.is_none() {
+                    silence_start = Some(Instant::now());
+                }
+                if let Some(ss) = silence_start {
+                    if ss.elapsed() >= silence_dur {
+                        // End of speech segment — snapshot and send
+                        let segment_data = {
+                            let mut guard = segment_buffer.lock().unwrap();
+                            if guard.len() >= min_samples {
+                                segment_id += 1;
+                                let samples = std::mem::take(&mut *guard);
+                                let elapsed = start_time.elapsed().as_millis() as u64;
+                                Some((samples, elapsed))
+                            } else {
+                                // Too short — discard
+                                guard.clear();
+                                None
+                            }
+                        };
+
+                        if let Some((samples, elapsed)) = segment_data {
+                            if !QUIET.load(Ordering::Relaxed) {
+                                let dur = samples.len() as f32 / sample_rate as f32;
+                                eprintln!("  segment {segment_id}: {dur:.1}s of speech");
+                            }
+
+                            maybe_save_recording(&samples, sample_rate);
+
+                            let _ = tx.send(Segment {
+                                samples,
+                                sample_rate,
+                                segment_id,
+                                timestamp_ms: elapsed,
+                            });
+                        }
+
+                        speech_started = false;
+                        silence_start = None;
+                    }
+                }
+            }
+
+            // Force-split very long segments
+            let forced_split: Option<(Vec<f32>, u64, u64)> = {
+                let mut guard = segment_buffer.lock().unwrap();
+                if guard.len() >= max_samples && speech_started {
+                    segment_id += 1;
+                    let samples = std::mem::take(&mut *guard);
+                    let elapsed = start_time.elapsed().as_millis() as u64;
+                    Some((samples, segment_id, elapsed))
+                } else {
+                    None
+                }
+            };
+
+            if let Some((samples, seg_id, elapsed)) = forced_split {
+                if !QUIET.load(Ordering::Relaxed) {
+                    let dur = samples.len() as f32 / sample_rate as f32;
+                    eprintln!("  segment {seg_id}: {dur:.1}s (max length split)");
+                }
+
+                maybe_save_recording(&samples, sample_rate);
+
+                let _ = tx.send(Segment {
+                    samples,
+                    sample_rate,
+                    segment_id: seg_id,
+                    timestamp_ms: elapsed,
+                });
+
+                // Stay in speech_started state — next audio continues the segment
+                silence_start = None;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // Channel drops here, signaling the consumer that recording is done
+    });
+
+    Ok((rx, sample_rate, stream))
+}
+
+/// Consume segments from the recording queue and transcribe each one.
+///
+/// Spawns a thread that pulls segments, trims silence, resamples, and
+/// runs Moonshine inference. Results are sent to the returned receiver.
+///
+/// The model and tokenizer are moved into this thread — they're not
+/// thread-safe, so single-threaded access is correct.
+pub fn transcribe_segments(
+    mut model: voice_stt::MoonshineModel,
+    tokenizer: voice_stt::tokenizers::Tokenizer,
+    segments: mpsc::Receiver<Segment>,
+) -> mpsc::Receiver<SegmentResult> {
+    let (tx, rx) = mpsc::channel::<SegmentResult>();
+
+    std::thread::spawn(move || {
+        for segment in segments {
+            if INTERRUPTED.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let trimmed = trim_silence(&segment.samples, segment.sample_rate);
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let t0 = Instant::now();
+            let result = voice_stt::transcribe_audio_with_tokenizer(
+                &mut model,
+                &trimmed,
+                segment.sample_rate,
+                &tokenizer,
+            );
+
+            let transcribe_ms = t0.elapsed().as_millis() as u64;
+
+            match result {
+                Ok(r) if !r.text.trim().is_empty() => {
+                    let _ = tx.send(SegmentResult {
+                        text: r.text,
+                        tokens: r.tokens,
+                        segment_id: segment.segment_id,
+                        timestamp_ms: segment.timestamp_ms,
+                        transcribe_ms,
+                    });
+                }
+                Ok(_) => {} // empty transcription — skip
+                Err(e) => {
+                    if !QUIET.load(Ordering::Relaxed) {
+                        eprintln!(
+                            "  transcription error on segment {}: {e}",
+                            segment.segment_id
+                        );
+                    }
+                }
+            }
+        }
+        // Channel drops here, signaling the output consumer
+    });
+
+    rx
+}
+
+/// Run continuous listen mode: record → segment → transcribe → print.
+///
+/// Entry point for `voice listen --continuous`.
+pub fn listen_continuous() {
+    let (model, tokenizer) = load_stt();
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("Listening continuously... (Ctrl+C to stop)\n");
+    }
+
+    let (segments_rx, _sample_rate, _stream) = match record_continuous(
+        1500,     // silence_timeout_ms
+        0.01,     // silence_threshold
+        u64::MAX, // max_duration_ms (unlimited — Ctrl+C to stop)
+        500,      // min_segment_ms
+        30_000,   // max_segment_ms
+        3.0,      // noise_multiplier
+        500,      // calibration_ms
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Recording failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let results_rx = transcribe_segments(model, tokenizer, segments_rx);
+
+    let start = Instant::now();
+    let mut total_segments = 0u64;
+
+    for result in results_rx {
+        total_segments += 1;
+        let ts_secs = result.timestamp_ms / 1000;
+        let ts_mins = ts_secs / 60;
+        let ts_rem = ts_secs % 60;
+        println!("[{ts_mins}:{ts_rem:02}] {}", result.text);
+        let _ = io::stdout().flush();
+    }
+
+    // Reset interrupt for clean exit
+    INTERRUPTED.store(false, Ordering::Relaxed);
+
+    let total_secs = start.elapsed().as_secs_f64();
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("\n{total_segments} segments transcribed in {total_secs:.1}s");
+    }
+}
+
+/// Run continuous listen for JSON-RPC, yielding segment results.
+///
+/// Returns a receiver of SegmentResult. The caller (jsonrpc dispatch)
+/// sends notifications per result and a final response on completion.
+#[allow(dead_code)]
+pub fn listen_continuous_for_rpc(
+    model: voice_stt::MoonshineModel,
+    tokenizer: voice_stt::tokenizers::Tokenizer,
+    silence_timeout_ms: u64,
+    max_duration_ms: u64,
+    noise_multiplier: f32,
+    calibration_ms: u64,
+) -> Result<mpsc::Receiver<SegmentResult>, String> {
+    let (segments_rx, _sample_rate, _stream) = record_continuous(
+        silence_timeout_ms,
+        0.01, // silence_threshold
+        max_duration_ms,
+        500,    // min_segment_ms
+        30_000, // max_segment_ms
+        noise_multiplier,
+        calibration_ms,
+    )?;
+
+    Ok(transcribe_segments(model, tokenizer, segments_rx))
 }
 
 // ── Audio processing ───────────────────────────────────────────────────
@@ -568,15 +1009,22 @@ pub fn listen_and_transcribe_vad(
     max_duration_ms: u64,
     silence_timeout_ms: u64,
     silence_threshold: f32,
+    noise_multiplier: f32,
+    calibration_ms: u64,
 ) -> Option<voice_stt::TranscribeResult> {
-    let (samples, sample_rate) =
-        match record_with_vad(max_duration_ms, silence_timeout_ms, silence_threshold) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Recording failed: {e}");
-                return None;
-            }
-        };
+    let (samples, sample_rate) = match record_with_vad(
+        max_duration_ms,
+        silence_timeout_ms,
+        silence_threshold,
+        noise_multiplier,
+        calibration_ms,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Recording failed: {e}");
+            return None;
+        }
+    };
 
     if INTERRUPTED.load(Ordering::Relaxed) || samples.is_empty() {
         return None;
@@ -588,18 +1036,18 @@ pub fn listen_and_transcribe_vad(
 /// Transcribe a WAV file and print the result.
 ///
 /// Entry point for `voice --transcribe <file>`.
-pub fn transcribe_file(path: &str) {
+pub fn transcribe_file(path: &Path) {
     let (mut model, tokenizer) = load_stt();
 
     if !QUIET.load(Ordering::Relaxed) {
-        eprintln!("Transcribing: {path}");
+        eprintln!("Transcribing: {}", path.display());
     }
 
     // Load WAV
     let reader = match hound::WavReader::open(path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Failed to open {path}: {e}");
+            eprintln!("Failed to open {}: {e}", path.display());
             std::process::exit(1);
         }
     };

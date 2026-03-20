@@ -44,6 +44,7 @@ pub struct Segment {
 }
 
 /// Result of transcribing a single segment.
+#[allow(dead_code)]
 pub struct SegmentResult {
     pub text: String,
     pub tokens: Vec<u32>,
@@ -717,7 +718,7 @@ pub fn transcribe_segments(
 ///
 /// Entry point for `voice listen --continuous`.
 pub fn listen_continuous() {
-    let (mut model, tokenizer) = load_stt();
+    let (model, tokenizer) = load_stt();
 
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("Listening continuously... (Ctrl+C to stop)\n");
@@ -766,6 +767,7 @@ pub fn listen_continuous() {
 ///
 /// Returns a receiver of SegmentResult. The caller (jsonrpc dispatch)
 /// sends notifications per result and a final response on completion.
+#[allow(dead_code)]
 pub fn listen_continuous_for_rpc(
     model: voice_stt::MoonshineModel,
     tokenizer: voice_stt::tokenizers::Tokenizer,

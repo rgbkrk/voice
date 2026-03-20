@@ -191,27 +191,6 @@ fn resolve_text(say: &SayArgs) -> Result<String, String> {
     Ok(text)
 }
 
-/// Resolve text from bare positional args (backward compat: `voice Hello world`)
-fn resolve_text_from_bare(text: &[String]) -> Result<String, String> {
-    if !text.is_empty() {
-        return Ok(text.join(" "));
-    }
-
-    if io::stdin().is_terminal() {
-        return Err("No text provided. Pass text as arguments, use -f, or pipe to stdin.".into());
-    }
-
-    let mut buf = String::new();
-    io::stdin()
-        .read_to_string(&mut buf)
-        .map_err(|e| format!("Failed to read stdin: {e}"))?;
-    let text = buf.trim().to_string();
-    if text.is_empty() {
-        return Err("No text provided on stdin".into());
-    }
-    Ok(text)
-}
-
 /// Strip markdown/MDX to clean prose for TTS using pulldown-cmark.
 ///
 /// Keeps text content from paragraphs, headings, list items, and block quotes.

@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          lfs: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Homebrew's llvm@15 clang lacks __bf16 support, which breaks
+      # mlx-sys bindgen. Point bindgen to Xcode's clang instead.
+      - name: Fix clang for bindgen
+        run: |
+          brew unlink llvm@15 2>/dev/null || true
+          TOOLCHAIN=$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain
+          echo "LIBCLANG_PATH=${TOOLCHAIN}/usr/lib" >> "$GITHUB_ENV"
+          SDK_PATH=$(xcrun --show-sdk-path)
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-isysroot ${SDK_PATH}" >> "$GITHUB_ENV"
+
+      - name: Build release
+        run: cargo build --release -p voice
+
+      - name: Package
+        run: |
+          mkdir -p dist
+
+          # Binary
+          cp target/release/voice dist/
+          cd dist && tar czf voice-aarch64-apple-darwin.tar.gz voice && cd ..
+
+          # Metallib — needed at runtime for MLX Metal kernels
+          METALLIB=$(find target/release/build -name "mlx.metallib" -print -quit)
+          if [ -n "$METALLIB" ]; then
+            cp "$METALLIB" dist/mlx.metallib
+          else
+            echo "::error::mlx.metallib not found in build output"
+            exit 1
+          fi
+
+      - name: Sign release assets
+        if: env.MINISIGN_KEY != ''
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          brew install minisign
+          echo "$MINISIGN_KEY" > /tmp/signing.key
+          minisign -S -W -s /tmp/signing.key -m dist/voice-aarch64-apple-darwin.tar.gz
+          minisign -S -W -s /tmp/signing.key -m dist/mlx.metallib
+          rm -f /tmp/signing.key
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/voice-aarch64-apple-darwin.tar.gz
+            dist/voice-aarch64-apple-darwin.tar.gz.minisig
+            dist/mlx.metallib
+            dist/mlx.metallib.minisig
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref, '-rc.') || contains(github.ref, '-alpha.') || contains(github.ref, '-beta.') }}
+          fail_on_unmatched_files: false

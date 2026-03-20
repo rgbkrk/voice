@@ -151,7 +151,7 @@ STT_MODEL=UsefulSensors/moonshine-tiny voice listen
 | Method | Description |
 |--------|-------------|
 | `speak` | Speak text or phonemes. Params: `text`, `phonemes`, `voice`, `speed`, `markdown`, `detail` |
-| `listen` | Record from mic and transcribe. Params: `max_duration_ms`, `silence_timeout_ms` |
+| `listen` | Record from mic and transcribe. Params: `max_duration_ms`, `silence_timeout_ms`, `silence_threshold`, `noise_multiplier`, `calibration_ms` |
 | `cancel` | Interrupt current speak playback |
 | `set_voice` | Change the default voice. Params: `voice` |
 | `set_speed` | Change the default speed. Params: `speed` |

@@ -472,7 +472,7 @@ fn main() {
             }
         }
         Some(Command::Transcribe(transcribe_args)) => {
-            listen::transcribe_file(&transcribe_args.file.display().to_string());
+            listen::transcribe_file(&transcribe_args.file);
         }
         Some(Command::Serve(serve_args)) => {
             run_serve(serve_args);

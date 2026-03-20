@@ -12,8 +12,8 @@ brew install git-lfs
 git lfs install
 
 # Clone and build
-git clone https://github.com/rgbkrk/voicers.git
-cd voicers
+git clone https://github.com/rgbkrk/voice.git
+cd voice
 cargo install --path crates/voice-cli
 ```
 

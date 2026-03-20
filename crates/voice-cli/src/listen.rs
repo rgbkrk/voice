@@ -21,6 +21,7 @@
 
 use std::io::{self, Write};
 use std::num::NonZero;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -582,14 +583,21 @@ pub fn record_continuous(
                 if let Some(ss) = silence_start {
                     if ss.elapsed() >= silence_dur {
                         // End of speech segment — snapshot and send
-                        let mut guard = segment_buffer.lock().unwrap();
-                        let current_len = guard.len();
+                        let segment_data = {
+                            let mut guard = segment_buffer.lock().unwrap();
+                            if guard.len() >= min_samples {
+                                segment_id += 1;
+                                let samples = std::mem::take(&mut *guard);
+                                let elapsed = start_time.elapsed().as_millis() as u64;
+                                Some((samples, elapsed))
+                            } else {
+                                // Too short — discard
+                                guard.clear();
+                                None
+                            }
+                        };
 
-                        if current_len >= min_samples {
-                            segment_id += 1;
-                            let samples = std::mem::take(&mut *guard);
-                            let elapsed = start_time.elapsed().as_millis() as u64;
-
+                        if let Some((samples, elapsed)) = segment_data {
                             if !QUIET.load(Ordering::Relaxed) {
                                 let dur = samples.len() as f32 / sample_rate as f32;
                                 eprintln!("  segment {segment_id}: {dur:.1}s of speech");
@@ -603,9 +611,6 @@ pub fn record_continuous(
                                 segment_id,
                                 timestamp_ms: elapsed,
                             });
-                        } else {
-                            // Too short — discard
-                            guard.clear();
                         }
 
                         speech_started = false;
@@ -615,32 +620,35 @@ pub fn record_continuous(
             }
 
             // Force-split very long segments
-            {
-                let guard = segment_buffer.lock().unwrap();
+            let forced_split: Option<(Vec<f32>, u64, u64)> = {
+                let mut guard = segment_buffer.lock().unwrap();
                 if guard.len() >= max_samples && speech_started {
-                    drop(guard);
-                    let mut guard = segment_buffer.lock().unwrap();
                     segment_id += 1;
                     let samples = std::mem::take(&mut *guard);
                     let elapsed = start_time.elapsed().as_millis() as u64;
-
-                    if !QUIET.load(Ordering::Relaxed) {
-                        let dur = samples.len() as f32 / sample_rate as f32;
-                        eprintln!("  segment {segment_id}: {dur:.1}s (max length split)");
-                    }
-
-                    maybe_save_recording(&samples, sample_rate);
-
-                    let _ = tx.send(Segment {
-                        samples,
-                        sample_rate,
-                        segment_id,
-                        timestamp_ms: elapsed,
-                    });
-
-                    // Stay in speech_started state — next audio continues the segment
-                    silence_start = None;
+                    Some((samples, segment_id, elapsed))
+                } else {
+                    None
                 }
+            };
+
+            if let Some((samples, seg_id, elapsed)) = forced_split {
+                if !QUIET.load(Ordering::Relaxed) {
+                    let dur = samples.len() as f32 / sample_rate as f32;
+                    eprintln!("  segment {seg_id}: {dur:.1}s (max length split)");
+                }
+
+                maybe_save_recording(&samples, sample_rate);
+
+                let _ = tx.send(Segment {
+                    samples,
+                    sample_rate,
+                    segment_id: seg_id,
+                    timestamp_ms: elapsed,
+                });
+
+                // Stay in speech_started state — next audio continues the segment
+                silence_start = None;
             }
 
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -725,13 +733,13 @@ pub fn listen_continuous() {
     }
 
     let (segments_rx, _sample_rate, _stream) = match record_continuous(
-        1500,    // silence_timeout_ms
-        0.01,    // silence_threshold
-        300_000, // max_duration_ms (5 min)
-        500,     // min_segment_ms
-        30_000,  // max_segment_ms
-        3.0,     // noise_multiplier
-        500,     // calibration_ms
+        1500,     // silence_timeout_ms
+        0.01,     // silence_threshold
+        u64::MAX, // max_duration_ms (unlimited — Ctrl+C to stop)
+        500,      // min_segment_ms
+        30_000,   // max_segment_ms
+        3.0,      // noise_multiplier
+        500,      // calibration_ms
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -1028,18 +1036,18 @@ pub fn listen_and_transcribe_vad(
 /// Transcribe a WAV file and print the result.
 ///
 /// Entry point for `voice --transcribe <file>`.
-pub fn transcribe_file(path: &str) {
+pub fn transcribe_file(path: &Path) {
     let (mut model, tokenizer) = load_stt();
 
     if !QUIET.load(Ordering::Relaxed) {
-        eprintln!("Transcribing: {path}");
+        eprintln!("Transcribing: {}", path.display());
     }
 
     // Load WAV
     let reader = match hound::WavReader::open(path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Failed to open {path}: {e}");
+            eprintln!("Failed to open {}: {e}", path.display());
             std::process::exit(1);
         }
     };

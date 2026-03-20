@@ -912,4 +912,120 @@ mod tests {
         let result = fold_left(vec![tok1, tok2]);
         assert_eq!(result.len(), 2);
     }
+
+    // -- retokenize tests -----------------------------------------------------
+
+    #[test]
+    fn test_retokenize_period_gets_phoneme() {
+        let mut tok = MToken::new(".", ".", "");
+        tok.underscore.is_head = true;
+        let result = retokenize(vec![tok]);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            TokenOrGroup::Single(t) => {
+                assert_eq!(t.phonemes.as_deref(), Some("."));
+            }
+            _ => panic!("expected Single"),
+        }
+    }
+
+    #[test]
+    fn test_retokenize_comma_gets_phoneme() {
+        let mut tok = MToken::new(",", ",", "");
+        tok.underscore.is_head = true;
+        let result = retokenize(vec![tok]);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            TokenOrGroup::Single(t) => {
+                assert_eq!(t.phonemes.as_deref(), Some(","));
+            }
+            _ => panic!("expected Single"),
+        }
+    }
+
+    #[test]
+    fn test_retokenize_exclamation_gets_phoneme() {
+        let mut tok = MToken::new("!", ".", "");
+        tok.underscore.is_head = true;
+        let result = retokenize(vec![tok]);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            TokenOrGroup::Single(t) => {
+                assert_eq!(t.phonemes.as_deref(), Some("!"));
+            }
+            _ => panic!("expected Single"),
+        }
+    }
+
+    #[test]
+    fn test_retokenize_dash_becomes_emdash() {
+        let mut tok = MToken::new("-", ":", "");
+        tok.underscore.is_head = true;
+        let result = retokenize(vec![tok]);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            TokenOrGroup::Single(t) => {
+                assert_eq!(t.phonemes.as_deref(), Some("\u{2014}"));
+            }
+            _ => panic!("expected Single"),
+        }
+    }
+
+    #[test]
+    fn test_retokenize_bracket_tags() {
+        let mut tok_l = MToken::new("(", "-LRB-", "");
+        tok_l.underscore.is_head = true;
+        let result_l = retokenize(vec![tok_l]);
+        assert_eq!(result_l.len(), 1);
+        match &result_l[0] {
+            TokenOrGroup::Single(t) => {
+                assert_eq!(t.phonemes.as_deref(), Some("("));
+            }
+            _ => panic!("expected Single for left bracket"),
+        }
+
+        let mut tok_r = MToken::new(")", "-RRB-", "");
+        tok_r.underscore.is_head = true;
+        let result_r = retokenize(vec![tok_r]);
+        assert_eq!(result_r.len(), 1);
+        match &result_r[0] {
+            TokenOrGroup::Single(t) => {
+                assert_eq!(t.phonemes.as_deref(), Some(")"));
+            }
+            _ => panic!("expected Single for right bracket"),
+        }
+    }
+
+    #[test]
+    fn test_retokenize_currency_silent() {
+        let mut tok = MToken::new("$", "$", "");
+        tok.underscore.is_head = true;
+        let result = retokenize(vec![tok]);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            TokenOrGroup::Single(t) => {
+                assert_eq!(t.phonemes.as_deref(), Some(""));
+                assert_eq!(t.underscore.rating, Some(4));
+            }
+            _ => panic!("expected Single"),
+        }
+    }
+
+    #[test]
+    fn test_retokenize_groups_adjacent() {
+        let mut tok = MToken::new("well-known", "JJ", " ");
+        tok.underscore.is_head = true;
+        let result = retokenize(vec![tok]);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            TokenOrGroup::Group(group) => {
+                assert!(
+                    group.len() >= 2,
+                    "expected multiple subtokens in group, got {:?}",
+                    group
+                );
+            }
+            _ => panic!("expected Group, got {:?}", result[0]),
+        }
+    }
 }

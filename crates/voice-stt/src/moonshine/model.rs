@@ -914,3 +914,124 @@ impl MoonshineModel {
         Ok(sanitized)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Build a `MoonshineModel` from a minimal default config.
+    ///
+    /// The model weights are uninitialized / random, but we only need
+    /// `&self` access to `sanitize` which just reads `self.config`.
+    fn make_model(tie: bool) -> MoonshineModel {
+        let json = if tie {
+            r#"{"tie_word_embeddings": true}"#
+        } else {
+            r#"{"tie_word_embeddings": false}"#
+        };
+        let config: MoonshineConfig = serde_json::from_str(json).unwrap();
+        MoonshineModel::new(&config).unwrap()
+    }
+
+    #[test]
+    fn test_sanitize_strips_model_prefix() {
+        let model = make_model(true);
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.encoder.conv1.weight".to_string(),
+            Array::from_slice(&[1.0f32, 2.0, 3.0], &[1, 1, 3]),
+        );
+
+        let out = model.sanitize(weights).unwrap();
+        assert!(
+            out.contains_key("encoder.conv1.weight"),
+            "expected key 'encoder.conv1.weight', got keys: {:?}",
+            out.keys().collect::<Vec<_>>()
+        );
+        assert!(!out.contains_key("model.encoder.conv1.weight"));
+    }
+
+    #[test]
+    fn test_sanitize_strips_model_decoder_prefix() {
+        let model = make_model(true);
+        let mut weights = HashMap::new();
+        weights.insert(
+            "model.decoder.embed_tokens.weight".to_string(),
+            Array::from_slice(&[1.0f32, 2.0], &[1, 2]),
+        );
+
+        let out = model.sanitize(weights).unwrap();
+        assert!(out.contains_key("decoder.embed_tokens.weight"));
+        assert!(!out.contains_key("model.decoder.embed_tokens.weight"));
+    }
+
+    #[test]
+    fn test_sanitize_skips_proj_out_when_tied() {
+        let model = make_model(true);
+        let mut weights = HashMap::new();
+        weights.insert(
+            "proj_out.weight".to_string(),
+            Array::from_slice(&[1.0f32, 2.0], &[1, 2]),
+        );
+
+        let out = model.sanitize(weights).unwrap();
+        assert!(
+            !out.contains_key("proj_out.weight"),
+            "proj_out.weight should be skipped when tie_word_embeddings is true"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_keeps_proj_out_when_untied() {
+        let model = make_model(false);
+        let mut weights = HashMap::new();
+        weights.insert(
+            "proj_out.weight".to_string(),
+            Array::from_slice(&[1.0f32, 2.0], &[1, 2]),
+        );
+
+        let out = model.sanitize(weights).unwrap();
+        assert!(
+            out.contains_key("proj_out.weight"),
+            "proj_out.weight should be kept when tie_word_embeddings is false"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_transposes_conv_weights() {
+        let model = make_model(true);
+
+        // Shape [out_channels=1, in_channels=2, kernel_size=3]  (PyTorch layout)
+        let data: Vec<f32> = (1..=6).map(|v| v as f32).collect();
+        let weight = Array::from_slice(&data, &[1, 2, 3]);
+
+        let mut weights = HashMap::new();
+        weights.insert("encoder.conv1.weight".to_string(), weight);
+
+        let out = model.sanitize(weights).unwrap();
+        let transposed = out.get("encoder.conv1.weight").expect("key must exist");
+
+        // After transpose [0,2,1]: shape should be [1, 3, 2]
+        assert_eq!(transposed.shape(), &[1, 3, 2]);
+    }
+
+    #[test]
+    fn test_sanitize_passthrough_non_conv() {
+        let model = make_model(true);
+
+        // A 2D linear weight should pass through untouched.
+        let weight = Array::from_slice(&[1.0f32, 2.0, 3.0, 4.0], &[2, 2]);
+
+        let mut weights = HashMap::new();
+        weights.insert("decoder.layers.0.mlp.fc1.weight".to_string(), weight);
+
+        let out = model.sanitize(weights).unwrap();
+        let value = out
+            .get("decoder.layers.0.mlp.fc1.weight")
+            .expect("key must exist");
+
+        // Shape must be unchanged — no transpose for 2D tensors.
+        assert_eq!(value.shape(), &[2, 2]);
+    }
+}

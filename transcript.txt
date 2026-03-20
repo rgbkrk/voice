@@ -1,0 +1,1 @@
+All right, today we're going to work on the CodeMir CRDT bridge. So right now, SourceText has its own dedicated path that bypasses both the store and the old updated cell source function.

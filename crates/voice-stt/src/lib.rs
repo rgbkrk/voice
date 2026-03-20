@@ -255,7 +255,7 @@ fn download_model(repo_id: &str) -> Result<PathBuf> {
 ///
 /// Handles both 16-bit integer and 32-bit float WAV formats.
 /// Multi-channel audio is mixed down to mono by averaging.
-fn load_wav_as_f32(path: &Path) -> Result<Vec<f32>> {
+pub(crate) fn load_wav_as_f32(path: &Path) -> Result<Vec<f32>> {
     let reader = hound::WavReader::open(path)
         .map_err(|e| SttError::Audio(format!("Failed to open {}: {e}", path.display())))?;
 
@@ -441,6 +441,7 @@ fn decode_tokens_fallback(tokens: &[u32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::PI;
 
     #[test]
     fn test_decode_tokens_fallback_ascii() {
@@ -452,5 +453,169 @@ mod tests {
     fn test_decode_tokens_fallback_non_ascii() {
         let tokens = vec![1, 72, 101, 2];
         assert_eq!(decode_tokens_fallback(&tokens), "<1>He<2>");
+    }
+
+    // -----------------------------------------------------------------------
+    // resample_linear tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resample_identity() {
+        // 1 second of 440 Hz sine at 16 kHz
+        let sr = 16000u32;
+        let freq = 440.0f32;
+        let input: Vec<f32> = (0..sr as usize)
+            .map(|i| (2.0 * PI * freq * i as f32 / sr as f32).sin())
+            .collect();
+
+        let output = resample_linear(&input, sr, sr);
+
+        assert_eq!(output.len(), input.len());
+        for (a, b) in input.iter().zip(output.iter()) {
+            assert!((a - b).abs() < 1e-6, "samples differ: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn test_resample_downsample_length() {
+        let input = vec![0.0f32; 100];
+        let output = resample_linear(&input, 48000, 16000);
+        // 100 * 16000/48000 ≈ 33.33 → ceil → 34
+        assert!(
+            (output.len() as i64 - 34).abs() <= 1,
+            "expected ~34 samples, got {}",
+            output.len()
+        );
+    }
+
+    #[test]
+    fn test_resample_upsample_length() {
+        let input = vec![0.0f32; 100];
+        let output = resample_linear(&input, 8000, 16000);
+        // 100 * 16000/8000 = 200
+        assert!(
+            (output.len() as i64 - 200).abs() <= 1,
+            "expected ~200 samples, got {}",
+            output.len()
+        );
+    }
+
+    #[test]
+    fn test_resample_empty() {
+        let output = resample_linear(&[], 44100, 16000);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_resample_preserves_sine() {
+        let sr_in = 48000u32;
+        let sr_out = 16000u32;
+        let freq = 440.0f32;
+        let duration_samples = sr_in as usize; // 1 second
+
+        let input: Vec<f32> = (0..duration_samples)
+            .map(|i| (2.0 * PI * freq * i as f32 / sr_in as f32).sin())
+            .collect();
+
+        let output = resample_linear(&input, sr_in, sr_out);
+
+        // Output should have ~16000 samples
+        let expected_len = sr_out as usize;
+        assert!(
+            (output.len() as i64 - expected_len as i64).abs() <= 1,
+            "expected ~{expected_len} samples, got {}",
+            output.len()
+        );
+
+        // RMS must be well above zero (sine RMS ≈ 1/√2 ≈ 0.707)
+        let rms = (output.iter().map(|s| s * s).sum::<f32>() / output.len() as f32).sqrt();
+        assert!(rms > 0.5, "RMS of resampled sine is too low: {rms}");
+    }
+
+    // -----------------------------------------------------------------------
+    // WAV round-trip tests (via hound)
+    // -----------------------------------------------------------------------
+
+    /// Helper: generate a unique temp path for test WAV files.
+    fn temp_wav_path(label: &str) -> PathBuf {
+        let pid = std::process::id();
+        let tid = std::thread::current().id();
+        PathBuf::from(format!("/tmp/voice_test_{label}_{pid}_{tid:?}.wav"))
+    }
+
+    #[test]
+    fn test_wav_16bit_roundtrip() {
+        let path = temp_wav_path("i16");
+
+        let sample_rate = 16000u32;
+        // Known i16 samples
+        let i16_samples: Vec<i16> = vec![0, 16383, -16384, 32767, -32768, 1000, -1000];
+        let expected_f32: Vec<f32> = i16_samples.iter().map(|&s| s as f32 / 32768.0).collect();
+
+        // Write WAV
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+            for &s in &i16_samples {
+                writer.write_sample(s).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+
+        // Load with our loader
+        let loaded = load_wav_as_f32(&path).unwrap();
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.len(), expected_f32.len());
+        for (i, (got, want)) in loaded.iter().zip(expected_f32.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-4,
+                "sample {i}: got {got}, want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wav_32float_roundtrip() {
+        let path = temp_wav_path("f32");
+
+        let sample_rate = 16000u32;
+        let f32_samples: Vec<f32> = vec![0.0, 0.5, -0.5, 1.0, -1.0, 0.123, -0.987];
+
+        // Write WAV
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+            for &s in &f32_samples {
+                writer.write_sample(s).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+
+        // Load with our loader
+        let loaded = load_wav_as_f32(&path).unwrap();
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.len(), f32_samples.len());
+        for (i, (got, want)) in loaded.iter().zip(f32_samples.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "sample {i}: got {got}, want {want}"
+            );
+        }
     }
 }

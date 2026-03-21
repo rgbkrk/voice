@@ -6,7 +6,7 @@ rust-version = "1.85.0"
 description = "CLI for fast text-to-speech and speech-to-text"
 license = "MIT"
 repository = "https://github.com/rgbkrk/voicers"
-readme = "../../README.md"
+readme = "README.md"
 
 [[bin]]
 name = "voice"

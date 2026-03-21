@@ -1,7 +1,7 @@
 //! MCP (Model Context Protocol) stdio server for voice TTS/STT.
 //!
 //! Implements the MCP protocol on top of JSON-RPC 2.0, exposing voice tools
-//! (speak, listen, converse, set_voice, set_speed, list_voices, cancel) to
+//! (speak, converse, set_voice, set_speed, list_voices, set_start_sound, set_stop_sound, play_sound, cancel) to
 //! MCP-compatible clients like Claude Code.
 //!
 //! ## Usage
@@ -105,6 +105,12 @@ struct SetVoiceParams {
 #[derive(Debug, Deserialize)]
 struct SetSpeedParams {
     speed: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetSoundParams {
+    /// Path to a WAV file, or null/absent to reset to default.
+    path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -424,6 +430,37 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
                 "name": "list_voices",
                 "description": "List all available built-in voices.",
                 "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "set_start_sound",
+                "description": "Set a custom WAV file to play when listening starts (replaces the default ding). Omit path to reset to default.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Path to a WAV file" }
+                    }
+                }
+            },
+            {
+                "name": "set_stop_sound",
+                "description": "Set a custom WAV file to play when listening stops (replaces the default chime). Omit path to reset to default.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Path to a WAV file" }
+                    }
+                }
+            },
+            {
+                "name": "play_sound",
+                "description": "Play a WAV file through the speakers. Useful for previewing sounds.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Path to a WAV file to play" }
+                    },
+                    "required": ["path"]
+                }
             }
         ]
     }))
@@ -446,6 +483,9 @@ fn handle_tools_call(
         "set_voice" => voice_set_voice(session, arguments),
         "set_speed" => voice_set_speed(session, arguments),
         "list_voices" => voice_list_voices(),
+        "set_start_sound" => voice_set_start_sound(arguments),
+        "set_stop_sound" => voice_set_stop_sound(arguments),
+        "play_sound" => voice_play_sound(arguments),
         _ => {
             return Response::success(
                 id,
@@ -715,6 +755,62 @@ fn voice_list_voices() -> Result<Value, RpcErr> {
     Ok(serde_json::json!({
         "voices": voice_tts::builtin::BUILTIN_VOICES,
     }))
+}
+
+fn voice_set_start_sound(params: Value) -> Result<Value, RpcErr> {
+    let p: SetSoundParams = if params.is_null() {
+        SetSoundParams { path: None }
+    } else {
+        serde_json::from_value(params).map_err(|e| RpcErr::invalid_params(e.to_string()))?
+    };
+
+    match p.path {
+        Some(path) => {
+            let sound = listen::load_wav_sound(std::path::Path::new(&path))
+                .map_err(RpcErr::invalid_params)?;
+            listen::set_start_sound(Some(sound));
+            Ok(serde_json::json!({ "start_sound": path }))
+        }
+        None => {
+            listen::set_start_sound(None);
+            Ok(serde_json::json!({ "start_sound": null }))
+        }
+    }
+}
+
+fn voice_set_stop_sound(params: Value) -> Result<Value, RpcErr> {
+    let p: SetSoundParams = if params.is_null() {
+        SetSoundParams { path: None }
+    } else {
+        serde_json::from_value(params).map_err(|e| RpcErr::invalid_params(e.to_string()))?
+    };
+
+    match p.path {
+        Some(path) => {
+            let sound = listen::load_wav_sound(std::path::Path::new(&path))
+                .map_err(RpcErr::invalid_params)?;
+            listen::set_stop_sound(Some(sound));
+            Ok(serde_json::json!({ "stop_sound": path }))
+        }
+        None => {
+            listen::set_stop_sound(None);
+            Ok(serde_json::json!({ "stop_sound": null }))
+        }
+    }
+}
+
+fn voice_play_sound(params: Value) -> Result<Value, RpcErr> {
+    let path = params
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcErr::invalid_params("missing 'path'"))?;
+
+    let sound =
+        listen::load_wav_sound(std::path::Path::new(path)).map_err(RpcErr::invalid_params)?;
+
+    listen::play_cached_sound(&sound).map_err(RpcErr::internal)?;
+
+    Ok(serde_json::json!({ "played": path }))
 }
 
 // ── Audio playback ────────────────────────────────────────────────────

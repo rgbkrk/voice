@@ -450,6 +450,17 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
                         "path": { "type": "string", "description": "Path to a WAV file" }
                     }
                 }
+            },
+            {
+                "name": "play_sound",
+                "description": "Play a WAV file through the speakers. Useful for previewing sounds.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Path to a WAV file to play" }
+                    },
+                    "required": ["path"]
+                }
             }
         ]
     }))
@@ -474,6 +485,7 @@ fn handle_tools_call(
         "list_voices" => voice_list_voices(),
         "set_start_sound" => voice_set_start_sound(arguments),
         "set_stop_sound" => voice_set_stop_sound(arguments),
+        "play_sound" => voice_play_sound(arguments),
         _ => {
             return Response::success(
                 id,
@@ -785,6 +797,20 @@ fn voice_set_stop_sound(params: Value) -> Result<Value, RpcErr> {
             Ok(serde_json::json!({ "stop_sound": null }))
         }
     }
+}
+
+fn voice_play_sound(params: Value) -> Result<Value, RpcErr> {
+    let path = params
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcErr::invalid_params("missing 'path'"))?;
+
+    let sound =
+        listen::load_wav_sound(std::path::Path::new(path)).map_err(RpcErr::invalid_params)?;
+
+    listen::play_cached_sound(&sound);
+
+    Ok(serde_json::json!({ "played": path }))
 }
 
 // ── Audio playback ────────────────────────────────────────────────────

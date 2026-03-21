@@ -119,6 +119,24 @@ pub fn set_stop_sound(sound: Option<CachedSound>) {
     sound_config().lock().unwrap().stop_sound = sound;
 }
 
+/// Play a cached sound immediately (for previewing sounds).
+pub fn play_cached_sound(sound: &CachedSound) {
+    let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
+        return;
+    };
+    stream.log_on_drop(false);
+    let player = Player::connect_new(stream.mixer());
+
+    let channels = NonZero::new(sound.channels).unwrap();
+    let rate = NonZero::new(sound.sample_rate).unwrap();
+    let source = SamplesBuffer::new(channels, rate, sound.samples.clone());
+    player.append(source);
+
+    while !player.empty() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 // ── Segment types ──────────────────────────────────────────────────────
 
 /// A chunk of recorded audio delimited by silence boundaries.
@@ -196,17 +214,65 @@ fn play_ding() {
     play_cached_or_synth(custom.as_ref(), 880.0, 200, 0.06, 0.3, 50);
 }
 
-/// Play a lower-pitched tone to signal that listening has stopped.
+/// Play two ascending blips to signal that listening has stopped.
 ///
-/// Uses custom stop sound if configured, otherwise synthesizes a
-/// 440Hz (A4) tone with a slightly longer decay than the start ding.
+/// Uses custom stop sound if configured, otherwise synthesizes two quick
+/// sine blips — C5 (523Hz) then E5 (659Hz) — each with a smooth
+/// sine-shaped envelope and a short gap between them. Feels like a
+/// positive "got it" confirmation.
 fn play_dong() {
     let custom = sound_config().lock().unwrap().stop_sound.as_ref().map(|s| CachedSound {
         samples: s.samples.clone(),
         sample_rate: s.sample_rate,
         channels: s.channels,
     });
-    play_cached_or_synth(custom.as_ref(), 440.0, 250, 0.08, 0.25, 0);
+
+    if custom.is_some() {
+        play_cached_or_synth(custom.as_ref(), 0.0, 0, 0.0, 0.0, 0);
+        return;
+    }
+
+    let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
+        return;
+    };
+    stream.log_on_drop(false);
+    let player = Player::connect_new(stream.mixer());
+
+    let sample_rate = 44100u32;
+    let pi2 = 2.0 * std::f32::consts::PI;
+    let volume = 0.18f32;
+
+    // Two blips: C5 (120ms) → gap (60ms) → E5 (120ms)
+    let blip_samples = sample_rate as usize * 120 / 1000;
+    let gap_samples = sample_rate as usize * 60 / 1000;
+
+    let mut samples = Vec::with_capacity(blip_samples * 2 + gap_samples);
+
+    // First blip: C5
+    for i in 0..blip_samples {
+        let t = i as f32 / sample_rate as f32;
+        let envelope = (std::f32::consts::PI * i as f32 / blip_samples as f32).sin() * volume;
+        samples.push((pi2 * 523.25 * t).sin() * envelope);
+    }
+
+    // Gap
+    samples.extend(std::iter::repeat(0.0f32).take(gap_samples));
+
+    // Second blip: E5
+    for i in 0..blip_samples {
+        let t = i as f32 / sample_rate as f32;
+        let envelope = (std::f32::consts::PI * i as f32 / blip_samples as f32).sin() * volume;
+        samples.push((pi2 * 659.26 * t).sin() * envelope);
+    }
+
+    let channels = NonZero::new(1u16).unwrap();
+    let rate = NonZero::new(sample_rate).unwrap();
+    let source = SamplesBuffer::new(channels, rate, samples);
+    player.append(source);
+
+    while !player.empty() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 // ── Mic input helpers ──────────────────────────────────────────────────

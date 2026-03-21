@@ -1,5 +1,6 @@
 mod jsonrpc;
 mod listen;
+mod mcp;
 
 use clap::Parser;
 use pulldown_cmark::{Event, Options, Parser as MdParser, Tag, TagEnd};
@@ -70,6 +71,9 @@ enum Command {
 
     /// Run as a JSON-RPC 2.0 server on stdin/stdout
     Serve(ServeArgs),
+
+    /// Run as an MCP (Model Context Protocol) server on stdin/stdout
+    Mcp(ServeArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -528,6 +532,9 @@ fn main() {
         Some(Command::Serve(serve_args)) => {
             run_serve(serve_args);
         }
+        Some(Command::Mcp(serve_args)) => {
+            run_mcp(serve_args);
+        }
         Some(Command::Say(say_args)) => {
             run_say(say_args);
         }
@@ -571,6 +578,33 @@ fn run_serve(serve_args: ServeArgs) {
     let sub_file = serve_args.sub_file.clone().or_else(find_sub_file);
 
     jsonrpc::run(jsonrpc::ServerConfig {
+        model,
+        voice,
+        voice_name: serve_args.voice,
+        speed: serve_args.speed,
+        sample_rate,
+        repo_id: MODEL_REPO.to_string(),
+        cli_subs: serve_args.subs,
+        sub_file_path: sub_file,
+    });
+}
+
+fn run_mcp(serve_args: ServeArgs) {
+    let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
+
+    let voice = match voice_tts::load_voice(&serve_args.voice, Some(MODEL_REPO)) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed to load voice '{}': {e}", serve_args.voice);
+            std::process::exit(1);
+        }
+    };
+
+    let model = load_tts_model(model_handle);
+    let sample_rate = model.sample_rate as u32;
+    let sub_file = serve_args.sub_file.clone().or_else(find_sub_file);
+
+    mcp::run(mcp::ServerConfig {
         model,
         voice,
         voice_name: serve_args.voice,

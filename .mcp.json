@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "voice": {
+      "command": "voice",
+      "args": ["mcp"]
+    }
+  }
+}

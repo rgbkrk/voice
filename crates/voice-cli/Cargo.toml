@@ -1,9 +1,9 @@
 [package]
 name = "voice"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.85.0"
-description = "CLI for voice TTS — like say, but with Kokoro"
+description = "CLI for fast text-to-speech and speech-to-text"
 license = "MIT"
 repository = "https://github.com/rgbkrk/voicers"
 readme = "../../README.md"

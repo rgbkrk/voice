@@ -273,7 +273,7 @@ fn play_dong() {
     }
 
     // Gap
-    samples.extend(std::iter::repeat(0.0f32).take(gap_samples));
+    samples.extend(std::iter::repeat_n(0.0f32, gap_samples));
 
     // Second blip: E5
     for i in 0..blip_samples {

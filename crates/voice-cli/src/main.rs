@@ -797,8 +797,8 @@ fn run_converse(args: ConverseArgs) {
         std::process::exit(130);
     }
 
-    // Listen for response
-    listen::listen_and_transcribe();
+    // Listen for response (VAD auto-stop — no Enter key needed)
+    listen::listen_and_transcribe_auto();
 }
 
 /// Wait for TTS model loading to finish and handle errors.

@@ -428,8 +428,16 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
             },
             {
                 "name": "list_voices",
-                "description": "List all available built-in voices.",
-                "inputSchema": { "type": "object", "properties": {} }
+                "description": "List available voices with metadata (id, name, language, gender, grade). By default returns only built-in voices for speed. Set 'all' to true to get the full catalog of 54 voices across 9 languages, including availability status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "all": {
+                            "type": "boolean",
+                            "description": "If true, return all 54 known voices with availability status (builtin, cached, or available for download). Default: false (builtin only)."
+                        }
+                    }
+                }
             },
             {
                 "name": "set_start_sound",
@@ -482,7 +490,7 @@ fn handle_tools_call(
         "cancel" => voice_cancel(),
         "set_voice" => voice_set_voice(session, arguments),
         "set_speed" => voice_set_speed(session, arguments),
-        "list_voices" => voice_list_voices(),
+        "list_voices" => voice_list_voices(session, arguments),
         "set_start_sound" => voice_set_start_sound(arguments),
         "set_stop_sound" => voice_set_stop_sound(arguments),
         "play_sound" => voice_play_sound(arguments),
@@ -751,10 +759,57 @@ fn voice_set_speed(session: &mut Session, params: Value) -> Result<Value, RpcErr
     Ok(serde_json::json!({ "speed": p.speed }))
 }
 
-fn voice_list_voices() -> Result<Value, RpcErr> {
-    Ok(serde_json::json!({
-        "voices": voice_tts::builtin::BUILTIN_VOICES,
-    }))
+fn voice_list_voices(session: &Session, params: Value) -> Result<Value, RpcErr> {
+    let show_all = params
+        .get("all")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if show_all {
+        // Full catalog with availability status
+        let voices: Vec<Value> = voice_tts::catalog::ALL_VOICES
+            .iter()
+            .map(|v| {
+                let builtin = voice_tts::catalog::is_builtin(v.id);
+                let cached = builtin || voice_tts::catalog::is_cached(v.id, Some(&session.repo_id));
+                let status = if builtin {
+                    "builtin"
+                } else if cached {
+                    "cached"
+                } else {
+                    "available"
+                };
+                serde_json::json!({
+                    "id": v.id,
+                    "name": v.name,
+                    "language": v.language,
+                    "gender": v.gender,
+                    "grade": v.grade,
+                    "traits": v.traits,
+                    "status": status,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "voices": voices }))
+    } else {
+        // Quick: just builtin voices with metadata
+        let voices: Vec<Value> = voice_tts::catalog::ALL_VOICES
+            .iter()
+            .filter(|v| voice_tts::catalog::is_builtin(v.id))
+            .map(|v| {
+                serde_json::json!({
+                    "id": v.id,
+                    "name": v.name,
+                    "language": v.language,
+                    "gender": v.gender,
+                    "grade": v.grade,
+                    "traits": v.traits,
+                    "status": "builtin",
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "voices": voices }))
+    }
 }
 
 fn voice_set_start_sound(params: Value) -> Result<Value, RpcErr> {

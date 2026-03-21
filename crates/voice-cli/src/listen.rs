@@ -979,9 +979,7 @@ pub fn listen_and_transcribe_auto() {
     let (mut model, tokenizer) = load_stt();
 
     if let Some(result) = listen_and_transcribe_vad(
-        &mut model,
-        &tokenizer,
-        30_000, // max_duration_ms
+        &mut model, &tokenizer, 30_000, // max_duration_ms
         2_000,  // silence_timeout_ms
         0.01,   // silence_threshold
         3.0,    // noise_multiplier

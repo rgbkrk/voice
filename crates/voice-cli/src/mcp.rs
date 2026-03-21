@@ -760,10 +760,7 @@ fn voice_set_speed(session: &mut Session, params: Value) -> Result<Value, RpcErr
 }
 
 fn voice_list_voices(session: &Session, params: Value) -> Result<Value, RpcErr> {
-    let show_all = params
-        .get("all")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let show_all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if show_all {
         // Full catalog with availability status

@@ -42,7 +42,7 @@ use crate::{INTERRUPTED, QUIET};
 pub struct SoundConfig {
     /// Custom start-of-listening sound (replaces the default 880Hz ding).
     pub start_sound: Option<CachedSound>,
-    /// Custom end-of-listening sound (replaces the default 440Hz dong).
+    /// Custom end-of-listening sound (replaces the default two-blip C5→E5 chime).
     pub stop_sound: Option<CachedSound>,
 }
 
@@ -69,6 +69,9 @@ impl Default for SoundConfig {
 }
 
 /// Load a WAV file and return cached samples ready for playback.
+///
+/// Validates the WAV header and enforces a 30-second maximum duration
+/// to prevent excessive memory use from arbitrarily large files.
 pub fn load_wav_sound(path: &std::path::Path) -> Result<CachedSound, String> {
     let reader =
         hound::WavReader::open(path).map_err(|e| format!("Failed to open WAV file: {e}"))?;
@@ -77,6 +80,23 @@ pub fn load_wav_sound(path: &std::path::Path) -> Result<CachedSound, String> {
     let sample_rate = spec.sample_rate;
     let channels = spec.channels;
 
+    if sample_rate == 0 {
+        return Err("Invalid WAV: sample rate is 0".to_string());
+    }
+    if channels == 0 {
+        return Err("Invalid WAV: channel count is 0".to_string());
+    }
+
+    // Cap at 30 seconds to prevent OOM from huge files
+    let max_samples = sample_rate as usize * channels as usize * 30;
+    let duration = reader.duration() as usize * channels as usize;
+    if duration > max_samples {
+        return Err(format!(
+            "WAV file too long ({:.1}s); maximum is 30s for notification sounds",
+            duration as f64 / (sample_rate as f64 * channels as f64)
+        ));
+    }
+
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader
             .into_samples::<f32>()
@@ -84,6 +104,11 @@ pub fn load_wav_sound(path: &std::path::Path) -> Result<CachedSound, String> {
             .map_err(|e| format!("Failed to read WAV samples: {e}"))?,
         hound::SampleFormat::Int => {
             let bits = spec.bits_per_sample;
+            if bits == 0 || bits > 32 {
+                return Err(format!(
+                    "Unsupported bits_per_sample {bits}; expected 1..=32"
+                ));
+            }
             let max_val = (1u32 << (bits - 1)) as f32;
             reader
                 .into_samples::<i32>()
@@ -120,21 +145,27 @@ pub fn set_stop_sound(sound: Option<CachedSound>) {
 }
 
 /// Play a cached sound immediately (for previewing sounds).
-pub fn play_cached_sound(sound: &CachedSound) {
-    let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
-        return;
-    };
+///
+/// Returns an error if the audio output device cannot be opened.
+pub fn play_cached_sound(sound: &CachedSound) -> Result<(), String> {
+    let mut stream = DeviceSinkBuilder::open_default_sink()
+        .map_err(|e| format!("Failed to open audio output: {e}"))?;
     stream.log_on_drop(false);
     let player = Player::connect_new(stream.mixer());
 
-    let channels = NonZero::new(sound.channels).unwrap();
-    let rate = NonZero::new(sound.sample_rate).unwrap();
+    let Some(channels) = NonZero::new(sound.channels) else {
+        return Err("Invalid sound: zero channels".to_string());
+    };
+    let Some(rate) = NonZero::new(sound.sample_rate) else {
+        return Err("Invalid sound: zero sample rate".to_string());
+    };
     let source = SamplesBuffer::new(channels, rate, sound.samples.clone());
     player.append(source);
 
     while !player.empty() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    Ok(())
 }
 
 // ── Segment types ──────────────────────────────────────────────────────
@@ -177,8 +208,12 @@ fn play_cached_or_synth(
     let player = Player::connect_new(stream.mixer());
 
     if let Some(sound) = cached {
-        let channels = NonZero::new(sound.channels).unwrap();
-        let rate = NonZero::new(sound.sample_rate).unwrap();
+        let Some(channels) = NonZero::new(sound.channels) else {
+            return;
+        };
+        let Some(rate) = NonZero::new(sound.sample_rate) else {
+            return;
+        };
         let source = SamplesBuffer::new(channels, rate, sound.samples.clone());
         player.append(source);
     } else {

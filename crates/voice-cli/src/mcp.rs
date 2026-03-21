@@ -1,7 +1,7 @@
 //! MCP (Model Context Protocol) stdio server for voice TTS/STT.
 //!
 //! Implements the MCP protocol on top of JSON-RPC 2.0, exposing voice tools
-//! (speak, listen, converse, set_voice, set_speed, list_voices, set_start_sound, set_stop_sound, cancel) to
+//! (speak, converse, set_voice, set_speed, list_voices, set_start_sound, set_stop_sound, play_sound, cancel) to
 //! MCP-compatible clients like Claude Code.
 //!
 //! ## Usage
@@ -808,7 +808,7 @@ fn voice_play_sound(params: Value) -> Result<Value, RpcErr> {
     let sound =
         listen::load_wav_sound(std::path::Path::new(path)).map_err(RpcErr::invalid_params)?;
 
-    listen::play_cached_sound(&sound);
+    listen::play_cached_sound(&sound).map_err(RpcErr::internal)?;
 
     Ok(serde_json::json!({ "played": path }))
 }

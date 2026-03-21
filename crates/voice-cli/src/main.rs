@@ -63,6 +63,9 @@ enum Command {
     /// Speak text aloud (default when no subcommand given)
     Say(SayArgs),
 
+    /// Speak text aloud, then listen for a response (speak + listen in one shot)
+    Converse(ConverseArgs),
+
     /// Record from microphone and transcribe (speech-to-text)
     Listen(ListenArgs),
 
@@ -112,6 +115,33 @@ struct SayArgs {
 
     /// Load substitutions from a file (one WORD=REPLACEMENT per line, # comments).
     /// If not set, .voice-subs is auto-discovered from the working directory upward.
+    #[arg(long = "sub-file", value_name = "PATH")]
+    sub_file: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
+struct ConverseArgs {
+    /// Text to speak before listening
+    #[arg(trailing_var_arg = true)]
+    text: Vec<String>,
+
+    /// Voice name (e.g. af_heart, am_adam)
+    #[arg(short, long, default_value = "af_heart")]
+    voice: String,
+
+    /// Speech speed factor (1.0 = normal)
+    #[arg(short, long, default_value = "1.0")]
+    speed: f32,
+
+    /// Strip markdown/MDX formatting before speaking
+    #[arg(long)]
+    markdown: bool,
+
+    /// Word substitutions (pre-processing), e.g. --sub nteract=enteract
+    #[arg(long = "sub", value_name = "WORD=REPLACEMENT")]
+    subs: Vec<String>,
+
+    /// Load substitutions from a file (one WORD=REPLACEMENT per line, # comments).
     #[arg(long = "sub-file", value_name = "PATH")]
     sub_file: Option<PathBuf>,
 }
@@ -526,6 +556,9 @@ fn main() {
                 listen::listen_and_transcribe();
             }
         }
+        Some(Command::Converse(converse_args)) => {
+            run_converse(converse_args);
+        }
         Some(Command::Transcribe(transcribe_args)) => {
             listen::transcribe_file(&transcribe_args.file);
         }
@@ -702,6 +735,70 @@ fn run_say(say_args: SayArgs) {
             sample_rate,
         );
     }
+}
+
+fn run_converse(args: ConverseArgs) {
+    if args.text.is_empty() {
+        eprintln!("Error: No text provided. Usage: voice converse <text>");
+        std::process::exit(1);
+    }
+
+    let text = args.text.join(" ");
+    let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
+
+    let sub_file = args.sub_file.clone().or_else(find_sub_file);
+    let (subs, phoneme_overrides) = collect_subs(&args.subs, sub_file.as_deref());
+
+    let text = if args.markdown {
+        strip_markdown(&text)
+    } else {
+        text
+    };
+    let text = apply_tech_subs(&text);
+    let text = if subs.is_empty() {
+        text
+    } else {
+        apply_substitutions(&text, &subs)
+    };
+
+    info!("Converting text to phonemes...");
+    let phoneme_chunks = if phoneme_overrides.is_empty() {
+        voice_g2p::text_to_phoneme_chunks(&text)
+    } else {
+        voice_g2p::text_to_phoneme_chunks_with_overrides(&text, &phoneme_overrides)
+    };
+    let phoneme_chunks = match phoneme_chunks {
+        Ok(chunks) => {
+            for (i, chunk) in chunks.iter().enumerate() {
+                info!("  chunk {}: {}", i + 1, chunk);
+            }
+            chunks
+        }
+        Err(e) => {
+            eprintln!("G2P error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let voice = match voice_tts::load_voice(&args.voice, Some(MODEL_REPO)) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed to load voice '{}': {e}", args.voice);
+            std::process::exit(1);
+        }
+    };
+
+    let mut model = load_tts_model(model_handle);
+    let sample_rate = model.sample_rate as u32;
+
+    stream_playback(&mut model, &voice, &phoneme_chunks, args.speed, sample_rate);
+
+    if interrupted() {
+        std::process::exit(130);
+    }
+
+    // Listen for response (VAD auto-stop — no Enter key needed)
+    listen::listen_and_transcribe_auto();
 }
 
 /// Wait for TTS model loading to finish and handle errors.

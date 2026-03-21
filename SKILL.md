@@ -26,6 +26,16 @@ voice say -o result.wav "Here is your audio."
 voice say --phonemes "həlˈO wˈɜɹld"
 ```
 
+### Converse (speak + listen)
+
+```bash
+# Speak text, then immediately listen for a response
+voice converse "How are you today?"
+
+# With voice and speed options
+voice converse -v am_michael -s 1.2 "What do you think about that?"
+```
+
 ### Listen (STT)
 
 ```bash
@@ -67,7 +77,7 @@ voice serve -v am_michael
 - **Read content**: Pipe text through `voice say` to read back docs, errors, or summaries
 - **Confirm actions**: "Deploying to production" before doing something irreversible
 - **Listen for input**: Use `voice listen` to capture a spoken response from the user
-- **Voice conversation**: Use `voice serve` with JSON-RPC to alternate between speaking and listening
+- **Voice conversation**: Use `voice converse` to speak then listen in one shot, or `voice serve` for programmatic control
 - **Transcribe recordings**: Use `voice transcribe` to convert audio files to text
 
 ## Tips
@@ -103,6 +113,7 @@ voice serve -v am_michael
 |---------|-------------|
 | `voice <text>` | Speak text (implicit `say`, backward compatible) |
 | `voice say` | Speak text with full TTS options |
+| `voice converse` | Speak text, then listen for a response |
 | `voice listen` | Record from mic, transcribe once |
 | `voice listen --continuous` | Record and transcribe segments continuously |
 | `voice transcribe <file>` | Transcribe a WAV file |

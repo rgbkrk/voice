@@ -971,6 +971,28 @@ fn transcribe_samples(
 /// Record from mic (manual stop), transcribe, print result.
 ///
 /// Entry point for `voice listen`.
+/// Record from mic with VAD auto-stop, transcribe, print result.
+///
+/// Like `listen_and_transcribe` but uses voice activity detection instead
+/// of waiting for Enter/Ctrl+C — stops automatically after silence.
+pub fn listen_and_transcribe_auto() {
+    let (mut model, tokenizer) = load_stt();
+
+    if let Some(result) = listen_and_transcribe_vad(
+        &mut model, &tokenizer, 30_000, // max_duration_ms
+        2_000,  // silence_timeout_ms
+        0.01,   // silence_threshold
+        3.0,    // noise_multiplier
+        500,    // calibration_ms
+    ) {
+        println!("{}", result.text);
+        if !QUIET.load(Ordering::Relaxed) {
+            let _ = io::stderr().flush();
+            eprintln!("\n({} tokens)", result.tokens.len());
+        }
+    }
+}
+
 pub fn listen_and_transcribe() {
     let (mut model, tokenizer) = load_stt();
 

@@ -433,7 +433,7 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
             },
             {
                 "name": "set_start_sound",
-                "description": "Set a custom WAV file to play when listening starts (replaces the default ding). Omit path or set to null to reset to default.",
+                "description": "Set a custom WAV file to play when listening starts (replaces the default ding). Omit path to reset to default.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -443,7 +443,7 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
             },
             {
                 "name": "set_stop_sound",
-                "description": "Set a custom WAV file to play when listening stops (replaces the default dong). Omit path or set to null to reset to default.",
+                "description": "Set a custom WAV file to play when listening stops (replaces the default chime). Omit path to reset to default.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

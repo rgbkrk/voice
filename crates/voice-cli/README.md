@@ -4,7 +4,21 @@ Like `say`, but with [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) T
 
 ## Install
 
-Build from source (requires Git LFS for embedded voice/model data):
+### Pre-built binary (recommended)
+
+Install with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) to get a pre-built binary — no compilation required:
+
+```bash
+# Install cargo-binstall if you don't have it
+cargo install cargo-binstall
+
+# Install voice
+cargo binstall voice
+```
+
+### Build from source
+
+Requires Git LFS for embedded voice/model data:
 
 ```bash
 # Install git-lfs if you don't have it
@@ -17,7 +31,7 @@ cd voice
 cargo install --path crates/voice-cli
 ```
 
-> **Note:** `cargo install voice` is the package name on crates.io, but building from source is recommended — see the [main README](../../README.md) for details on why.
+> **Note:** `cargo install voice` compiles from source on crates.io, but the Metal shader library path can break — see the [main README](../../README.md) for details. Use `cargo binstall voice` or build from a local clone instead.
 
 ## Usage
 

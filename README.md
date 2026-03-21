@@ -6,7 +6,21 @@ Faster time-to-first-speech than macOS `say`, with dramatically better audio qua
 
 ## Install
 
-Build from source (requires Git LFS for embedded voice/model data):
+### Pre-built binary (recommended)
+
+Install with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) to get a pre-built binary — no compilation required:
+
+```bash
+# Install cargo-binstall if you don't have it
+cargo install cargo-binstall
+
+# Install voice
+cargo binstall voice
+```
+
+### Build from source
+
+Requires Git LFS for embedded voice/model data:
 
 ```bash
 # Install git-lfs if you don't have it
@@ -19,7 +33,7 @@ cd voice
 cargo install --path crates/voice-cli
 ```
 
-> **Why not `cargo install voice`?** The Metal shader library path is baked in at compile time by mlx-sys and points to a temp directory that gets cleaned up after install. This is an [upstream mlx-rs issue](https://github.com/oxiglade/mlx-rs/issues/327). Building from source avoids this entirely.
+> **Why not `cargo install voice`?** The Metal shader library path is baked in at compile time by mlx-sys and points to a temp directory that gets cleaned up after install. This is an [upstream mlx-rs issue](https://github.com/oxiglade/mlx-rs/issues/327). Building from source or using `cargo binstall` avoids this entirely.
 
 > **Why git-lfs?** Voice data (`.safetensors`) and tagger weights are stored with Git LFS. Without it, those files are tiny pointers instead of actual data — the build will catch this and tell you what to do.
 

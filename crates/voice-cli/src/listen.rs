@@ -33,6 +33,92 @@ use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
 
 use crate::{INTERRUPTED, QUIET};
 
+// ── Sound configuration ───────────────────────────────────────────────
+
+/// Cached audio samples for start/stop notification sounds.
+///
+/// When `None`, the default synthesized tones are used.
+/// When `Some`, the provided WAV samples are played instead.
+pub struct SoundConfig {
+    /// Custom start-of-listening sound (replaces the default 880Hz ding).
+    pub start_sound: Option<CachedSound>,
+    /// Custom end-of-listening sound (replaces the default 440Hz dong).
+    pub stop_sound: Option<CachedSound>,
+}
+
+/// Pre-loaded audio samples from a WAV file, ready to play.
+pub struct CachedSound {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+impl SoundConfig {
+    pub fn new() -> Self {
+        Self {
+            start_sound: None,
+            stop_sound: None,
+        }
+    }
+}
+
+impl Default for SoundConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Load a WAV file and return cached samples ready for playback.
+pub fn load_wav_sound(path: &std::path::Path) -> Result<CachedSound, String> {
+    let reader =
+        hound::WavReader::open(path).map_err(|e| format!("Failed to open WAV file: {e}"))?;
+
+    let spec = reader.spec();
+    let sample_rate = spec.sample_rate;
+    let channels = spec.channels;
+
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read WAV samples: {e}"))?,
+        hound::SampleFormat::Int => {
+            let bits = spec.bits_per_sample;
+            let max_val = (1u32 << (bits - 1)) as f32;
+            reader
+                .into_samples::<i32>()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to read WAV samples: {e}"))?
+                .into_iter()
+                .map(|s| s as f32 / max_val)
+                .collect()
+        }
+    };
+
+    Ok(CachedSound {
+        samples,
+        sample_rate,
+        channels,
+    })
+}
+
+/// Global sound config, accessible from recording functions.
+static SOUND_CONFIG: std::sync::OnceLock<Mutex<SoundConfig>> = std::sync::OnceLock::new();
+
+fn sound_config() -> &'static Mutex<SoundConfig> {
+    SOUND_CONFIG.get_or_init(|| Mutex::new(SoundConfig::new()))
+}
+
+/// Set a custom start-of-listening sound from a WAV file.
+pub fn set_start_sound(sound: Option<CachedSound>) {
+    sound_config().lock().unwrap().start_sound = sound;
+}
+
+/// Set a custom end-of-listening sound from a WAV file.
+pub fn set_stop_sound(sound: Option<CachedSound>) {
+    sound_config().lock().unwrap().stop_sound = sound;
+}
+
 // ── Segment types ──────────────────────────────────────────────────────
 
 /// A chunk of recorded audio delimited by silence boundaries.
@@ -57,42 +143,70 @@ pub struct SegmentResult {
 
 // ── Ding sound ─────────────────────────────────────────────────────────
 
-/// Play a short pleasant ding to signal that recording has started.
-///
-/// Synthesizes a 880Hz (A5) sine tone with a gentle exponential decay
-/// over ~200ms. Quick enough to not be annoying, clear enough to hear.
-fn play_ding() {
-    let sample_rate = 44100u32;
-    let duration_ms = 200;
-    let num_samples = sample_rate as usize * duration_ms / 1000;
-    let freq = 880.0f32; // A5 — bright but not shrill
-
-    let mut samples = Vec::with_capacity(num_samples);
-    for i in 0..num_samples {
-        let t = i as f32 / sample_rate as f32;
-        // Sine wave with exponential decay (τ ≈ 60ms)
-        let envelope = (-t / 0.06).exp() * 0.3; // 0.3 peak volume
-        let sample = (2.0 * std::f32::consts::PI * freq * t).sin() * envelope;
-        samples.push(sample);
-    }
-
+/// Play a notification sound using cached samples or synthesized defaults.
+fn play_cached_or_synth(cached: Option<&CachedSound>, default_freq: f32, default_duration_ms: usize, default_decay: f32, default_volume: f32, post_delay_ms: u64) {
     let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
-        return; // Silent failure — ding is optional
+        return; // Silent failure — sounds are optional
     };
     stream.log_on_drop(false);
     let player = Player::connect_new(stream.mixer());
 
-    let channels = NonZero::new(1u16).unwrap();
-    let rate = NonZero::new(sample_rate).unwrap();
-    let source = SamplesBuffer::new(channels, rate, samples);
-    player.append(source);
+    if let Some(sound) = cached {
+        let channels = NonZero::new(sound.channels).unwrap();
+        let rate = NonZero::new(sound.sample_rate).unwrap();
+        let source = SamplesBuffer::new(channels, rate, sound.samples.clone());
+        player.append(source);
+    } else {
+        let sample_rate = 44100u32;
+        let num_samples = sample_rate as usize * default_duration_ms / 1000;
 
-    // Wait for the ding to finish before returning
+        let mut samples = Vec::with_capacity(num_samples);
+        for i in 0..num_samples {
+            let t = i as f32 / sample_rate as f32;
+            let envelope = (-t / default_decay).exp() * default_volume;
+            let sample = (2.0 * std::f32::consts::PI * default_freq * t).sin() * envelope;
+            samples.push(sample);
+        }
+
+        let channels = NonZero::new(1u16).unwrap();
+        let rate = NonZero::new(sample_rate).unwrap();
+        let source = SamplesBuffer::new(channels, rate, samples);
+        player.append(source);
+    }
+
     while !player.empty() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // Brief pause so the ding decays fully before mic picks it up
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    if post_delay_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(post_delay_ms));
+    }
+}
+
+/// Play a short pleasant ding to signal that recording has started.
+///
+/// Uses custom start sound if configured, otherwise synthesizes an
+/// 880Hz (A5) sine tone with a gentle exponential decay over ~200ms.
+fn play_ding() {
+    // Clone samples under lock, then play without holding it
+    let custom = sound_config().lock().unwrap().start_sound.as_ref().map(|s| CachedSound {
+        samples: s.samples.clone(),
+        sample_rate: s.sample_rate,
+        channels: s.channels,
+    });
+    play_cached_or_synth(custom.as_ref(), 880.0, 200, 0.06, 0.3, 50);
+}
+
+/// Play a lower-pitched tone to signal that listening has stopped.
+///
+/// Uses custom stop sound if configured, otherwise synthesizes a
+/// 440Hz (A4) tone with a slightly longer decay than the start ding.
+fn play_dong() {
+    let custom = sound_config().lock().unwrap().stop_sound.as_ref().map(|s| CachedSound {
+        samples: s.samples.clone(),
+        sample_rate: s.sample_rate,
+        channels: s.channels,
+    });
+    play_cached_or_synth(custom.as_ref(), 440.0, 250, 0.08, 0.25, 0);
 }
 
 // ── Mic input helpers ──────────────────────────────────────────────────
@@ -279,6 +393,7 @@ pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
 
     drop(stream);
     drop(stdin_thread);
+    play_dong();
 
     let samples = extract_samples(buffer);
     log_recording_stats(&samples, sample_rate);
@@ -417,6 +532,7 @@ pub fn record_with_vad(
     }
 
     drop(stream);
+    play_dong();
 
     let samples = extract_samples(buffer);
     log_recording_stats(&samples, sample_rate);

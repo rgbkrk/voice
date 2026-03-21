@@ -57,7 +57,7 @@ fn capitalize(s: &str) -> String {
 pub fn display_name(id: &str) -> String {
     id.split('_')
         .skip(1) // skip language/gender prefix
-        .map(|s| capitalize(s))
+        .map(capitalize)
         .collect::<Vec<_>>()
         .join(" ")
 }

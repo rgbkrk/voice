@@ -162,7 +162,14 @@ pub struct SegmentResult {
 // ── Ding sound ─────────────────────────────────────────────────────────
 
 /// Play a notification sound using cached samples or synthesized defaults.
-fn play_cached_or_synth(cached: Option<&CachedSound>, default_freq: f32, default_duration_ms: usize, default_decay: f32, default_volume: f32, post_delay_ms: u64) {
+fn play_cached_or_synth(
+    cached: Option<&CachedSound>,
+    default_freq: f32,
+    default_duration_ms: usize,
+    default_decay: f32,
+    default_volume: f32,
+    post_delay_ms: u64,
+) {
     let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
         return; // Silent failure — sounds are optional
     };
@@ -206,11 +213,16 @@ fn play_cached_or_synth(cached: Option<&CachedSound>, default_freq: f32, default
 /// 880Hz (A5) sine tone with a gentle exponential decay over ~200ms.
 fn play_ding() {
     // Clone samples under lock, then play without holding it
-    let custom = sound_config().lock().unwrap().start_sound.as_ref().map(|s| CachedSound {
-        samples: s.samples.clone(),
-        sample_rate: s.sample_rate,
-        channels: s.channels,
-    });
+    let custom = sound_config()
+        .lock()
+        .unwrap()
+        .start_sound
+        .as_ref()
+        .map(|s| CachedSound {
+            samples: s.samples.clone(),
+            sample_rate: s.sample_rate,
+            channels: s.channels,
+        });
     play_cached_or_synth(custom.as_ref(), 880.0, 200, 0.06, 0.3, 50);
 }
 
@@ -221,11 +233,16 @@ fn play_ding() {
 /// sine-shaped envelope and a short gap between them. Feels like a
 /// positive "got it" confirmation.
 fn play_dong() {
-    let custom = sound_config().lock().unwrap().stop_sound.as_ref().map(|s| CachedSound {
-        samples: s.samples.clone(),
-        sample_rate: s.sample_rate,
-        channels: s.channels,
-    });
+    let custom = sound_config()
+        .lock()
+        .unwrap()
+        .stop_sound
+        .as_ref()
+        .map(|s| CachedSound {
+            samples: s.samples.clone(),
+            sample_rate: s.sample_rate,
+            channels: s.channels,
+        });
 
     if custom.is_some() {
         play_cached_or_synth(custom.as_ref(), 0.0, 0, 0.0, 0.0, 0);

@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build:
@@ -69,3 +70,56 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, '-rc.') || contains(github.ref, '-alpha.') || contains(github.ref, '-beta.') }}
           fail_on_unmatched_files: false
+
+  publish:
+    needs: build
+    if: ${{ !contains(github.ref, '-rc.') && !contains(github.ref, '-alpha.') && !contains(github.ref, '-beta.') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Publish workspace crates in dependency order.
+      # `--no-verify` skips the build step — we already verified in the build job,
+      # and these crates require macOS + Metal to compile.
+      # Each publish is allowed to fail with "already exists" so we don't break
+      # when only a subset of crates have version bumps.
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          publish() {
+            local crate="$1"
+            echo "::group::Publishing $crate"
+            if cargo publish -p "$crate" --no-verify 2>&1 | tee /tmp/publish.log; then
+              echo "✓ $crate published"
+            else
+              if grep -q "already uploaded" /tmp/publish.log; then
+                echo "✓ $crate already at this version, skipping"
+              else
+                echo "::error::Failed to publish $crate"
+                cat /tmp/publish.log
+                exit 1
+              fi
+            fi
+            echo "::endgroup::"
+            # Give the index a moment to update before publishing dependents
+            sleep 15
+          }
+
+          # Leaf crates (no workspace deps)
+          publish voice-dsp
+          publish voice-g2p
+          publish voice-stt
+
+          # voice-nn depends on voice-dsp
+          publish voice-nn
+
+          # voice-tts depends on voice-dsp, voice-nn
+          publish voice-tts
+
+          # voice (CLI) depends on voice-tts, voice-g2p, voice-stt
+          publish voice

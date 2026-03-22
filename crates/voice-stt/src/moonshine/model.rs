@@ -314,7 +314,7 @@ impl MoonshineAttention {
 
         // Scaled dot-product attention
         let o = if let Some(ref m) = mask {
-            quill_mlx::fast::scaled_dot_product_attention(&q, &k_exp, &v_exp, self.scale, m, None)?
+            quill_mlx::fast::scaled_dot_product_attention(&q, &k_exp, &v_exp, self.scale, m)?
         } else {
             quill_mlx::fast::scaled_dot_product_attention(
                 &q,
@@ -322,7 +322,6 @@ impl MoonshineAttention {
                 &v_exp,
                 self.scale,
                 None::<quill_mlx::fast::ScaledDotProductAttentionMask>,
-                None,
             )?
         };
 

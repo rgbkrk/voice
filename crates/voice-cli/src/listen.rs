@@ -258,7 +258,7 @@ fn play_ding() {
             sample_rate: s.sample_rate,
             channels: s.channels,
         });
-    play_cached_or_synth(custom.as_ref(), 880.0, 200, 0.06, 0.3, 50);
+    play_cached_or_synth(custom.as_ref(), 880.0, 200, 0.06, 0.15, 50);
 }
 
 /// Play two ascending blips to signal that listening has stopped.
@@ -292,7 +292,7 @@ fn play_dong() {
 
     let sample_rate = 44100u32;
     let pi2 = 2.0 * std::f32::consts::PI;
-    let volume = 0.18f32;
+    let volume = 0.10f32;
 
     // Two blips: C5 (120ms) → gap (60ms) → E5 (120ms)
     let blip_samples = sample_rate as usize * 120 / 1000;

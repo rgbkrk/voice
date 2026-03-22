@@ -1,7 +1,7 @@
-use mlx_macros::ModuleParameters;
-use mlx_rs::error::Exception;
-use mlx_rs::module::Param;
-use mlx_rs::Array;
+use quill_mlx::error::Exception;
+use quill_mlx::module::Param;
+use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 /// Which convolution operation to use.
 #[derive(Debug, Clone, Copy)]
@@ -99,11 +99,11 @@ impl ConvWeighted {
         let g = &*self.weight_g;
 
         // L2 norm of v along dims [1, 2], keeping dims for broadcast
-        let v_norm = mlx_rs::linalg::norm_l2(v, &[1, 2], true)?;
+        let v_norm = quill_mlx::linalg::norm_l2(v, &[1, 2], true)?;
 
         // Avoid division by zero
         let eps = Array::from_slice(&[1e-12f32], &[1]);
-        let v_norm = mlx_rs::ops::maximum(&v_norm, &eps)?;
+        let v_norm = quill_mlx::ops::maximum(&v_norm, &eps)?;
 
         let weight = g * v / v_norm;
         Ok(weight)
@@ -136,7 +136,7 @@ impl ConvWeighted {
     /// Input: `(batch, length, channels)` -- MLX channel-last layout.
     pub fn forward_conv1d(&self, x: &Array) -> Result<Array, Exception> {
         let weight = self.resolve_weight(x)?;
-        let result = mlx_rs::ops::conv1d(
+        let result = quill_mlx::ops::conv1d(
             x,
             &weight,
             self.stride,
@@ -168,7 +168,7 @@ impl ConvWeighted {
             weight.transpose_axes(&[2, 1, 0])?
         };
 
-        let result = mlx_rs::ops::conv_transpose1d(
+        let result = quill_mlx::ops::conv_transpose1d(
             x,
             &weight,
             self.stride,

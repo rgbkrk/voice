@@ -8,7 +8,7 @@ pub mod weights;
 
 use std::path::Path;
 
-pub use mlx_rs::Array;
+pub use quill_mlx::Array;
 
 pub use builtin::BUILTIN_VOICES;
 pub use config::ModelConfig;

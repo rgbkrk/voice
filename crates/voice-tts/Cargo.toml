@@ -8,12 +8,12 @@ license = "MIT"
 repository = "https://github.com/rgbkrk/voicers"
 
 [dependencies]
-mlx-rs = { version = "0.25", features = ["safetensors"] }
+quill-mlx = { version = "0.25.5", features = ["safetensors"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hf-hub = "0.5"
 hound = "3"
 thiserror = "2"
-mlx-macros = "0.25.3"
+quill-mlx-macros = "0.25.5"
 voice-dsp = { version = "0.2.0", path = "../voice-dsp" }
 voice-nn = { version = "0.2.0", path = "../voice-nn" }

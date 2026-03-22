@@ -1,10 +1,10 @@
-use mlx_macros::ModuleParameters;
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{Dropout, DropoutBuilder, Embedding, LayerNorm, LayerNormBuilder};
-use mlx_rs::ops::{concatenate_axis, expand_dims, zeros};
-use mlx_rs::Array;
+use quill_mlx::builder::Builder;
+use quill_mlx::error::Exception;
+use quill_mlx::module::Module;
+use quill_mlx::nn::{Dropout, DropoutBuilder, Embedding, LayerNorm, LayerNormBuilder};
+use quill_mlx::ops::{concatenate_axis, expand_dims, zeros};
+use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 use super::conv_weighted::ConvWeighted;
 use super::lstm::BiLstm;
@@ -51,7 +51,7 @@ impl ConvBlock {
 
 /// Apply leaky ReLU with negative slope 0.2.
 fn leaky_relu_02(x: &Array) -> Result<Array, Exception> {
-    mlx_rs::nn::leaky_relu(x, 0.2)
+    quill_mlx::nn::leaky_relu(x, 0.2)
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ impl<'a> Module<TextEncoderInput<'a>> for TextEncoder {
 
         // Apply mask: zero out masked positions
         let zero = Array::from_f32(0.0);
-        x = mlx_rs::ops::r#where(&m, &zero, &x)?;
+        x = quill_mlx::ops::r#where(&m, &zero, &x)?;
 
         // CNN blocks
         for block in self.cnn.iter_mut() {
@@ -133,7 +133,7 @@ impl<'a> Module<TextEncoderInput<'a>> for TextEncoder {
             x = block.dropout.forward(&x)?;
 
             // Re-apply mask
-            x = mlx_rs::ops::r#where(&m, &zero, &x)?;
+            x = quill_mlx::ops::r#where(&m, &zero, &x)?;
         }
 
         // LSTM: needs (B, seq, channels)
@@ -156,7 +156,7 @@ impl<'a> Module<TextEncoderInput<'a>> for TextEncoder {
         }
 
         // Final mask application
-        x = mlx_rs::ops::r#where(&m, &zero, &x)?;
+        x = quill_mlx::ops::r#where(&m, &zero, &x)?;
 
         Ok(x)
     }

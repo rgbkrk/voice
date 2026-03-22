@@ -196,9 +196,9 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bindgen"
-version = "0.70.1"
+version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f49d8fed880d473ea71efb9bf597651e77201bdd4893efe54c9e5d65ae04ce6f"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
 dependencies = [
  "bitflags 2.11.0",
  "cexpr",
@@ -209,25 +209,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash 1.1.0",
- "shlex",
- "syn",
-]
-
-[[package]]
-name = "bindgen"
-version = "0.72.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
-dependencies = [
- "bitflags 2.11.0",
- "cexpr",
- "clang-sys",
- "itertools 0.13.0",
- "proc-macro2",
- "quote",
- "regex",
- "rustc-hash 2.1.1",
+ "rustc-hash",
  "shlex",
  "syn",
 ]
@@ -553,7 +535,7 @@ version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ceec7a6067e62d6f931a2baf6f3a751f4a892595bcec1461a3c94ef9949864b6"
 dependencies = [
- "bindgen 0.72.1",
+ "bindgen",
 ]
 
 [[package]]
@@ -1728,68 +1710,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mlx-internal-macros"
-version = "0.25.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a7c4444d624bf6b93db5cc22ebff4fdfa13593fd56154fe33b1f302a557c2c6"
-dependencies = [
- "darling 0.21.3",
- "itertools 0.14.0",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "mlx-macros"
-version = "0.25.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a819ee8b4434690572b6feb9c3ef0b6e90137e4190b340cf00150703b410aaf9"
-dependencies = [
- "darling 0.21.3",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "mlx-rs"
-version = "0.25.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3a0f592c5839b0237b3072530b1d3c503923579a2009ee0761df3edd1b1f27b"
-dependencies = [
- "bytemuck",
- "dyn-clone",
- "half",
- "itertools 0.14.0",
- "libc",
- "mach-sys",
- "mlx-internal-macros",
- "mlx-macros",
- "mlx-sys",
- "num-complex",
- "num-traits",
- "num_enum",
- "parking_lot",
- "paste",
- "safetensors",
- "smallvec",
- "strum",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "mlx-sys"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e3bc3880111918b2d5018f845d48fd995f9901f16efc81d1fcfd2f4210b8219"
-dependencies = [
- "bindgen 0.70.1",
- "cc",
- "cmake",
-]
-
-[[package]]
 name = "monostate"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2351,6 +2271,68 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 
 [[package]]
+name = "quill-mlx"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21ced7db6db4a4ac552781bc286c16f1ccb0f3877645471d8327f8ee36ac93e7"
+dependencies = [
+ "bytemuck",
+ "dyn-clone",
+ "half",
+ "itertools 0.14.0",
+ "libc",
+ "mach-sys",
+ "num-complex",
+ "num-traits",
+ "num_enum",
+ "parking_lot",
+ "paste",
+ "quill-mlx-internal-macros",
+ "quill-mlx-macros",
+ "quill-mlx-sys",
+ "safetensors",
+ "smallvec",
+ "strum",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "quill-mlx-internal-macros"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f2b1f27315134b6f7b8c572d2cbd5653992c07f5d1aaa0c03ab6baccb0b9631"
+dependencies = [
+ "darling 0.21.3",
+ "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "quill-mlx-macros"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0922d0dedc44d56a61b5f79a6db20ecafe1eef3f8ffd510c163adff258ec7684"
+dependencies = [
+ "darling 0.21.3",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "quill-mlx-sys"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2dfbb6718cd0197626ebf2da1dac0bc24171a602db06cd3f2ebb6c2c7bec2213"
+dependencies = [
+ "bindgen",
+ "cc",
+ "cmake",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2610,12 +2592,6 @@ dependencies = [
  "visibility",
  "windowfunctions",
 ]
-
-[[package]]
-name = "rustc-hash"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"
@@ -3614,6 +3590,7 @@ dependencies = [
  "ctrlc",
  "hound",
  "pulldown-cmark",
+ "quill-mlx",
  "rodio",
  "serde",
  "serde_json",
@@ -3627,7 +3604,7 @@ dependencies = [
 name = "voice-dsp"
 version = "0.2.0"
 dependencies = [
- "mlx-rs",
+ "quill-mlx",
 ]
 
 [[package]]
@@ -3645,8 +3622,8 @@ dependencies = [
 name = "voice-nn"
 version = "0.2.0"
 dependencies = [
- "mlx-macros",
- "mlx-rs",
+ "quill-mlx",
+ "quill-mlx-macros",
  "serde",
  "voice-dsp",
 ]
@@ -3658,8 +3635,8 @@ dependencies = [
  "audioadapter-buffers",
  "hf-hub",
  "hound",
- "mlx-macros",
- "mlx-rs",
+ "quill-mlx",
+ "quill-mlx-macros",
  "rubato",
  "serde",
  "serde_json",
@@ -3673,8 +3650,8 @@ version = "0.2.1"
 dependencies = [
  "hf-hub",
  "hound",
- "mlx-macros",
- "mlx-rs",
+ "quill-mlx",
+ "quill-mlx-macros",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

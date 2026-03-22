@@ -1,10 +1,10 @@
-use mlx_macros::ModuleParameters;
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::module::{Module, ModuleParameters};
-use mlx_rs::nn::{Conv1d, Conv1dBuilder, Linear, LinearBuilder};
-use mlx_rs::ops::{broadcast_to, concatenate_axis, squeeze_axes, which, zeros};
-use mlx_rs::Array;
+use quill_mlx::builder::Builder;
+use quill_mlx::error::Exception;
+use quill_mlx::module::{Module, ModuleParameters};
+use quill_mlx::nn::{Conv1d, Conv1dBuilder, Linear, LinearBuilder};
+use quill_mlx::ops::{broadcast_to, concatenate_axis, squeeze_axes, which, zeros};
+use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 use super::ada_norm::AdaLayerNorm;
 use super::lstm::BiLstm;
@@ -55,21 +55,21 @@ impl ModuleParameters for DurationEncoderBlock {
         }
     }
 
-    fn parameters(&self) -> mlx_rs::module::ModuleParamRef<'_> {
+    fn parameters(&self) -> quill_mlx::module::ModuleParamRef<'_> {
         match self {
             DurationEncoderBlock::Lstm(l) => l.parameters(),
             DurationEncoderBlock::Norm(n) => n.parameters(),
         }
     }
 
-    fn parameters_mut(&mut self) -> mlx_rs::module::ModuleParamMut<'_> {
+    fn parameters_mut(&mut self) -> quill_mlx::module::ModuleParamMut<'_> {
         match self {
             DurationEncoderBlock::Lstm(l) => l.parameters_mut(),
             DurationEncoderBlock::Norm(n) => n.parameters_mut(),
         }
     }
 
-    fn trainable_parameters(&self) -> mlx_rs::module::ModuleParamRef<'_> {
+    fn trainable_parameters(&self) -> quill_mlx::module::ModuleParamRef<'_> {
         match self {
             DurationEncoderBlock::Lstm(l) => l.trainable_parameters(),
             DurationEncoderBlock::Norm(n) => n.trainable_parameters(),

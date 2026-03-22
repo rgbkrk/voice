@@ -29,7 +29,7 @@ use voice_nn::albert;
 use voice_nn::vocoder;
 ```
 
-All modules operate on `mlx_rs::Array` tensors and use `mlx_macros::ModuleParameters` for weight loading from safetensors checkpoints.
+All modules operate on `quill_mlx::Array` tensors and use `quill_mlx_macros::ModuleParameters` for weight loading from safetensors checkpoints.
 
 ## License
 

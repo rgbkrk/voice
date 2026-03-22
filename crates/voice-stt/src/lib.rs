@@ -29,8 +29,8 @@ pub mod moonshine;
 use std::path::{Path, PathBuf};
 
 pub use error::{Result, SttError};
-pub use mlx_rs::Array;
 pub use moonshine::{MoonshineConfig, MoonshineModel};
+pub use quill_mlx::Array;
 pub use tokenizers;
 
 /// Result of a transcription.
@@ -87,7 +87,7 @@ pub fn load_model(path_or_repo: &str) -> Result<MoonshineModel> {
 
     // Apply weights to model parameters
     {
-        use mlx_rs::module::ModuleParameters;
+        use quill_mlx::module::ModuleParameters;
         let mut params = model.parameters_mut().flatten();
         let mut loaded = 0;
         let mut missing = Vec::new();

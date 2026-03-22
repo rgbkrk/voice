@@ -2272,9 +2272,9 @@ checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 
 [[package]]
 name = "quill-mlx"
-version = "0.25.4"
+version = "0.25.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21ced7db6db4a4ac552781bc286c16f1ccb0f3877645471d8327f8ee36ac93e7"
+checksum = "39042a2555be5d0a9c8aafcc11d2c886781e37b610aceddd2e36a114eb5d78ee"
 dependencies = [
  "bytemuck",
  "dyn-clone",
@@ -2311,9 +2311,9 @@ dependencies = [
 
 [[package]]
 name = "quill-mlx-macros"
-version = "0.25.4"
+version = "0.25.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0922d0dedc44d56a61b5f79a6db20ecafe1eef3f8ffd510c163adff258ec7684"
+checksum = "1bb9993e3e16b31de3686270c76909db7587ee3c940e5ff5b5af031e34efe78e"
 dependencies = [
  "darling 0.21.3",
  "proc-macro2",
@@ -2323,9 +2323,9 @@ dependencies = [
 
 [[package]]
 name = "quill-mlx-sys"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2dfbb6718cd0197626ebf2da1dac0bc24171a602db06cd3f2ebb6c2c7bec2213"
+checksum = "39b931ca0f118cb16c5328a7c5df699a9129321a17395e4d5b5393d7f7c7002a"
 dependencies = [
  "bindgen",
  "cc",
@@ -3583,7 +3583,7 @@ dependencies = [
 
 [[package]]
 name = "voice"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "clap",
  "cpal 0.15.3",

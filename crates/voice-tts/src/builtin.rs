@@ -4,7 +4,7 @@
 //! `include_str!`/`include_bytes!`, enabling instant loading with no
 //! network or filesystem access (model weights still require HF Hub).
 
-use mlx_rs::Array;
+use quill_mlx::Array;
 
 use crate::config::ModelConfig;
 use crate::error::{Result, VoicersError};

@@ -1,11 +1,11 @@
-use mlx_macros::ModuleParameters;
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{leaky_relu, Conv1d, Conv1dBuilder, Upsample, UpsampleMode};
-use mlx_rs::ops::indexing::IndexOp;
-use mlx_rs::ops::{concatenate_axis, exp, pad, sin, squeeze_axes, PadWidth};
-use mlx_rs::Array;
+use quill_mlx_macros::ModuleParameters;
+use quill_mlx::builder::Builder;
+use quill_mlx::error::Exception;
+use quill_mlx::module::Module;
+use quill_mlx::nn::{leaky_relu, Conv1d, Conv1dBuilder, Upsample, UpsampleMode};
+use quill_mlx::ops::indexing::IndexOp;
+use quill_mlx::ops::{concatenate_axis, exp, pad, sin, squeeze_axes, PadWidth};
+use quill_mlx::Array;
 
 use super::source::{AdaINResBlock1, SourceModuleHnNSF};
 use crate::conv_weighted::ConvWeighted;

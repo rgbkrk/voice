@@ -1,12 +1,12 @@
-use mlx_macros::ModuleParameters;
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{
+use quill_mlx_macros::ModuleParameters;
+use quill_mlx::builder::Builder;
+use quill_mlx::error::Exception;
+use quill_mlx::module::Module;
+use quill_mlx::nn::{
     Dropout, DropoutBuilder, Embedding, Gelu, LayerNorm, LayerNormBuilder, Linear, LinearBuilder,
 };
-use mlx_rs::ops::{expand_dims, softmax_axis, zeros_like};
-use mlx_rs::Array;
+use quill_mlx::ops::{expand_dims, softmax_axis, zeros_like};
+use quill_mlx::Array;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -517,10 +517,10 @@ impl<'a> Module<CustomAlbertInput<'a>> for CustomAlbert {
         })?;
 
         // Pool: take first token, apply pooler + tanh
-        use mlx_rs::ops::indexing::IndexOp;
+        use quill_mlx::ops::indexing::IndexOp;
         let first_token = encoder_output.index((.., 0));
         let pooled = self.pooler.forward(&first_token)?;
-        let pooled = mlx_rs::ops::tanh(&pooled)?;
+        let pooled = quill_mlx::ops::tanh(&pooled)?;
 
         Ok(CustomAlbertOutput {
             encoder_output,

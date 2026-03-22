@@ -5,7 +5,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum SttError {
     #[error("MLX error: {0}")]
-    Mlx(#[from] mlx_rs::error::Exception),
+    Mlx(#[from] quill_mlx::error::Exception),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

@@ -1,9 +1,9 @@
-use mlx_macros::ModuleParameters;
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{Linear, LinearBuilder};
-use mlx_rs::Array;
+use quill_mlx_macros::ModuleParameters;
+use quill_mlx::builder::Builder;
+use quill_mlx::error::Exception;
+use quill_mlx::module::Module;
+use quill_mlx::nn::{Linear, LinearBuilder};
+use quill_mlx::Array;
 
 // ---------------------------------------------------------------------------
 // InstanceNorm1d
@@ -80,7 +80,7 @@ impl AdaIN1d {
         let h = self.fc.forward(s)?;
 
         let num_features = self.norm.num_features;
-        let parts = mlx_rs::ops::split(&h, 2, -1)?;
+        let parts = quill_mlx::ops::split(&h, 2, -1)?;
         let gamma = &parts[0]; // (batch, num_features)
         let beta = &parts[1];
 
@@ -152,7 +152,7 @@ impl AdaLayerNorm {
 
         let h = self.fc.forward(s)?;
         let d_model = self.d_model;
-        let parts = mlx_rs::ops::split(&h, 2, -1)?;
+        let parts = quill_mlx::ops::split(&h, 2, -1)?;
         let gamma = &parts[0];
         let beta = &parts[1];
 

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use hf_hub::api::sync::Api;
-use mlx_rs::Array;
+use quill_mlx::Array;
 
 use crate::error::{Result, VoicersError};
 

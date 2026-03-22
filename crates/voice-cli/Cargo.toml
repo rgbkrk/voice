@@ -24,6 +24,7 @@ pubkey = "RWRmHACtt9SpjQB/l+dAoCe+3iqxq/Xe/90P6dyCW70axzy3UkWl+Ave"
 
 [dependencies]
 voice-tts = { version = "0.2.0", path = "../voice-tts" }
+quill-mlx = { path = "../../../mlx-rs/mlx-rs" }
 voice-g2p = { version = "0.2.0", path = "../voice-g2p" }
 voice-stt = { version = "0.1.0", path = "../voice-stt" }
 clap = { version = "4", features = ["derive"] }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use hf_hub::api::sync::Api;
-use mlx_rs::Array;
+use quill_mlx::Array;
 
 use crate::builtin;
 use crate::config::ModelConfig;
@@ -326,7 +326,7 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
 
     // Load weights into model by matching parameter keys
     {
-        use mlx_rs::module::ModuleParameters;
+        use quill_mlx::module::ModuleParameters;
         let mut params = model.parameters_mut().flatten();
         let mut loaded = 0;
         let mut missing = Vec::new();
@@ -356,7 +356,7 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
     }
 
     // Evaluate loaded params
-    use mlx_rs::module::ModuleParametersExt;
+    use quill_mlx::module::ModuleParametersExt;
     model
         .eval()
         .map_err(|e| VoicersError::Weight(e.to_string()))?;

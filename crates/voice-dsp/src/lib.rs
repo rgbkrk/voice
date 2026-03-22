@@ -1,6 +1,6 @@
-use mlx_rs::error::Exception;
-use mlx_rs::ops::indexing::{ArrayIndex, Ellipsis, IndexOp, TryIndexOp};
-use mlx_rs::Array;
+use quill_mlx::error::Exception;
+use quill_mlx::ops::indexing::{ArrayIndex, Ellipsis, IndexOp, TryIndexOp};
+use quill_mlx::Array;
 
 /// Perform overlap-add on CPU for istft.
 ///
@@ -82,7 +82,7 @@ pub fn stft(
     let w = if win_length < n_fft {
         let pad_len = n_fft - win_length;
         let pad = Array::zeros::<f32>(&[pad_len])?;
-        mlx_rs::ops::concatenate_axis(&[&w, &pad], 0)?
+        quill_mlx::ops::concatenate_axis(&[&w, &pad], 0)?
     } else {
         w
     };
@@ -102,7 +102,7 @@ pub fn stft(
         let suffix_idx = Array::from_slice(&suffix_indices, &[half]);
         let suffix = x.index(&suffix_idx);
 
-        mlx_rs::ops::concatenate_axis(&[&prefix, x, &suffix], 0)?
+        quill_mlx::ops::concatenate_axis(&[&prefix, x, &suffix], 0)?
     } else {
         x.clone()
     };
@@ -117,7 +117,7 @@ pub fn stft(
 
     // Window and FFT (rfft along last axis by default)
     let windowed = frames * &w;
-    mlx_rs::fft::rfft(&windowed, None, None)
+    quill_mlx::fft::rfft(&windowed, None, None)
 }
 
 /// Compute the inverse Short-Time Fourier Transform.
@@ -151,7 +151,7 @@ pub fn istft(
     let t = (num_frames - 1) * hop_length + win_length;
 
     // irfft along axis 0, then transpose to (num_frames, win_length)
-    let frames_time = mlx_rs::fft::irfft(x, None, 0)?;
+    let frames_time = quill_mlx::fft::irfft(x, None, 0)?;
     let frames_time = frames_time.transpose_axes(&[1, 0])?;
 
     // Overlap-add on CPU to avoid massive graph
@@ -169,7 +169,7 @@ pub fn istft(
     let eps = Array::from_slice(&[1e-10f32], &[1]);
     let mask = window_sum.gt(&eps)?;
     let ones = Array::from_slice(&[1.0f32], &[1]);
-    let safe_window = mlx_rs::ops::r#where(&mask, &window_sum, &ones)?;
+    let safe_window = quill_mlx::ops::r#where(&mask, &window_sum, &ones)?;
     let reconstructed = reconstructed / safe_window;
 
     let reconstructed = if center && length.is_none() {
@@ -245,8 +245,8 @@ impl MlxStft {
         let mag_refs: Vec<&Array> = mags.iter().collect();
         let phase_refs: Vec<&Array> = phases.iter().collect();
 
-        let mag_batch = mlx_rs::ops::stack_axis(&mag_refs, 0)?;
-        let phase_batch = mlx_rs::ops::stack_axis(&phase_refs, 0)?;
+        let mag_batch = quill_mlx::ops::stack_axis(&mag_refs, 0)?;
+        let phase_batch = quill_mlx::ops::stack_axis(&phase_refs, 0)?;
 
         Ok((mag_batch, phase_batch))
     }
@@ -266,8 +266,8 @@ impl MlxStft {
             // Unwrap phase along the time axis (axis 1) before reconstruction
             let phase_cont = mlx_unwrap(&phase_b, None, Some(1), None)?;
 
-            let cos_phase = mlx_rs::ops::cos(&phase_cont)?;
-            let sin_phase = mlx_rs::ops::sin(&phase_cont)?;
+            let cos_phase = quill_mlx::ops::cos(&phase_cont)?;
+            let sin_phase = quill_mlx::ops::sin(&phase_cont)?;
             let r = &spec_b * &cos_phase;
             let im = &spec_b * &sin_phase;
 
@@ -279,13 +279,13 @@ impl MlxStft {
             // complex64 = [f32 real, f32 imag] per element.
             let r_flat = r_t.reshape(&[-1, 1])?;
             let im_flat = im_t.reshape(&[-1, 1])?;
-            let interleaved = mlx_rs::ops::concatenate_axis(&[&r_flat, &im_flat], -1)?;
+            let interleaved = quill_mlx::ops::concatenate_axis(&[&r_flat, &im_flat], -1)?;
             let interleaved = interleaved.reshape(&[r_t.shape()[0], r_t.shape()[1], 2])?;
 
             // View as complex64: (frames, freq, 2) float32 -> (frames, freq) complex64
             let complex_spec = interleaved
                 .reshape(&[r_t.shape()[0], r_t.shape()[1] * 2])?
-                .view::<mlx_rs::complex64>()?;
+                .view::<quill_mlx::complex64>()?;
 
             // istft operates on (freq, frames) so transpose
             let complex_spec_t = complex_spec.transpose_axes(&[1, 0])?;
@@ -303,7 +303,7 @@ impl MlxStft {
         }
 
         let out_refs: Vec<&Array> = outputs.iter().collect();
-        mlx_rs::ops::stack_axis(&out_refs, 0)
+        quill_mlx::ops::stack_axis(&out_refs, 0)
     }
 }
 
@@ -361,7 +361,7 @@ pub fn interpolate1d(
         let indices = indices.as_type::<i32>()?;
         let zero = Array::from_slice(&[0i32], &[1]);
         let max_idx = Array::from_slice(&[in_width - 1], &[1]);
-        let indices = mlx_rs::ops::clip(&indices, (&zero, &max_idx))?;
+        let indices = quill_mlx::ops::clip(&indices, (&zero, &max_idx))?;
         Ok(input.index((Ellipsis, &indices)))
     } else {
         // Linear interpolation
@@ -381,7 +381,7 @@ pub fn interpolate1d(
         let x_low = x.floor()?.as_type::<i32>()?;
         let x_low_plus_one = &x_low + Array::from_slice(&[1i32], &[1]);
         let max_idx = Array::from_slice(&[in_width - 1], &[1]);
-        let x_high = mlx_rs::ops::minimum(&x_low_plus_one, &max_idx)?;
+        let x_high = quill_mlx::ops::minimum(&x_low_plus_one, &max_idx)?;
 
         let x_low_f = x_low.as_type::<f32>()?;
         let x_frac = &x - &x_low_f;
@@ -417,14 +417,14 @@ pub fn check_array_shape(arr: &Array) -> bool {
 
 /// Compute the angle (argument) of a complex array, or zero for real arrays.
 pub fn mlx_angle(z: &Array) -> Result<Array, Exception> {
-    use mlx_rs::Dtype;
+    use quill_mlx::Dtype;
     if z.dtype() == Dtype::Complex64 {
         let zimag = z.imag()?;
         let zreal = z.real()?;
-        mlx_rs::ops::atan2(&zimag, &zreal)
+        quill_mlx::ops::atan2(&zimag, &zreal)
     } else {
-        let zimag = mlx_rs::ops::zeros_like(z)?;
-        mlx_rs::ops::atan2(&zimag, z)
+        let zimag = quill_mlx::ops::zeros_like(z)?;
+        quill_mlx::ops::atan2(&zimag, z)
     }
 }
 
@@ -469,21 +469,21 @@ pub fn mlx_unwrap(
     let close_to_high = diff_from_high.lt(&eps)?;
     let dd_positive = dd.gt(&zero)?;
     let condition = close_to_high.logical_and(&dd_positive)?;
-    let ddmod = mlx_rs::ops::r#where(&condition, &interval_high_arr, &ddmod)?;
+    let ddmod = quill_mlx::ops::r#where(&condition, &interval_high_arr, &ddmod)?;
 
     let ph_correct = &ddmod - &dd;
 
     // Zero out corrections where jump is small
     let abs_dd = dd.abs()?;
     let small_jump = abs_dd.lt(&discont_arr)?;
-    let ph_correct = mlx_rs::ops::r#where(&small_jump, &zero, &ph_correct)?;
+    let ph_correct = quill_mlx::ops::r#where(&small_jump, &zero, &ph_correct)?;
 
     // Pad with zeros along axis, then cumulative sum
     let mut pad_shape: Vec<i32> = p.shape().to_vec();
     pad_shape[resolved_axis as usize] = 1;
     let zero_padding = Array::zeros::<f32>(&pad_shape)?;
 
-    let padded = mlx_rs::ops::concatenate_axis(&[&zero_padding, &ph_correct], resolved_axis)?;
+    let padded = quill_mlx::ops::concatenate_axis(&[&zero_padding, &ph_correct], resolved_axis)?;
     let cumulative = padded.cumsum(resolved_axis, None, None)?;
 
     Ok(p + cumulative)
@@ -498,7 +498,7 @@ fn slice_along_axis(arr: &Array, axis: i32, start: i32, stop: i32) -> Result<Arr
         axis as usize
     };
 
-    use mlx_rs::ops::indexing::ArrayIndexOp;
+    use quill_mlx::ops::indexing::ArrayIndexOp;
     let mut ops: Vec<ArrayIndexOp> = Vec::with_capacity(ndim);
     for i in 0..ndim {
         if i == axis_usize {

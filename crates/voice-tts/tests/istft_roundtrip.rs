@@ -1,5 +1,5 @@
-use mlx_rs::ops::indexing::IndexOp;
-use mlx_rs::Array;
+use quill_mlx::ops::indexing::IndexOp;
+use quill_mlx::Array;
 use voice_dsp::{mlx_angle, stft, MlxStft};
 
 #[test]

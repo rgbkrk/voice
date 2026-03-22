@@ -1,11 +1,11 @@
-use mlx_macros::ModuleParameters;
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{Linear, LinearBuilder};
-use mlx_rs::ops::indexing::IndexOp;
-use mlx_rs::ops::{clip, sigmoid};
-use mlx_rs::Array;
+use quill_mlx_macros::ModuleParameters;
+use quill_mlx::builder::Builder;
+use quill_mlx::error::Exception;
+use quill_mlx::module::Module;
+use quill_mlx::nn::{Linear, LinearBuilder};
+use quill_mlx::ops::indexing::IndexOp;
+use quill_mlx::ops::{clip, sigmoid};
+use quill_mlx::Array;
 use std::collections::HashMap;
 
 use crate::config::{AlbertConfig, ModelConfig};
@@ -136,7 +136,7 @@ impl KokoroModel {
         let text_mask = arange_plus_one.gt(&lengths_expanded)?;
 
         // ALBERT encoder
-        let mask_int = text_mask.logical_not()?.as_dtype(mlx_rs::Dtype::Int32)?;
+        let mask_int = text_mask.logical_not()?.as_dtype(quill_mlx::Dtype::Int32)?;
         let bert_output = self.bert.forward(CustomAlbertInput {
             input_ids: &input_ids_arr,
             token_type_ids: None,
@@ -182,7 +182,7 @@ impl KokoroModel {
         // Round and clip durations
         let rounded = duration_scaled.round(None)?;
         let pred_dur = clip(&rounded, (1.0f32, ()))?;
-        let pred_dur = pred_dur.as_dtype(mlx_rs::Dtype::Int32)?;
+        let pred_dur = pred_dur.as_dtype(quill_mlx::Dtype::Int32)?;
         // Take first batch element
         let pred_dur = pred_dur.index(0);
         pred_dur.eval()?;

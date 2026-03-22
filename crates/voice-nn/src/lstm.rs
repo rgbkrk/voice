@@ -1,11 +1,11 @@
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::nn::{Lstm, LstmBuilder};
-use mlx_rs::ops::indexing::IndexOp;
-use mlx_rs::ops::{addmm, split, stack_axis};
-use mlx_rs::Array;
+use quill_mlx::builder::Builder;
+use quill_mlx::error::Exception;
+use quill_mlx::nn::{Lstm, LstmBuilder};
+use quill_mlx::ops::indexing::IndexOp;
+use quill_mlx::ops::{addmm, split, stack_axis};
+use quill_mlx::Array;
 
-use mlx_macros::ModuleParameters;
+use quill_mlx_macros::ModuleParameters;
 
 /// Run a single-direction LSTM with proper hidden state propagation.
 ///
@@ -40,17 +40,17 @@ fn lstm_forward_recurrent(
         }
 
         let pieces = split(&ifgo, 4, -1)?;
-        let i = mlx_rs::ops::sigmoid(&pieces[0])?;
-        let f = mlx_rs::ops::sigmoid(&pieces[1])?;
-        let g = mlx_rs::ops::tanh(&pieces[2])?;
-        let o = mlx_rs::ops::sigmoid(&pieces[3])?;
+        let i = quill_mlx::ops::sigmoid(&pieces[0])?;
+        let f = quill_mlx::ops::sigmoid(&pieces[1])?;
+        let g = quill_mlx::ops::tanh(&pieces[2])?;
+        let o = quill_mlx::ops::sigmoid(&pieces[3])?;
 
         let new_cell = match &cell {
             Some(c) => f.multiply(c)?.add(i.multiply(&g)?)?,
             None => i.multiply(&g)?,
         };
 
-        let new_hidden = o.multiply(mlx_rs::ops::tanh(&new_cell)?)?;
+        let new_hidden = o.multiply(quill_mlx::ops::tanh(&new_cell)?)?;
 
         all_hidden.push(new_hidden.clone());
         all_cell.push(new_cell.clone());
@@ -120,7 +120,7 @@ impl BiLstm {
         let bwd_out = bwd_out_rev.index((0.., &rev_idx, 0..));
 
         // Concatenate forward and backward outputs along the feature dimension (axis 2)
-        let output = mlx_rs::ops::concatenate_axis(&[&fwd_out, &bwd_out], 2)?;
+        let output = quill_mlx::ops::concatenate_axis(&[&fwd_out, &bwd_out], 2)?;
         Ok((output, ()))
     }
 

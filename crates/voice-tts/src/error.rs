@@ -1,4 +1,4 @@
-use mlx_rs::error::Exception;
+use quill_mlx::error::Exception;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VoicersError {

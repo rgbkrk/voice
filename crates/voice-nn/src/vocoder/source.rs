@@ -1,11 +1,11 @@
-use mlx_macros::ModuleParameters;
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{Linear, LinearBuilder};
-use mlx_rs::ops::indexing::IndexOp;
-use mlx_rs::ops::{cumsum, sin, tanh};
-use mlx_rs::Array;
+use quill_mlx_macros::ModuleParameters;
+use quill_mlx::builder::Builder;
+use quill_mlx::error::Exception;
+use quill_mlx::module::Module;
+use quill_mlx::nn::{Linear, LinearBuilder};
+use quill_mlx::ops::indexing::IndexOp;
+use quill_mlx::ops::{cumsum, sin, tanh};
+use quill_mlx::Array;
 
 use crate::ada_norm::AdaIN1d;
 use crate::conv_weighted::ConvWeighted;
@@ -79,8 +79,8 @@ impl SineGen {
         let dim = f0_values.dim(2);
         let zero_col = Array::zeros::<f32>(&[b, 1])?;
         let rest_cols = if dim > 1 {
-            let rest = mlx_rs::random::normal::<f32>(&[b, dim - 1], None, None, None)?;
-            mlx_rs::ops::concatenate_axis(&[&zero_col, &rest], -1)?
+            let rest = quill_mlx::random::normal::<f32>(&[b, dim - 1], None, None, None)?;
+            quill_mlx::ops::concatenate_axis(&[&zero_col, &rest], -1)?
         } else {
             zero_col
         };
@@ -96,7 +96,7 @@ impl SineGen {
 
         let rad_values = if t > 1 {
             let rest_frames = rad_values.index((.., 1_i32.., ..));
-            mlx_rs::ops::concatenate_axis(&[&first_frame, &rest_frames], 1)?
+            quill_mlx::ops::concatenate_axis(&[&first_frame, &rest_frames], 1)?
         } else {
             first_frame
         };
@@ -154,7 +154,7 @@ impl SineGen {
         let noise_amp = (&uv * &noise_std_arr).add(one_minus_uv.multiply(&sine_amp_third)?)?;
 
         // Generate noise
-        let noise_raw = mlx_rs::random::normal::<f32>(sine_waves.shape(), None, None, None)?;
+        let noise_raw = quill_mlx::random::normal::<f32>(sine_waves.shape(), None, None, None)?;
         let noise = noise_amp.multiply(&noise_raw)?;
 
         // Mix: voiced regions get sine, unvoiced get noise
@@ -239,7 +239,7 @@ impl Module<&Array> for SourceModuleHnNSF {
         // Generate noise for unvoiced regions
         let noise_amp = Array::from_f32(self.sine_amp / 3.0);
         let noise =
-            mlx_rs::random::normal::<f32>(uv.shape(), None, None, None)?.multiply(&noise_amp)?;
+            quill_mlx::random::normal::<f32>(uv.shape(), None, None, None)?.multiply(&noise_amp)?;
 
         Ok(SourceModuleOutput {
             sine_merge,

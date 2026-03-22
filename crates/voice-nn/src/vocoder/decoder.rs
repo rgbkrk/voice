@@ -1,10 +1,10 @@
-use mlx_macros::ModuleParameters;
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{leaky_relu, Dropout, DropoutBuilder, Upsample, UpsampleMode};
-use mlx_rs::ops::{concatenate_axis, pad, sqrt, PadWidth};
-use mlx_rs::Array;
+use quill_mlx_macros::ModuleParameters;
+use quill_mlx::builder::Builder;
+use quill_mlx::error::Exception;
+use quill_mlx::module::Module;
+use quill_mlx::nn::{leaky_relu, Dropout, DropoutBuilder, Upsample, UpsampleMode};
+use quill_mlx::ops::{concatenate_axis, pad, sqrt, PadWidth};
+use quill_mlx::Array;
 
 use super::generator::Generator;
 use crate::ada_norm::AdaIN1d;

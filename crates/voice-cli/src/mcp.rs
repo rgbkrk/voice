@@ -204,6 +204,12 @@ pub fn run(config: ServerConfig) {
         stt_tokenizer: None,
     };
 
+    // Cap the Metal buffer cache at 2 GB to prevent unbounded memory growth
+    // across repeated inference calls.
+    if let Err(e) = quill_mlx::metal::set_cache_limit(2 * 1024 * 1024 * 1024) {
+        eprintln!("warning: failed to set Metal cache limit: {e}");
+    }
+
     let mut stdout = io::stdout();
 
     if !QUIET.load(Ordering::Relaxed) {

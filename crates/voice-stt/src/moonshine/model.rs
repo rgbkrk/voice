@@ -13,14 +13,14 @@
 //!   gradient flow.
 //! - **Tied embeddings**: Output projection reuses the token embedding matrix.
 
-use mlx_macros::ModuleParameters;
-use mlx_rs::builder::Builder;
-use mlx_rs::error::Exception;
-use mlx_rs::module::Module;
-use mlx_rs::nn::{self, Embedding, GroupNorm, LayerNorm, LayerNormBuilder, Linear, LinearBuilder};
-use mlx_rs::ops::indexing::{IndexOp, IntoStrideBy};
-use mlx_rs::ops::{concatenate_axis, expand_dims, stack_axis};
-use mlx_rs::Array;
+use quill_mlx_macros::ModuleParameters;
+use quill_mlx::builder::Builder;
+use quill_mlx::error::Exception;
+use quill_mlx::module::Module;
+use quill_mlx::nn::{self, Embedding, GroupNorm, LayerNorm, LayerNormBuilder, Linear, LinearBuilder};
+use quill_mlx::ops::indexing::{IndexOp, IntoStrideBy};
+use quill_mlx::ops::{concatenate_axis, expand_dims, stack_axis};
+use quill_mlx::Array;
 
 use super::config::MoonshineConfig;
 
@@ -54,7 +54,7 @@ impl MoonshineRotaryEmbedding {
     pub fn forward(&self, position_ids: &Array) -> Result<(Array, Array), Exception> {
         // position_ids: [B, T] -> [B, T, 1]
         let pos = position_ids.reshape(&[position_ids.shape()[0], position_ids.shape()[1], 1])?;
-        let pos = pos.as_dtype(mlx_rs::Dtype::Float32)?;
+        let pos = pos.as_dtype(quill_mlx::Dtype::Float32)?;
 
         // inv_freq: [dim/2] -> [1, 1, dim/2]
         let inv = self.inv_freq.reshape(&[1, 1, (self.dim / 2) as i32])?;
@@ -312,14 +312,15 @@ impl MoonshineAttention {
 
         // Scaled dot-product attention
         let o = if let Some(ref m) = mask {
-            mlx_rs::fast::scaled_dot_product_attention(&q, &k_exp, &v_exp, self.scale, m)?
+            quill_mlx::fast::scaled_dot_product_attention(&q, &k_exp, &v_exp, self.scale, m, None)?
         } else {
-            mlx_rs::fast::scaled_dot_product_attention(
+            quill_mlx::fast::scaled_dot_product_attention(
                 &q,
                 &k_exp,
                 &v_exp,
                 self.scale,
-                None::<mlx_rs::fast::ScaledDotProductAttentionMask>,
+                None::<quill_mlx::fast::ScaledDotProductAttentionMask>,
+                None,
             )?
         };
 
@@ -654,7 +655,7 @@ impl MoonshineEncoder {
 
         // Conv frontend with progressive downsampling
         let x = self.conv1.forward(&x)?;
-        let x = mlx_rs::ops::tanh(&x)?;
+        let x = quill_mlx::ops::tanh(&x)?;
         let x = self.groupnorm.forward(&x)?;
         let x = self.conv2.forward(&x)?;
         let x = nn::gelu(&x)?;
@@ -860,7 +861,7 @@ impl MoonshineModel {
             let logits = self.get_logits(&last_hidden)?;
 
             // Greedy: argmax
-            let next_token = mlx_rs::ops::indexing::argmax_axis(&logits, -1, false)?;
+            let next_token = quill_mlx::ops::indexing::argmax_axis(&logits, -1, false)?;
             let next_token_val: u32 = next_token.item();
 
             if next_token_val == eos {

@@ -28,7 +28,7 @@ let (magnitude, phase) = stft.transform(&audio_batch)?;
 let reconstructed = stft.inverse(&magnitude, &phase)?;
 ```
 
-All functions operate on `mlx_rs::Array` and return `Result<_, mlx_rs::error::Exception>`.
+All functions operate on `quill_mlx::Array` and return `Result<_, quill_mlx::error::Exception>`.
 
 ## Requirements
 

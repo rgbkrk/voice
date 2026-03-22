@@ -1,10 +1,10 @@
-use quill_mlx_macros::ModuleParameters;
 use quill_mlx::builder::Builder;
 use quill_mlx::error::Exception;
 use quill_mlx::module::{Module, ModuleParameters};
 use quill_mlx::nn::{Conv1d, Conv1dBuilder, Linear, LinearBuilder};
 use quill_mlx::ops::{broadcast_to, concatenate_axis, squeeze_axes, which, zeros};
 use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 use super::ada_norm::AdaLayerNorm;
 use super::lstm::BiLstm;

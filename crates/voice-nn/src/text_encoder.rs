@@ -1,10 +1,10 @@
-use quill_mlx_macros::ModuleParameters;
 use quill_mlx::builder::Builder;
 use quill_mlx::error::Exception;
 use quill_mlx::module::Module;
 use quill_mlx::nn::{Dropout, DropoutBuilder, Embedding, LayerNorm, LayerNormBuilder};
 use quill_mlx::ops::{concatenate_axis, expand_dims, zeros};
 use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 use super::conv_weighted::ConvWeighted;
 use super::lstm::BiLstm;

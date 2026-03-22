@@ -1,4 +1,3 @@
-use quill_mlx_macros::ModuleParameters;
 use quill_mlx::builder::Builder;
 use quill_mlx::error::Exception;
 use quill_mlx::module::Module;
@@ -6,6 +5,7 @@ use quill_mlx::nn::{Linear, LinearBuilder};
 use quill_mlx::ops::indexing::IndexOp;
 use quill_mlx::ops::{cumsum, sin, tanh};
 use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 use crate::ada_norm::AdaIN1d;
 use crate::conv_weighted::ConvWeighted;

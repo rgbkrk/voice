@@ -1,4 +1,3 @@
-use quill_mlx_macros::ModuleParameters;
 use quill_mlx::builder::Builder;
 use quill_mlx::error::Exception;
 use quill_mlx::module::Module;
@@ -7,6 +6,7 @@ use quill_mlx::nn::{
 };
 use quill_mlx::ops::{expand_dims, softmax_axis, zeros_like};
 use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]

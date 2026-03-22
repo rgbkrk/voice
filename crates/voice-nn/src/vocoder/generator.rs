@@ -1,4 +1,3 @@
-use quill_mlx_macros::ModuleParameters;
 use quill_mlx::builder::Builder;
 use quill_mlx::error::Exception;
 use quill_mlx::module::Module;
@@ -6,6 +5,7 @@ use quill_mlx::nn::{leaky_relu, Conv1d, Conv1dBuilder, Upsample, UpsampleMode};
 use quill_mlx::ops::indexing::IndexOp;
 use quill_mlx::ops::{concatenate_axis, exp, pad, sin, squeeze_axes, PadWidth};
 use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 use super::source::{AdaINResBlock1, SourceModuleHnNSF};
 use crate::conv_weighted::ConvWeighted;

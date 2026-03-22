@@ -1,9 +1,9 @@
-use quill_mlx_macros::ModuleParameters;
 use quill_mlx::builder::Builder;
 use quill_mlx::error::Exception;
 use quill_mlx::module::Module;
 use quill_mlx::nn::{Linear, LinearBuilder};
 use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 // ---------------------------------------------------------------------------
 // InstanceNorm1d

@@ -1,7 +1,7 @@
-use quill_mlx_macros::ModuleParameters;
 use quill_mlx::error::Exception;
 use quill_mlx::module::Param;
 use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 /// Which convolution operation to use.
 #[derive(Debug, Clone, Copy)]

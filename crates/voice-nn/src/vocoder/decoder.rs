@@ -1,10 +1,10 @@
-use quill_mlx_macros::ModuleParameters;
 use quill_mlx::builder::Builder;
 use quill_mlx::error::Exception;
 use quill_mlx::module::Module;
 use quill_mlx::nn::{leaky_relu, Dropout, DropoutBuilder, Upsample, UpsampleMode};
 use quill_mlx::ops::{concatenate_axis, pad, sqrt, PadWidth};
 use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 use super::generator::Generator;
 use crate::ada_norm::AdaIN1d;

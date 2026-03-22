@@ -13,14 +13,16 @@
 //!   gradient flow.
 //! - **Tied embeddings**: Output projection reuses the token embedding matrix.
 
-use quill_mlx_macros::ModuleParameters;
 use quill_mlx::builder::Builder;
 use quill_mlx::error::Exception;
 use quill_mlx::module::Module;
-use quill_mlx::nn::{self, Embedding, GroupNorm, LayerNorm, LayerNormBuilder, Linear, LinearBuilder};
+use quill_mlx::nn::{
+    self, Embedding, GroupNorm, LayerNorm, LayerNormBuilder, Linear, LinearBuilder,
+};
 use quill_mlx::ops::indexing::{IndexOp, IntoStrideBy};
 use quill_mlx::ops::{concatenate_axis, expand_dims, stack_axis};
 use quill_mlx::Array;
+use quill_mlx_macros::ModuleParameters;
 
 use super::config::MoonshineConfig;
 

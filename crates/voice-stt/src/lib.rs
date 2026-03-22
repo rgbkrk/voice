@@ -29,8 +29,8 @@ pub mod moonshine;
 use std::path::{Path, PathBuf};
 
 pub use error::{Result, SttError};
-pub use quill_mlx::Array;
 pub use moonshine::{MoonshineConfig, MoonshineModel};
+pub use quill_mlx::Array;
 pub use tokenizers;
 
 /// Result of a transcription.

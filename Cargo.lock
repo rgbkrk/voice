@@ -2272,7 +2272,9 @@ checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 
 [[package]]
 name = "quill-mlx"
-version = "0.25.3"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21ced7db6db4a4ac552781bc286c16f1ccb0f3877645471d8327f8ee36ac93e7"
 dependencies = [
  "bytemuck",
  "dyn-clone",
@@ -2296,7 +2298,9 @@ dependencies = [
 
 [[package]]
 name = "quill-mlx-internal-macros"
-version = "0.25.3"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f2b1f27315134b6f7b8c572d2cbd5653992c07f5d1aaa0c03ab6baccb0b9631"
 dependencies = [
  "darling 0.21.3",
  "itertools 0.14.0",
@@ -2307,7 +2311,9 @@ dependencies = [
 
 [[package]]
 name = "quill-mlx-macros"
-version = "0.25.3"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0922d0dedc44d56a61b5f79a6db20ecafe1eef3f8ffd510c163adff258ec7684"
 dependencies = [
  "darling 0.21.3",
  "proc-macro2",
@@ -2317,7 +2323,9 @@ dependencies = [
 
 [[package]]
 name = "quill-mlx-sys"
-version = "0.2.0"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2dfbb6718cd0197626ebf2da1dac0bc24171a602db06cd3f2ebb6c2c7bec2213"
 dependencies = [
  "bindgen",
  "cc",

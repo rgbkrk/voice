@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/rgbkrk/voicers"
 
 [dependencies]
-quill-mlx = { path = "../../../mlx-rs/mlx-rs" }
-quill-mlx-macros = { path = "../../../mlx-rs/mlx-macros" }
+quill-mlx = "0.25.4"
+quill-mlx-macros = "0.25.4"
 serde = { version = "1", features = ["derive"] }
 voice-dsp = { version = "0.2.0", path = "../voice-dsp" }

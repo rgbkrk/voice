@@ -76,7 +76,7 @@ fn find_metallib(build_dir: &Path) -> Option<PathBuf> {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str.starts_with("mlx-sys-") {
+        if name_str.starts_with("quill-mlx-sys-") || name_str.starts_with("mlx-sys-") {
             println!(
                 "cargo:warning=[metallib] found mlx-sys dir: {}",
                 entry.path().display()

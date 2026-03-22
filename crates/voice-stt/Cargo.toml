@@ -8,8 +8,8 @@ license = "MIT"
 repository = "https://github.com/rgbkrk/voicers"
 
 [dependencies]
-quill-mlx = { path = "../../../mlx-rs/mlx-rs", features = ["safetensors"] }
-quill-mlx-macros = { path = "../../../mlx-rs/mlx-macros" }
+quill-mlx = { version = "0.25.4", features = ["safetensors"] }
+quill-mlx-macros = "0.25.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hf-hub = "0.5"

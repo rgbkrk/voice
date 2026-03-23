@@ -182,7 +182,7 @@ struct Session {
     /// Cache of loaded voices so we don't re-load on every `speak`.
     voice_cache: HashMap<String, candle_core::Tensor>,
     /// Lazily-loaded STT model (only initialized on first `listen` call).
-    stt_model: Option<voice_stt::MoonshineModel>,
+    stt_model: Option<voice_stt::WhisperModel>,
     /// Lazily-loaded STT tokenizer.
     stt_tokenizer: Option<voice_stt::tokenizers::Tokenizer>,
 }
@@ -435,7 +435,7 @@ fn handle_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> 
     // Lazily load STT model on first listen call
     if session.stt_model.is_none() {
         let repo = std::env::var("STT_MODEL")
-            .unwrap_or_else(|_| "UsefulSensors/moonshine-base".to_string());
+            .unwrap_or_else(|_| "distil-whisper/distil-medium.en".to_string());
 
         if !QUIET.load(Ordering::Relaxed) {
             eprintln!("Loading STT model ({repo})...");

@@ -1,36 +1,35 @@
-//! Speech-to-text library backed by MLX, starting with Moonshine.
+//! Speech-to-text library backed by candle + Metal, using Whisper.
 //!
 //! # Quick start
 //!
 //! ```rust,no_run
 //! use voice_stt::{load_model, transcribe, TranscribeResult};
 //!
-//! let mut model = load_model("UsefulSensors/moonshine-tiny").unwrap();
+//! let mut model = load_model("distil-whisper/distil-medium.en").unwrap();
 //! let result = transcribe(&mut model, "audio.wav").unwrap();
 //! println!("{}", result.text);
 //! ```
 //!
 //! # Supported models
 //!
-//! | Model | Repo ID | Params |
-//! |-------|---------|--------|
-//! | Moonshine Tiny | `UsefulSensors/moonshine-tiny` | 27M |
-//! | Moonshine Base | `UsefulSensors/moonshine-base` | 61M |
+//! Any Whisper or distil-whisper model on HuggingFace with safetensors weights.
+//! Default: `distil-whisper/distil-medium.en` (English-only, fast, accurate).
 //!
 //! # Architecture
 //!
-//! Moonshine uses a learned Conv1d audio frontend instead of mel spectrograms,
-//! so raw 16kHz audio goes directly into the encoder with no DSP preprocessing.
+//! Whisper uses mel-spectrogram preprocessing followed by a transformer
+//! encoder-decoder. Audio is processed in 30-second chunks. For typical
+//! voice commands (<30s), a single chunk suffices.
 
 pub mod builtin;
 pub mod error;
-pub mod moonshine;
 
 use std::path::{Path, PathBuf};
 
+use candle_core::{DType, Device};
+use candle_nn::VarBuilder;
+
 pub use error::{Result, SttError};
-pub use moonshine::{MoonshineConfig, MoonshineModel};
-pub use quill_mlx::Array;
 pub use tokenizers;
 
 /// Result of a transcription.
@@ -38,100 +37,94 @@ pub use tokenizers;
 pub struct TranscribeResult {
     /// The transcribed text.
     pub text: String,
-    /// Number of tokens generated (excluding BOS/EOS).
+    /// Token IDs generated (including special tokens).
     pub tokens: Vec<u32>,
-    /// Sample rate of the model (always 16000 for Moonshine).
+    /// Sample rate of the model input (always 16000 for Whisper).
     pub sample_rate: u32,
 }
 
-/// Load a Moonshine model from a HuggingFace repo or local path.
+/// Loaded Whisper STT model ready for transcription.
+pub struct WhisperModel {
+    decoder: voice_whisper::WhisperDecoder,
+}
+
+/// Load a Whisper model from a HuggingFace repo or local path.
+///
+/// Creates a Metal GPU device and loads the model weights via mmap.
 ///
 /// # Examples
 ///
 /// ```rust,no_run
-/// let mut model = voice_stt::load_model("UsefulSensors/moonshine-tiny").unwrap();
+/// let mut model = voice_stt::load_model("distil-whisper/distil-medium.en").unwrap();
 /// ```
-pub fn load_model(path_or_repo: &str) -> Result<MoonshineModel> {
-    let model_dir = if Path::new(path_or_repo).exists() {
-        PathBuf::from(path_or_repo)
+pub fn load_model(path_or_repo: &str) -> Result<WhisperModel> {
+    let device = Device::new_metal(0).map_err(|e| SttError::Model(e.to_string()))?;
+
+    let (config_path, tokenizer_path, weights_path) = if Path::new(path_or_repo).exists() {
+        let dir = PathBuf::from(path_or_repo);
+        (
+            dir.join("config.json"),
+            dir.join("tokenizer.json"),
+            dir.join("model.safetensors"),
+        )
     } else {
         download_model(path_or_repo)?
     };
 
-    // Use embedded config if available, otherwise read from disk
-    let config: MoonshineConfig = if let Some(result) = builtin::config_for_repo(path_or_repo) {
-        result?
-    } else {
-        let config_path = model_dir.join("config.json");
-        let config_str = std::fs::read_to_string(&config_path)?;
-        serde_json::from_str(&config_str)?
+    let config_str = std::fs::read_to_string(&config_path)?;
+    let config: voice_whisper::Config = serde_json::from_str(&config_str)?;
+
+    let mel_filters = voice_whisper::load_mel_filters(&config).map_err(SttError::Model)?;
+
+    let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+        .map_err(|e| SttError::Tokenizer(e.to_string()))?;
+
+    let vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)
+            .map_err(|e| SttError::Weight(e.to_string()))?
     };
 
-    let mut model = MoonshineModel::new(&config).map_err(SttError::Mlx)?;
+    let model = voice_whisper::Whisper::load(&vb, config.clone())
+        .map_err(|e| SttError::Model(e.to_string()))?;
 
-    // Load weights
-    let weights_path = model_dir.join("model.safetensors");
-    if !weights_path.exists() {
-        return Err(SttError::Weight(format!(
-            "model.safetensors not found in {}",
-            model_dir.display()
-        )));
-    }
+    // Determine language token for multilingual models
+    let language_token = if builtin::is_multilingual(path_or_repo) {
+        // Default to English for multilingual models
+        tokenizer.token_to_id("<|en|>")
+    } else {
+        None
+    };
 
-    let raw_weights =
-        Array::load_safetensors(&weights_path).map_err(|e| SttError::Weight(e.to_string()))?;
+    let decoder = voice_whisper::WhisperDecoder::new(
+        model,
+        config,
+        tokenizer,
+        mel_filters,
+        device,
+        language_token,
+    )
+    .map_err(|e| SttError::Model(e.to_string()))?;
 
-    let weights = model
-        .sanitize(raw_weights)
-        .map_err(|e| SttError::Weight(e.to_string()))?;
-
-    // Apply weights to model parameters
-    {
-        use quill_mlx::module::ModuleParameters;
-        let mut params = model.parameters_mut().flatten();
-        let mut loaded = 0;
-        let mut missing = Vec::new();
-        for (key, value) in &weights {
-            if let Some(param) = params.get_mut(&**key) {
-                **param = value.clone();
-                loaded += 1;
-            } else {
-                missing.push(key.clone());
-            }
-        }
-        if !missing.is_empty() {
-            eprintln!(
-                "[WARN] Loaded {}/{} weights, {} unmatched",
-                loaded,
-                weights.len(),
-                missing.len()
-            );
-        }
-    }
-
-    Ok(model)
+    Ok(WhisperModel { decoder })
 }
 
-/// Load the tokenizer from a model directory.
+/// Load the tokenizer from a model directory or HuggingFace repo.
 ///
-/// Moonshine uses a HuggingFace fast tokenizer stored as `tokenizer.json`.
+/// Whisper uses a HuggingFace fast tokenizer stored as `tokenizer.json`.
 pub fn load_tokenizer(path_or_repo: &str) -> Result<tokenizers::Tokenizer> {
-    // Use embedded tokenizer if available
-    if let Some(result) = builtin::tokenizer_for_repo(path_or_repo) {
-        return result;
-    }
-
-    let model_dir = if Path::new(path_or_repo).exists() {
-        PathBuf::from(path_or_repo)
+    let tokenizer_path = if Path::new(path_or_repo).exists() {
+        PathBuf::from(path_or_repo).join("tokenizer.json")
     } else {
-        download_model(path_or_repo)?
+        let api = hf_hub::api::sync::Api::new().map_err(|e| SttError::Hub(e.to_string()))?;
+        let repo = api.model(path_or_repo.to_string());
+        repo.get("tokenizer.json")
+            .map_err(|e| SttError::Hub(e.to_string()))?
     };
 
-    let tokenizer_path = model_dir.join("tokenizer.json");
     if !tokenizer_path.exists() {
         return Err(SttError::Tokenizer(format!(
             "tokenizer.json not found in {}",
-            model_dir.display()
+            tokenizer_path.display()
         )));
     }
 
@@ -143,21 +136,12 @@ pub fn load_tokenizer(path_or_repo: &str) -> Result<tokenizers::Tokenizer> {
 ///
 /// Loads the audio file as WAV (16-bit PCM or 32-bit float), converts to
 /// 16kHz mono f32, and runs greedy decoding.
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// let mut model = voice_stt::load_model("UsefulSensors/moonshine-tiny").unwrap();
-/// let result = voice_stt::transcribe(&mut model, "audio.wav").unwrap();
-/// println!("{}", result.text);
-/// ```
 pub fn transcribe(
-    model: &mut MoonshineModel,
+    model: &mut WhisperModel,
     audio_path: impl AsRef<Path>,
 ) -> Result<TranscribeResult> {
-    let audio_path = audio_path.as_ref();
-    let samples = load_wav_as_f32(audio_path)?;
-    transcribe_audio(model, &samples, model.config.sample_rate())
+    let samples = load_wav_as_f32(audio_path.as_ref())?;
+    transcribe_audio(model, &samples, 16000)
 }
 
 /// Transcribe raw audio samples.
@@ -165,7 +149,7 @@ pub fn transcribe(
 /// - `samples`: mono f32 audio samples
 /// - `sample_rate`: sample rate of the input audio (will be resampled to 16kHz if different)
 pub fn transcribe_audio(
-    model: &mut MoonshineModel,
+    model: &mut WhisperModel,
     samples: &[f32],
     sample_rate: u32,
 ) -> Result<TranscribeResult> {
@@ -175,52 +159,30 @@ pub fn transcribe_audio(
         samples.to_vec()
     };
 
-    let audio = Array::from_slice(&samples, &[samples.len() as i32]);
-
-    let tokens = model.generate(&audio, 200).map_err(SttError::Mlx)?;
-
-    // Try embedded tokenizer first, then fall back to ASCII decode
-    let text = if let Ok(tokenizer) = builtin::builtin_tokenizer() {
-        tokenizer
-            .decode(&tokens, true)
-            .unwrap_or_else(|_| decode_tokens_fallback(&tokens))
-    } else {
-        decode_tokens_fallback(&tokens)
-    };
+    let result = model
+        .decoder
+        .transcribe(&samples)
+        .map_err(|e| SttError::Model(e.to_string()))?;
 
     Ok(TranscribeResult {
-        text,
-        tokens,
+        text: result.text,
+        tokens: result.tokens,
         sample_rate: 16000,
     })
 }
 
 /// Transcribe raw audio samples with a tokenizer for proper text decoding.
+///
+/// Note: The tokenizer parameter is accepted for API compatibility but
+/// Whisper's tokenizer is loaded with the model. The provided tokenizer
+/// is not used — decoding uses the model's built-in tokenizer.
 pub fn transcribe_audio_with_tokenizer(
-    model: &mut MoonshineModel,
+    model: &mut WhisperModel,
     samples: &[f32],
     sample_rate: u32,
-    tokenizer: &tokenizers::Tokenizer,
+    _tokenizer: &tokenizers::Tokenizer,
 ) -> Result<TranscribeResult> {
-    let samples = if sample_rate != 16000 {
-        resample(samples, sample_rate, 16000)
-    } else {
-        samples.to_vec()
-    };
-
-    let audio = Array::from_slice(&samples, &[samples.len() as i32]);
-
-    let tokens = model.generate(&audio, 200).map_err(SttError::Mlx)?;
-
-    let text = tokenizer
-        .decode(&tokens, true)
-        .map_err(|e| SttError::Tokenizer(e.to_string()))?;
-
-    Ok(TranscribeResult {
-        text,
-        tokens,
-        sample_rate: 16000,
-    })
+    transcribe_audio(model, samples, sample_rate)
 }
 
 // ---------------------------------------------------------------------------
@@ -228,30 +190,27 @@ pub fn transcribe_audio_with_tokenizer(
 // ---------------------------------------------------------------------------
 
 /// Download model files from HuggingFace Hub.
-fn download_model(repo_id: &str) -> Result<PathBuf> {
+/// Returns (config_path, tokenizer_path, weights_path).
+fn download_model(repo_id: &str) -> Result<(PathBuf, PathBuf, PathBuf)> {
     let api = hf_hub::api::sync::Api::new().map_err(|e| SttError::Hub(e.to_string()))?;
     let repo = api.model(repo_id.to_string());
 
-    // Download required files
     let config_path = repo
         .get("config.json")
         .map_err(|e| SttError::Hub(e.to_string()))?;
 
-    repo.get("model.safetensors")
+    let tokenizer_path = repo
+        .get("tokenizer.json")
         .map_err(|e| SttError::Hub(e.to_string()))?;
 
-    // Try to download tokenizer (optional — not all model paths have it)
-    let _ = repo.get("tokenizer.json");
+    let weights_path = repo
+        .get("model.safetensors")
+        .map_err(|e| SttError::Hub(e.to_string()))?;
 
-    // Return the directory containing the downloaded files
-    let model_dir = config_path
-        .parent()
-        .ok_or_else(|| SttError::Hub("Could not determine model directory".to_string()))?;
-
-    Ok(model_dir.to_path_buf())
+    Ok((config_path, tokenizer_path, weights_path))
 }
 
-/// Load a WAV file and return mono f32 samples.
+/// Load a WAV file and return mono f32 samples at 16kHz.
 ///
 /// Handles both 16-bit integer and 32-bit float WAV formats.
 /// Multi-channel audio is mixed down to mono by averaging.
@@ -299,31 +258,21 @@ pub(crate) fn load_wav_as_f32(path: &Path) -> Result<Vec<f32>> {
 
 /// High-quality audio resampling using rubato's sinc interpolation.
 ///
-/// Uses a windowed sinc resampler with 256-tap filter for clean
+/// Uses a windowed sinc resampler with 128-tap filter for clean
 /// anti-aliasing. Falls back to linear interpolation if rubato fails
 /// (e.g. extremely short inputs).
-///
-/// For 24kHz→16kHz (AirPods): ~40dB SNR vs ~22dB with linear.
-/// For 48kHz→16kHz: ~60dB SNR vs ~17dB with linear.
 pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate || samples.is_empty() {
         return samples.to_vec();
     }
 
-    // Try rubato sinc resampler first
     match resample_sinc(samples, from_rate, to_rate) {
         Ok(resampled) => resampled,
-        Err(_) => {
-            // Fallback to linear for edge cases (very short audio, etc.)
-            resample_linear(samples, from_rate, to_rate)
-        }
+        Err(_) => resample_linear(samples, from_rate, to_rate),
     }
 }
 
 /// Sinc-based resampling via rubato.
-///
-/// Uses rubato's sinc resampler with a 128-tap filter and Blackman window
-/// for high-quality anti-aliasing.
 fn resample_sinc(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
     use rubato::{
         calculate_cutoff, Async, FixedAsync, Indexing, Resampler, SincInterpolationParameters,
@@ -345,26 +294,17 @@ fn resample_sinc(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f3
     let ratio = to_rate as f64 / from_rate as f64;
     let chunk_size = samples.len();
 
-    let mut resampler = Async::<f64>::new_sinc(
-        ratio,
-        1.1,
-        &params,
-        chunk_size,
-        1, // mono
-        FixedAsync::Input,
-    )
-    .map_err(|e| SttError::Audio(format!("Resampler init failed: {e}")))?;
+    let mut resampler =
+        Async::<f64>::new_sinc(ratio, 1.1, &params, chunk_size, 1, FixedAsync::Input)
+            .map_err(|e| SttError::Audio(format!("Resampler init failed: {e}")))?;
 
-    // Convert f32 → f64 for rubato
     let input_f64: Vec<f64> = samples.iter().map(|&s| s as f64).collect();
     let num_input_frames = input_f64.len();
 
-    // Compute output size
     let num_output_frames =
-        (num_input_frames as f64 * ratio).ceil() as usize + resampler.output_delay() + 128; // padding
+        (num_input_frames as f64 * ratio).ceil() as usize + resampler.output_delay() + 128;
     let mut output_f64 = vec![0.0f64; num_output_frames];
 
-    // Use InterleavedSlice adapters (1 channel = interleaved is same as planar)
     use audioadapter_buffers::direct::InterleavedSlice;
 
     let input_adapter = InterleavedSlice::new(&input_f64, 1, num_input_frames)
@@ -383,7 +323,6 @@ fn resample_sinc(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f3
         .process_into_buffer(&input_adapter, &mut output_adapter, Some(&indexing))
         .map_err(|e| SttError::Audio(format!("Resampling failed: {e}")))?;
 
-    // Convert f64 → f32, trim to actual output length
     Ok(output_f64[..output_frames]
         .iter()
         .map(|&s| s as f32)
@@ -391,9 +330,6 @@ fn resample_sinc(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f3
 }
 
 /// Linear interpolation resampling (fallback).
-///
-/// Simple but introduces aliasing artifacts. Used only when rubato
-/// fails (very short inputs) or for testing.
 pub fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate || samples.is_empty() {
         return samples.to_vec();
@@ -422,46 +358,13 @@ pub fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32
     output
 }
 
-/// Fallback token decoder when no tokenizer is available.
-///
-/// Maps ASCII-range tokens to characters, and wraps others in `<id>` brackets.
-fn decode_tokens_fallback(tokens: &[u32]) -> String {
-    tokens
-        .iter()
-        .map(|&t| {
-            if (32..128).contains(&t) {
-                (t as u8 as char).to_string()
-            } else {
-                format!("<{t}>")
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::f32::consts::PI;
 
     #[test]
-    fn test_decode_tokens_fallback_ascii() {
-        let tokens = vec![72, 101, 108, 108, 111]; // "Hello"
-        assert_eq!(decode_tokens_fallback(&tokens), "Hello");
-    }
-
-    #[test]
-    fn test_decode_tokens_fallback_non_ascii() {
-        let tokens = vec![1, 72, 101, 2];
-        assert_eq!(decode_tokens_fallback(&tokens), "<1>He<2>");
-    }
-
-    // -----------------------------------------------------------------------
-    // resample_linear tests
-    // -----------------------------------------------------------------------
-
-    #[test]
     fn test_resample_identity() {
-        // 1 second of 440 Hz sine at 16 kHz
         let sr = 16000u32;
         let freq = 440.0f32;
         let input: Vec<f32> = (0..sr as usize)
@@ -480,7 +383,6 @@ mod tests {
     fn test_resample_downsample_length() {
         let input = vec![0.0f32; 100];
         let output = resample_linear(&input, 48000, 16000);
-        // 100 * 16000/48000 ≈ 33.33 → ceil → 34
         assert!(
             (output.len() as i64 - 34).abs() <= 1,
             "expected ~34 samples, got {}",
@@ -492,7 +394,6 @@ mod tests {
     fn test_resample_upsample_length() {
         let input = vec![0.0f32; 100];
         let output = resample_linear(&input, 8000, 16000);
-        // 100 * 16000/8000 = 200
         assert!(
             (output.len() as i64 - 200).abs() <= 1,
             "expected ~200 samples, got {}",
@@ -511,7 +412,7 @@ mod tests {
         let sr_in = 48000u32;
         let sr_out = 16000u32;
         let freq = 440.0f32;
-        let duration_samples = sr_in as usize; // 1 second
+        let duration_samples = sr_in as usize;
 
         let input: Vec<f32> = (0..duration_samples)
             .map(|i| (2.0 * PI * freq * i as f32 / sr_in as f32).sin())
@@ -519,7 +420,6 @@ mod tests {
 
         let output = resample_linear(&input, sr_in, sr_out);
 
-        // Output should have ~16000 samples
         let expected_len = sr_out as usize;
         assert!(
             (output.len() as i64 - expected_len as i64).abs() <= 1,
@@ -527,32 +427,17 @@ mod tests {
             output.len()
         );
 
-        // RMS must be well above zero (sine RMS ≈ 1/√2 ≈ 0.707)
         let rms = (output.iter().map(|s| s * s).sum::<f32>() / output.len() as f32).sqrt();
         assert!(rms > 0.5, "RMS of resampled sine is too low: {rms}");
-    }
-
-    // -----------------------------------------------------------------------
-    // WAV round-trip tests (via hound)
-    // -----------------------------------------------------------------------
-
-    /// Helper: generate a unique temp path for test WAV files.
-    fn temp_wav_path(label: &str) -> PathBuf {
-        let pid = std::process::id();
-        let tid = std::thread::current().id();
-        PathBuf::from(format!("/tmp/voice_test_{label}_{pid}_{tid:?}.wav"))
     }
 
     #[test]
     fn test_wav_16bit_roundtrip() {
         let path = temp_wav_path("i16");
-
         let sample_rate = 16000u32;
-        // Known i16 samples
         let i16_samples: Vec<i16> = vec![0, 16383, -16384, 32767, -32768, 1000, -1000];
         let expected_f32: Vec<f32> = i16_samples.iter().map(|&s| s as f32 / 32768.0).collect();
 
-        // Write WAV
         {
             let spec = hound::WavSpec {
                 channels: 1,
@@ -567,10 +452,7 @@ mod tests {
             writer.finalize().unwrap();
         }
 
-        // Load with our loader
         let loaded = load_wav_as_f32(&path).unwrap();
-
-        // Cleanup
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(loaded.len(), expected_f32.len());
@@ -585,11 +467,9 @@ mod tests {
     #[test]
     fn test_wav_32float_roundtrip() {
         let path = temp_wav_path("f32");
-
         let sample_rate = 16000u32;
         let f32_samples: Vec<f32> = vec![0.0, 0.5, -0.5, 1.0, -1.0, 0.123, -0.987];
 
-        // Write WAV
         {
             let spec = hound::WavSpec {
                 channels: 1,
@@ -604,10 +484,7 @@ mod tests {
             writer.finalize().unwrap();
         }
 
-        // Load with our loader
         let loaded = load_wav_as_f32(&path).unwrap();
-
-        // Cleanup
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(loaded.len(), f32_samples.len());
@@ -617,5 +494,11 @@ mod tests {
                 "sample {i}: got {got}, want {want}"
             );
         }
+    }
+
+    fn temp_wav_path(label: &str) -> std::path::PathBuf {
+        let pid = std::process::id();
+        let tid = std::thread::current().id();
+        std::path::PathBuf::from(format!("/tmp/voice_test_{label}_{pid}_{tid:?}.wav"))
     }
 }

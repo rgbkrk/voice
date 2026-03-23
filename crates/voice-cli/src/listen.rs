@@ -478,19 +478,27 @@ pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
         );
     }
 
-    // Play ding before recording starts
-    play_ding();
-
-    if !QUIET.load(Ordering::Relaxed) {
-        eprintln!("Press Enter or Ctrl+C to stop recording...");
-    }
-
+    // Start mic first so Bluetooth hardware warms up
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let stream = build_input_stream(&device, &config, Arc::clone(&buffer), None)?;
 
     stream
         .play()
         .map_err(|e| format!("Failed to start recording: {e}"))?;
+
+    // Brief warmup for Bluetooth mics before the ding
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Ding signals "ready" — discard warmup audio after
+    play_ding();
+    {
+        let mut guard = buffer.lock().unwrap();
+        guard.clear();
+    }
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("Press Enter or Ctrl+C to stop recording...");
+    }
 
     // Wait for Enter key or Ctrl+C
     let enter_pressed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -545,9 +553,8 @@ pub fn record_with_vad(
         );
     }
 
-    // Play ding BEFORE starting the stream so it's not captured by the mic
-    play_ding();
-
+    // Start the mic FIRST so Bluetooth hardware has time to spin up during
+    // calibration. The ding plays AFTER calibration as the "ready" signal.
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let recent_peak: Arc<std::sync::atomic::AtomicU32> =
         Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -563,19 +570,14 @@ pub fn record_with_vad(
         .play()
         .map_err(|e| format!("Failed to start recording: {e}"))?;
 
-    // VAD state machine
-    let mut speech_started = false;
-    let mut silence_start: Option<std::time::Instant> = None;
-    let start_time = std::time::Instant::now();
-    let max_dur = std::time::Duration::from_millis(max_duration_ms);
-    let silence_dur = std::time::Duration::from_millis(silence_timeout_ms);
-
-    // Adaptive noise floor calibration
+    // Adaptive noise floor calibration — mic is already recording so
+    // Bluetooth hardware warms up during this window.
     let adaptive_threshold = if calibration_ms > 0 {
+        let cal_start = std::time::Instant::now();
         let calibration_duration = std::time::Duration::from_millis(calibration_ms);
         let mut max_ambient_peak: f32 = 0.0;
 
-        while start_time.elapsed() < calibration_duration {
+        while cal_start.elapsed() < calibration_duration {
             if INTERRUPTED.load(Ordering::Relaxed) {
                 drop(stream);
                 let samples = extract_samples(buffer);
@@ -596,17 +598,28 @@ pub fn record_with_vad(
             );
         }
 
-        // Clear the calibration audio from the buffer
-        {
-            let mut guard = buffer.lock().unwrap();
-            guard.clear();
-        }
-
         threshold
     } else {
         // Skip calibration, use raw threshold
         silence_threshold
     };
+
+    // NOW play the ding — mic is warm, calibration is done, user hears
+    // "ready" and can start speaking immediately after the tone.
+    play_ding();
+
+    // Discard all audio captured during warmup/calibration/ding.
+    {
+        let mut guard = buffer.lock().unwrap();
+        guard.clear();
+    }
+
+    // VAD state machine
+    let mut speech_started = false;
+    let mut silence_start: Option<std::time::Instant> = None;
+    let start_time = std::time::Instant::now();
+    let max_dur = std::time::Duration::from_millis(max_duration_ms);
+    let silence_dur = std::time::Duration::from_millis(silence_timeout_ms);
 
     loop {
         if INTERRUPTED.load(Ordering::Relaxed) {
@@ -689,10 +702,7 @@ pub fn record_continuous(
         );
     }
 
-    // Play ding once at the start
-    play_ding();
-
-    // Shared state between audio callback and VAD monitor
+    // Start mic first so Bluetooth hardware warms up during calibration.
     let segment_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let recent_peak: Arc<std::sync::atomic::AtomicU32> =
         Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -720,12 +730,12 @@ pub fn record_continuous(
         let mut speech_started = false;
         let mut silence_start: Option<Instant> = None;
         let mut segment_id: u64 = 0;
-        let start_time = Instant::now();
         let max_dur = std::time::Duration::from_millis(max_duration_ms);
         let silence_dur = std::time::Duration::from_millis(silence_timeout_ms);
 
-        // Adaptive noise floor calibration
+        // Adaptive noise floor calibration — mic is already warm
         let adaptive_threshold = if calibration_ms > 0 {
+            let cal_start = Instant::now();
             let calibration_duration = std::time::Duration::from_millis(calibration_ms);
             let mut max_ambient_peak: f32 = 0.0;
 
@@ -733,7 +743,7 @@ pub fn record_continuous(
                 eprintln!("Calibrating noise floor...");
             }
 
-            while start_time.elapsed() < calibration_duration {
+            while cal_start.elapsed() < calibration_duration {
                 if INTERRUPTED.load(Ordering::Relaxed) {
                     return;
                 }
@@ -752,7 +762,10 @@ pub fn record_continuous(
                 );
             }
 
-            // Clear the calibration audio from the segment buffer
+            // Ding signals "ready" after calibration
+            play_ding();
+
+            // Clear all warmup/calibration/ding audio
             {
                 let mut guard = segment_buffer.lock().unwrap();
                 guard.clear();
@@ -760,8 +773,18 @@ pub fn record_continuous(
 
             threshold
         } else {
+            // No calibration — still play ding and clear buffer
+            play_ding();
+            {
+                let mut guard = segment_buffer.lock().unwrap();
+                guard.clear();
+            }
             silence_threshold
         };
+
+        // Start the clock AFTER the ding — timestamps in segments
+        // should reflect time since the user was told "ready".
+        let start_time = Instant::now();
 
         loop {
             if INTERRUPTED.load(Ordering::Relaxed) {
@@ -902,7 +925,7 @@ pub fn record_continuous(
 /// The model and tokenizer are moved into this thread — they're not
 /// thread-safe, so single-threaded access is correct.
 pub fn transcribe_segments(
-    mut model: voice_stt::MoonshineModel,
+    mut model: voice_stt::WhisperModel,
     tokenizer: voice_stt::tokenizers::Tokenizer,
     segments: mpsc::Receiver<Segment>,
 ) -> mpsc::Receiver<SegmentResult> {
@@ -1011,7 +1034,7 @@ pub fn listen_continuous() {
 /// sends notifications per result and a final response on completion.
 #[allow(dead_code)]
 pub fn listen_continuous_for_rpc(
-    model: voice_stt::MoonshineModel,
+    model: voice_stt::WhisperModel,
     tokenizer: voice_stt::tokenizers::Tokenizer,
     silence_timeout_ms: u64,
     max_duration_ms: u64,
@@ -1044,18 +1067,32 @@ fn trim_silence(samples: &[f32], sample_rate: u32) -> Vec<f32> {
         return Vec::new();
     }
 
-    // Threshold: -40 dBFS ≈ 0.01 amplitude
-    let threshold: f32 = 0.01;
-    // Keep 100ms of context around detected speech edges
-    let padding = (sample_rate as usize) / 10;
+    // Use windowed RMS instead of single-sample threshold to avoid
+    // clipping soft word onsets like "the", "a", etc.
+    let window_size = (sample_rate as usize) / 100; // 10ms window
+    let rms_threshold: f32 = 0.005; // ~-46 dBFS RMS
 
-    let first_voice = samples.iter().position(|s| s.abs() > threshold);
-    let last_voice = samples.iter().rposition(|s| s.abs() > threshold);
+    // Keep 250ms of leading context and 100ms trailing to preserve
+    // consonant onsets and natural decay.
+    let lead_padding = (sample_rate as usize) / 4;
+    let trail_padding = (sample_rate as usize) / 10;
+
+    // Find first window where RMS exceeds threshold
+    let first_voice = samples.windows(window_size).position(|w| {
+        let rms = (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt();
+        rms > rms_threshold
+    });
+
+    // Find last window where RMS exceeds threshold
+    let last_voice = samples.windows(window_size).rposition(|w| {
+        let rms = (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt();
+        rms > rms_threshold
+    });
 
     match (first_voice, last_voice) {
         (Some(start), Some(end)) => {
-            let start = start.saturating_sub(padding);
-            let end = (end + padding).min(samples.len());
+            let start = start.saturating_sub(lead_padding);
+            let end = (end + window_size + trail_padding).min(samples.len());
             samples[start..end].to_vec()
         }
         _ => Vec::new(),
@@ -1123,15 +1160,15 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 // ── STT model helpers ──────────────────────────────────────────────────
 
 /// Default STT model. Override with `STT_MODEL` env var.
-/// moonshine-base (61M) is noticeably better than tiny (27M) for real mic audio.
-const DEFAULT_STT_MODEL: &str = "UsefulSensors/moonshine-base";
+/// distil-medium.en: English-only Whisper distillation, fast and accurate.
+const DEFAULT_STT_MODEL: &str = "distil-whisper/distil-medium.en";
 
 fn stt_model_repo() -> String {
     std::env::var("STT_MODEL").unwrap_or_else(|_| DEFAULT_STT_MODEL.to_string())
 }
 
 /// Load STT model and tokenizer. Prints progress to stderr unless quiet.
-fn load_stt() -> (voice_stt::MoonshineModel, voice_stt::tokenizers::Tokenizer) {
+fn load_stt() -> (voice_stt::WhisperModel, voice_stt::tokenizers::Tokenizer) {
     let repo = stt_model_repo();
 
     if !QUIET.load(Ordering::Relaxed) {
@@ -1164,7 +1201,7 @@ fn load_stt() -> (voice_stt::MoonshineModel, voice_stt::tokenizers::Tokenizer) {
 
 /// Run transcription on recorded audio with silence trimming.
 fn transcribe_samples(
-    model: &mut voice_stt::MoonshineModel,
+    model: &mut voice_stt::WhisperModel,
     tokenizer: &voice_stt::tokenizers::Tokenizer,
     samples: &[f32],
     sample_rate: u32,
@@ -1260,7 +1297,7 @@ pub fn listen_and_transcribe() {
 /// Used by the JSON-RPC `listen` method. Returns `None` if no speech
 /// was detected or transcription failed.
 pub fn listen_and_transcribe_vad(
-    model: &mut voice_stt::MoonshineModel,
+    model: &mut voice_stt::WhisperModel,
     tokenizer: &voice_stt::tokenizers::Tokenizer,
     max_duration_ms: u64,
     silence_timeout_ms: u64,

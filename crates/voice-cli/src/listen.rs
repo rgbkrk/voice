@@ -1230,11 +1230,12 @@ pub fn listen_and_transcribe_auto() {
     let (mut model, tokenizer) = load_stt();
 
     if let Some(result) = listen_and_transcribe_vad(
-        &mut model, &tokenizer, 30_000, // max_duration_ms
-        2_000,  // silence_timeout_ms
+        &mut model, &tokenizer,
+        15_000, // max_duration_ms (15s — good for conversational turns)
+        1_500,  // silence_timeout_ms
         0.01,   // silence_threshold
         3.0,    // noise_multiplier
-        500,    // calibration_ms
+        300,    // calibration_ms
     ) {
         println!("{}", result.text);
         if !QUIET.load(Ordering::Relaxed) {

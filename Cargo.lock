@@ -2002,6 +2002,7 @@ dependencies = [
 [[package]]
 name = "kokoro-candle"
 version = "0.1.0"
+source = "git+https://github.com/rgbkrk/kokoro-candle.git#aa3e149981cb620b864d4d8dc4ab1dec1f98851c"
 dependencies = [
  "candle-core",
  "candle-metal-kernels",

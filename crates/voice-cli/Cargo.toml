@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/rgbkrk/voicers"
 
 [[bin]]
-name = "voice-candle"
+name = "voice"
 path = "src/main.rs"
 
 [dependencies]

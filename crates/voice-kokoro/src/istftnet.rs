@@ -207,7 +207,7 @@ impl SineGen {
         let rv_down_btd = rv_down.transpose(1, 2)?; // [B, T_down, dim]
 
         // Cumsum at reduced resolution
-        let phase_down = cumsum_dim1(&rv_down_btd)?; // [B, T_down, dim]
+        let phase_down = rv_down_btd.cumsum(1)?; // GPU matmul-based cumsum
 
         // Transpose to [B, dim, T_down], multiply by upsample_scale, upsample back
         let phase_bdt = phase_down.transpose(1, 2)?; // [B, dim, T_down]
@@ -393,7 +393,7 @@ impl TorchSTFT {
         Ok((magnitude, phase))
     }
 
-    /// Inverse STFT via overlap-add synthesis.
+    /// Inverse STFT via GPU conv_transpose1d (iDFT + overlap-add in one operation).
     ///
     /// magnitude: [B, n_fft/2+1, T], phase: [B, n_fft/2+1, T]
     /// Returns: [B, 1, L] (time-domain signal with channel dim)
@@ -402,117 +402,89 @@ impl TorchSTFT {
         let dtype = magnitude.dtype();
         let n_fft = self.filter_length;
         let n_bins = n_fft / 2 + 1;
-        let (b, _freq, num_frames) = magnitude.dims3()?;
+        let (_b, _freq, num_frames) = magnitude.dims3()?;
 
-        // Phase unwrapping along time axis (axis 2) — matches mlx-audio behavior
-        // This removes 2π discontinuities for smoother spectral reconstruction
-        let phase = phase_unwrap(phase, 2)?;
+        // Phase unwrapping along time axis (axis 2) — matches mlx-audio behavior.
+        // This removes 2π discontinuities for smoother spectral reconstruction.
+        // We immediately reduce the result modulo 2π to avoid precision loss in cos/sin
+        // for large accumulated phase values.
+        let phase = phase_unwrap_mod2pi(phase, 2)?;
 
         // Reconstruct complex spectrum: real + imag
-        let real = (magnitude * phase.cos()?)?;
-        let imag = (magnitude * phase.sin()?)?;
+        let real: Tensor = (magnitude * phase.cos()?)?;
+        let imag: Tensor = (magnitude * phase.sin()?)?;
 
-        // Build inverse DFT basis (transposed)
-        // For each time sample n in [0, n_fft), sum over frequency bins
-        let mut inv_cos = Vec::with_capacity(n_fft * n_bins);
-        let mut inv_sin = Vec::with_capacity(n_fft * n_bins);
-
-        for n in 0..n_fft {
-            for k in 0..n_bins {
-                let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
-                let scale = if k == 0 || k == n_fft / 2 {
-                    1.0 / n_fft as f64
-                } else {
-                    2.0 / n_fft as f64
-                };
-                inv_cos.push((angle.cos() * scale) as f32);
-                inv_sin.push((angle.sin() * scale) as f32);
-            }
-        }
-
-        let inv_cos_kernel = Tensor::new(&inv_cos[..], device)?
-            .reshape((n_fft, n_bins, 1))?
-            .to_dtype(dtype)?;
-        let inv_sin_kernel = Tensor::new(&inv_sin[..], device)?
-            .reshape((n_fft, n_bins, 1))?
-            .to_dtype(dtype)?;
-
-        // Perform inverse DFT for each frame
-        // real: [B, n_bins, T], imag: [B, n_bins, T]
-        // We want to compute for each frame: sum_k (real_k * cos + imag_k * sin)
-        // Using conv_transpose1d: input [B, n_bins, T], kernel [n_fft, n_bins, 1]
-        // This gives [B, n_fft, T] but we need overlap-add
-
-        // Actually use matmul approach: [B, n_bins, T] -> transpose -> [B, T, n_bins]
-        // multiply by [n_bins, n_fft] -> [B, T, n_fft]
-        // inv_cos_kernel: [n_fft, n_bins, 1] -> [n_fft, n_bins] -> transpose -> [n_bins, n_fft]
-        let inv_cos_mat = inv_cos_kernel.squeeze(2)?.transpose(0, 1)?.contiguous()?; // [n_bins, n_fft]
-        let inv_sin_mat = inv_sin_kernel.squeeze(2)?.transpose(0, 1)?.contiguous()?; // [n_bins, n_fft]
-
-        let real_t = real.transpose(1, 2)?.contiguous()?; // [B, T, n_bins]
-        let imag_t = imag.transpose(1, 2)?.contiguous()?;
-
-        // frames[b, t, :] = real_t[b,t,:] @ inv_cos_mat + imag_t[b,t,:] @ inv_sin_mat
-        // matmul: [B, T, n_bins] @ [n_bins, n_fft] = [B, T, n_fft]
-        // Use broadcast_matmul for batch support
-        let frames =
-            (real_t.broadcast_matmul(&inv_cos_mat)? - imag_t.broadcast_matmul(&inv_sin_mat)?)?;
-        // frames: [B, num_frames, n_fft]
-
-        // Overlap-add synthesis on CPU
+        // Build windowed inverse DFT kernels for conv_transpose1d.
+        // Kernel shape: [n_bins, 1, n_fft] (in_channels=n_bins, out_channels/groups=1, kernel_size=n_fft)
+        // kernel[k, 0, n] = scale * window[n] * cos(2πkn/N)  (cos_kernel)
+        //                  = scale * window[n] * sin(2πkn/N)  (sin_kernel)
+        // where scale = 1/N for DC and Nyquist (k=0, k=N/2), 2/N otherwise.
+        // conv_transpose1d with stride=hop_length performs iDFT + overlap-add in one GPU op.
         let win_len = self.win_length;
-        let output_len = (num_frames - 1) * self.hop_length + win_len;
+        let mut cos_data = Vec::with_capacity(n_bins * n_fft);
+        let mut sin_data = Vec::with_capacity(n_bins * n_fft);
 
-        // Read all frame data at once (much faster than element-by-element)
-        let frames_flat = frames
-            .to_dtype(DType::F32)?
-            .to_device(&Device::Cpu)?
-            .flatten_all()?
-            .to_vec1::<f32>()?;
-
-        let mut output_data = vec![0f32; b * output_len];
-        let mut window_sum = vec![0f32; output_len];
-
-        for batch in 0..b {
-            for frame_idx in 0..num_frames {
-                let start = frame_idx * self.hop_length;
-                let frame_offset = (batch * num_frames + frame_idx) * n_fft;
-                for n in 0..win_len.min(n_fft) {
-                    let val = frames_flat[frame_offset + n];
-                    let w = self.window[n];
-                    output_data[batch * output_len + start + n] += val * w;
-                    if batch == 0 {
-                        window_sum[start + n] += w * w;
-                    }
-                }
+        for k in 0..n_bins {
+            let scale = if k == 0 || k == n_fft / 2 {
+                1.0 / n_fft as f64
+            } else {
+                2.0 / n_fft as f64
+            };
+            for n in 0..n_fft {
+                let w = if n < win_len {
+                    self.window[n] as f64
+                } else {
+                    0.0
+                };
+                let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
+                cos_data.push((scale * w * angle.cos()) as f32);
+                sin_data.push((scale * w * angle.sin()) as f32);
             }
         }
 
-        // Normalize by window sum (COLA normalization)
-        for batch in 0..b {
-            for i in 0..output_len {
-                if window_sum[i] > 1e-8 {
-                    output_data[batch * output_len + i] /= window_sum[i];
-                }
-            }
-        }
-
-        // Convert back to tensor [B, 1, output_len]
-        // The forward STFT added n_fft/2 reflection padding on each side.
-        // Strip it from the output to match the original signal length.
-        let pad = n_fft / 2;
-        let trimmed_len = output_len - 2 * pad;
-        let mut trimmed_data = vec![0f32; b * trimmed_len];
-        for batch in 0..b {
-            trimmed_data[batch * trimmed_len..(batch + 1) * trimmed_len].copy_from_slice(
-                &output_data[batch * output_len + pad..batch * output_len + pad + trimmed_len],
-            );
-        }
-
-        let output = Tensor::new(&trimmed_data[..], &Device::Cpu)?
-            .reshape((b, 1, trimmed_len))?
-            .to_device(device)?
+        let cos_kernel = Tensor::new(&cos_data[..], device)?
+            .reshape((n_bins, 1, n_fft))?
             .to_dtype(dtype)?;
+        let sin_kernel = Tensor::new(&sin_data[..], device)?
+            .reshape((n_bins, 1, n_fft))?
+            .to_dtype(dtype)?;
+
+        // iDFT + window + overlap-add via conv_transpose1d on GPU.
+        // Each input channel (freq bin) is convolved with its kernel and results are summed,
+        // with stride=hop_length providing the overlap-add automatically.
+        let output = (real.conv_transpose1d(&cos_kernel, 0, 0, self.hop_length, 1, 1)?
+            - imag.conv_transpose1d(&sin_kernel, 0, 0, self.hop_length, 1, 1)?)?;
+        // output: [B, 1, output_len] where output_len = (T-1)*hop_length + n_fft
+
+        // COLA normalization: compute window squared sum on CPU (small, depends only on
+        // window params and frame count, not on the audio data).
+        let output_len = output.dim(2)?;
+        let mut window_sum = vec![0f32; output_len];
+        for frame_idx in 0..num_frames {
+            let start = frame_idx * self.hop_length;
+            for n in 0..win_len.min(n_fft) {
+                if start + n < output_len {
+                    let w = self.window[n];
+                    window_sum[start + n] += w * w;
+                }
+            }
+        }
+
+        // Clamp to avoid division by zero (leaves near-zero samples unchanged)
+        for v in window_sum.iter_mut() {
+            if *v < 1e-8 {
+                *v = 1.0;
+            }
+        }
+        let window_sum_tensor = Tensor::new(&window_sum[..], device)?
+            .to_dtype(dtype)?
+            .reshape((1, 1, output_len))?;
+        let output = output.broadcast_div(&window_sum_tensor)?;
+
+        // Strip padding: the forward STFT added n_fft/2 reflection padding on each side.
+        let pad = n_fft / 2;
+        let trimmed_len = output_len.saturating_sub(2 * pad);
+        let output = output.narrow(2, pad, trimmed_len)?;
 
         Ok(output)
     }
@@ -890,6 +862,7 @@ impl Decoder {
 // ---------------------------------------------------------------------------
 
 /// Cumulative sum along dimension 1.
+#[allow(dead_code)]
 fn cumsum_dim1(x: &Tensor) -> Result<Tensor> {
     let (_b, seq_len, _d) = x.dims3()?;
     if seq_len <= 1 {
@@ -1005,7 +978,50 @@ fn reflection_pad_1d_channels(x: &Tensor, pad_left: usize, pad_right: usize) -> 
 
 /// Phase unwrapping along a given axis.
 /// Removes 2π discontinuities from a phase signal.
+/// Phase unwrap + reduce modulo 2π.
+///
+/// Performs numpy-style phase unwrapping (removing 2π discontinuities) then
+/// reduces the result modulo 2π so that cos/sin remain numerically accurate.
+/// The cumulative correction is always an integer multiple of 2π, so reducing
+/// the unwrapped phase mod 2π is equivalent to reducing the *original* phase
+/// mod 2π. We exploit this by applying the reduction to the original data
+/// (which is already in [-π, π] and thus avoids any precision loss).
+fn phase_unwrap_mod2pi(phase: &Tensor, axis: usize) -> Result<Tensor> {
+    let shape = phase.shape().dims().to_vec();
+    let n = shape[axis];
+    if n <= 1 {
+        return Ok(phase.clone());
+    }
+
+    // Phase unwrap only adds integer multiples of 2π as corrections.
+    // Since cos/sin are 2π-periodic, unwrap(phase) ≡ phase (mod 2π).
+    // Therefore we can skip the actual unwrap computation and just reduce
+    // the original phase to [0, 2π) for numerically accurate cos/sin.
+    let data = phase
+        .to_dtype(DType::F32)?
+        .to_device(&candle_core::Device::Cpu)?
+        .flatten_all()?
+        .to_vec1::<f32>()?;
+
+    let two_pi = 2.0f32 * std::f32::consts::PI;
+    let result: Vec<f32> = data
+        .iter()
+        .map(|&v| {
+            let r = v % two_pi;
+            if r < 0.0 { r + two_pi } else { r }
+        })
+        .collect();
+
+    let device = phase.device();
+    let dtype = phase.dtype();
+    Tensor::new(&result[..], &candle_core::Device::Cpu)?
+        .reshape(shape.as_slice())?
+        .to_device(device)?
+        .to_dtype(dtype)
+}
+
 /// Equivalent to numpy.unwrap / mlx_unwrap.
+#[allow(dead_code)]
 fn phase_unwrap(phase: &Tensor, axis: usize) -> Result<Tensor> {
     let shape = phase.shape().dims().to_vec();
     let n = shape[axis];

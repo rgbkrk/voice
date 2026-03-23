@@ -1,6 +1,6 @@
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use kokoro_candle::istftnet::AdaINResBlock1;
+use voice_kokoro::istftnet::AdaINResBlock1;
 
 #[test]
 fn compare_resblock_with_python() {

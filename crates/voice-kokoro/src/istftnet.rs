@@ -196,23 +196,38 @@ impl SineGen {
         //         phase = cumsum(rad_values, dim=1) * 2*pi
         //         phase = F.interpolate(phase.T * upsample_scale, scale_factor=upsample_scale, mode="linear").T
 
-        // Transpose to [B, dim, T] for interpolation along T axis
+        // Transpose to [B, dim, T] for downsample/upsample along T axis
         let rv_bdt = rad_values.transpose(1, 2)?.contiguous()?; // [B, dim, T]
 
-        // Downsample by 1/upsample_scale (CPU linear interpolation — Metal lacks interpolate1d)
-        let down_scale = 1.0 / self.upsample_scale as f64;
-        let rv_down = linear_interpolate_1d_scale(&rv_bdt, down_scale)?; // [B, dim, T_down]
+        // GPU-native nearest-neighbor downsample by upsample_scale
+        // Take every Nth sample: reshape [B, dim, T/N, N] → narrow to [B, dim, T/N, 1] → squeeze
+        let us = self.upsample_scale;
+        let t_down = t / us;
+        let t_trunc = t_down * us; // truncate to exact multiple
+        let rv_trunc = rv_bdt.narrow(2, 0, t_trunc)?; // [B, dim, t_trunc]
+        let (b_sz, dim_sz, _) = rv_trunc.dims3()?;
+        let rv_groups = rv_trunc.reshape(&[b_sz, dim_sz, t_down, us])?;
+        let rv_down = rv_groups.narrow(3, 0, 1)?.squeeze(3)?; // [B, dim, T_down] — GPU, no CPU roundtrip
 
         // Cumsum at reduced resolution — GPU matmul-based
-        let rv_down_btd = rv_down.transpose(1, 2)?; // [B, T_down, dim]
+        let rv_down_btd = rv_down.transpose(1, 2)?.contiguous()?; // [B, T_down, dim]
         let phase_down = rv_down_btd.cumsum(1)?;
 
-        // Upsample back, multiply by upsample_scale (CPU linear interpolation)
+        // GPU-native nearest-neighbor upsample by upsample_scale, multiply by scale
         let phase_bdt = phase_down.transpose(1, 2)?.contiguous()?; // [B, dim, T_down]
-        let scale_t = Tensor::new(self.upsample_scale as f32, device)?.to_dtype(f0.dtype())?;
-        let phase_scaled = phase_bdt.broadcast_mul(&scale_t)?;
-        let up_scale = self.upsample_scale as f64;
-        let phase_up = linear_interpolate_1d_scale(&phase_scaled.contiguous()?, up_scale)?;
+        let scale_t = Tensor::new(us as f32, device)?.to_dtype(f0.dtype())?;
+        let phase_scaled = phase_bdt.broadcast_mul(&scale_t)?; // [B, dim, T_down]
+        // Repeat each sample `us` times: unsqueeze → expand → reshape
+        let phase_exp = phase_scaled.unsqueeze(3)?; // [B, dim, T_down, 1]
+        let phase_exp = phase_exp.expand(&[b_sz, dim_sz, t_down, us])?; // [B, dim, T_down, us]
+        let phase_up = phase_exp.reshape(&[b_sz, dim_sz, t_down * us])?; // [B, dim, T] — GPU
+        // Trim or pad to original length t
+        let phase_up = if t_down * us < t {
+            let pad = Tensor::zeros(&[b_sz, dim_sz, t - t_down * us], phase_up.dtype(), device)?;
+            Tensor::cat(&[&phase_up, &pad], 2)?
+        } else {
+            phase_up.narrow(2, 0, t)?
+        };
 
         // Transpose back to [B, T, dim]
         let phase = phase_up.transpose(1, 2)?; // [B, T, dim]

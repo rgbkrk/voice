@@ -141,23 +141,23 @@ struct ConverseParams {
 
 struct Session {
     model: voice_tts::KokoroModel,
-    voice: voice_tts::Array,
+    voice: candle_core::Tensor,
     voice_name: String,
     speed: f32,
     sample_rate: u32,
     repo_id: String,
     subs: Vec<(String, String)>,
     phoneme_overrides: HashMap<String, String>,
-    voice_cache: HashMap<String, voice_tts::Array>,
+    voice_cache: HashMap<String, candle_core::Tensor>,
     stt_model: Option<voice_stt::MoonshineModel>,
     stt_tokenizer: Option<voice_stt::tokenizers::Tokenizer>,
     mem_stats: bool,
 }
 
 impl Session {
-    fn get_voice(&mut self, name: &str) -> Result<&voice_tts::Array, String> {
+    fn get_voice(&mut self, name: &str) -> Result<&candle_core::Tensor, String> {
         if !self.voice_cache.contains_key(name) {
-            let v = voice_tts::load_voice(name, Some(&self.repo_id))
+            let v = self.model.load_voice(name, Some(&self.repo_id))
                 .map_err(|e| format!("Failed to load voice '{name}': {e}"))?;
             self.voice_cache.insert(name.to_string(), v);
         }
@@ -169,7 +169,7 @@ impl Session {
 
 pub struct ServerConfig {
     pub model: voice_tts::KokoroModel,
-    pub voice: voice_tts::Array,
+    pub voice: candle_core::Tensor,
     pub voice_name: String,
     pub speed: f32,
     pub sample_rate: u32,
@@ -206,12 +206,6 @@ pub fn run(config: ServerConfig) {
         stt_tokenizer: None,
         mem_stats: config.mem_stats,
     };
-
-    // Cap the Metal buffer cache at 2 GB to prevent unbounded memory growth
-    // across repeated inference calls.
-    if let Err(e) = quill_mlx::metal::set_cache_limit(2 * 1024 * 1024 * 1024) {
-        eprintln!("warning: failed to set Metal cache limit: {e}");
-    }
 
     let mut stdout = io::stdout();
 
@@ -566,13 +560,11 @@ struct MemStats {
 }
 
 fn metal_memory_stats() -> MemStats {
-    let active = quill_mlx::metal::get_active_memory().unwrap_or(0);
-    let cache = quill_mlx::metal::get_cache_memory().unwrap_or(0);
-    let peak = quill_mlx::metal::get_peak_memory().unwrap_or(0);
+    // Metal memory stats not available with candle backend
     MemStats {
-        active_mb: active as f64 / 1_048_576.0,
-        cache_mb: cache as f64 / 1_048_576.0,
-        peak_mb: peak as f64 / 1_048_576.0,
+        active_mb: 0.0,
+        cache_mb: 0.0,
+        peak_mb: 0.0,
     }
 }
 
@@ -697,7 +689,7 @@ fn voice_speak(
 
     let speed = p.speed.unwrap_or(session.speed);
 
-    let voice_ref: *const voice_tts::Array = if let Some(ref name) = p.voice {
+    let voice_ref: *const candle_core::Tensor = if let Some(ref name) = p.voice {
         session.get_voice(name).map_err(RpcErr::invalid_params)? as *const _
     } else {
         &session.voice as *const _
@@ -928,7 +920,7 @@ fn voice_play_sound(params: Value) -> Result<Value, RpcErr> {
 fn stream_chunks(
     session: &mut Session,
     _stdout: &mut io::Stdout,
-    voice: &voice_tts::Array,
+    voice: &candle_core::Tensor,
     chunks: &[String],
     speed: f32,
 ) -> Result<(), RpcErr> {
@@ -954,8 +946,7 @@ fn stream_chunks(
         }
         match voice_tts::generate(&mut session.model, phonemes, voice, speed) {
             Ok(audio) => {
-                let samples: Vec<f32> = audio.as_slice().to_vec();
-                let source = SamplesBuffer::new(channels, rate, samples);
+                let source = SamplesBuffer::new(channels, rate, audio);
                 player.append(source);
             }
             Err(e) => {

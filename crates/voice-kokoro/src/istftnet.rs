@@ -196,38 +196,22 @@ impl SineGen {
         //         phase = cumsum(rad_values, dim=1) * 2*pi
         //         phase = F.interpolate(phase.T * upsample_scale, scale_factor=upsample_scale, mode="linear").T
 
-        // Transpose to [B, dim, T] for downsample/upsample along T axis
+        // Transpose to [B, dim, T] for interpolation along T axis
         let rv_bdt = rad_values.transpose(1, 2)?.contiguous()?; // [B, dim, T]
 
-        // GPU-native nearest-neighbor downsample by upsample_scale
-        // Take every Nth sample: reshape [B, dim, T/N, N] → narrow to [B, dim, T/N, 1] → squeeze
+        // GPU-native linear downsample by 1/upsample_scale
         let us = self.upsample_scale;
-        let t_down = t / us;
-        let t_trunc = t_down * us; // truncate to exact multiple
-        let rv_trunc = rv_bdt.narrow(2, 0, t_trunc)?; // [B, dim, t_trunc]
-        let (b_sz, dim_sz, _) = rv_trunc.dims3()?;
-        let rv_groups = rv_trunc.reshape(&[b_sz, dim_sz, t_down, us])?;
-        let rv_down = rv_groups.narrow(3, 0, 1)?.squeeze(3)?; // [B, dim, T_down] — GPU, no CPU roundtrip
+        let rv_down = gpu_linear_downsample(&rv_bdt, us, device, f0.dtype())?;
 
         // Cumsum at reduced resolution — GPU matmul-based
-        let rv_down_btd = rv_down.transpose(1, 2)?.contiguous()?; // [B, T_down, dim]
+        let rv_down_btd = rv_down.transpose(1, 2)?; // [B, T_down, dim]
         let phase_down = rv_down_btd.cumsum(1)?;
 
-        // GPU-native nearest-neighbor upsample by upsample_scale, multiply by scale
+        // GPU-native linear upsample by upsample_scale + scale
         let phase_bdt = phase_down.transpose(1, 2)?.contiguous()?; // [B, dim, T_down]
         let scale_t = Tensor::new(us as f32, device)?.to_dtype(f0.dtype())?;
-        let phase_scaled = phase_bdt.broadcast_mul(&scale_t)?; // [B, dim, T_down]
-        // Repeat each sample `us` times: unsqueeze → expand → reshape
-        let phase_exp = phase_scaled.unsqueeze(3)?; // [B, dim, T_down, 1]
-        let phase_exp = phase_exp.expand(&[b_sz, dim_sz, t_down, us])?; // [B, dim, T_down, us]
-        let phase_up = phase_exp.reshape(&[b_sz, dim_sz, t_down * us])?; // [B, dim, T] — GPU
-        // Trim or pad to original length t
-        let phase_up = if t_down * us < t {
-            let pad = Tensor::zeros(&[b_sz, dim_sz, t - t_down * us], phase_up.dtype(), device)?;
-            Tensor::cat(&[&phase_up, &pad], 2)?
-        } else {
-            phase_up.narrow(2, 0, t)?
-        };
+        let phase_scaled = phase_bdt.broadcast_mul(&scale_t)?;
+        let phase_up = gpu_linear_upsample(&phase_scaled.contiguous()?, us, t, device, f0.dtype())?;
 
         // Transpose back to [B, T, dim]
         let phase = phase_up.transpose(1, 2)?; // [B, T, dim]
@@ -1102,4 +1086,95 @@ fn phase_unwrap(phase: &Tensor, axis: usize) -> Result<Tensor> {
         .reshape(shape.as_slice())?
         .to_device(device)?
         .to_dtype(dtype)
+}
+
+/// GPU-native linear downsample of [B, C, T] by factor N.
+/// Equivalent to F.interpolate(x, scale_factor=1/N, mode='linear').
+/// Uses gather + lerp pattern: for each output position, blend two input positions.
+fn gpu_linear_downsample(
+    x: &Tensor,
+    factor: usize,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    let (b, c, t_in) = x.dims3()?;
+    let t_out = (t_in as f64 / factor as f64).floor() as usize;
+    if t_out == 0 {
+        return Tensor::zeros(&[b, c, 1], dtype, device);
+    }
+
+    // Compute source positions: src = (i + 0.5) * factor - 0.5
+    // and split into integer index + fractional blend weight
+    let mut lo_indices = Vec::with_capacity(t_out);
+    let mut fracs = Vec::with_capacity(t_out);
+    for i in 0..t_out {
+        let src = (i as f64 + 0.5) * factor as f64 - 0.5;
+        let src = src.max(0.0).min((t_in - 1) as f64);
+        let lo = src.floor() as u32;
+        let hi_idx = ((lo + 1) as usize).min(t_in - 1) as u32;
+        let frac = (src - lo as f64) as f32;
+        lo_indices.push(lo);
+        fracs.push(frac);
+    }
+
+    // Build index tensors and blend weights on GPU
+    let lo_t = Tensor::new(&lo_indices[..], device)?; // [t_out]
+    let frac_t = Tensor::new(&fracs[..], device)?
+        .to_dtype(dtype)?
+        .reshape(&[1, 1, t_out])?; // [1, 1, t_out] for broadcast
+
+    // Gather: x[:, :, lo] and x[:, :, lo+1]
+    let hi_indices: Vec<u32> = lo_indices.iter().map(|&lo| (lo + 1).min(t_in as u32 - 1)).collect();
+    let hi_t = Tensor::new(&hi_indices[..], device)?;
+
+    let x_lo = x.index_select(&lo_t, 2)?; // [B, C, t_out]
+    let x_hi = x.index_select(&hi_t, 2)?; // [B, C, t_out]
+
+    // Linear blend: (1 - frac) * lo + frac * hi
+    let one_minus_frac = (1.0f64 - &frac_t)?;
+    let result = (x_lo.broadcast_mul(&one_minus_frac)? + x_hi.broadcast_mul(&frac_t)?)?;
+    Ok(result)
+}
+
+/// GPU-native linear upsample of [B, C, T_in] to T_out.
+/// Equivalent to F.interpolate(x, size=t_out, mode='linear') with scale_factor semantics.
+fn gpu_linear_upsample(
+    x: &Tensor,
+    factor: usize,
+    t_out: usize,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    let (b, c, t_in) = x.dims3()?;
+    if t_in == 0 || t_out == 0 {
+        return Tensor::zeros(&[b, c, t_out], dtype, device);
+    }
+
+    // Source positions: src = (i + 0.5) / factor - 0.5
+    let scale = factor as f64;
+    let mut lo_indices = Vec::with_capacity(t_out);
+    let mut fracs = Vec::with_capacity(t_out);
+    for i in 0..t_out {
+        let src = (i as f64 + 0.5) / scale - 0.5;
+        let src = src.max(0.0).min((t_in - 1) as f64);
+        let lo = src.floor() as u32;
+        let frac = (src - lo as f64) as f32;
+        lo_indices.push(lo);
+        fracs.push(frac);
+    }
+
+    let lo_t = Tensor::new(&lo_indices[..], device)?;
+    let frac_t = Tensor::new(&fracs[..], device)?
+        .to_dtype(dtype)?
+        .reshape(&[1, 1, t_out])?;
+
+    let hi_indices: Vec<u32> = lo_indices.iter().map(|&lo| (lo + 1).min(t_in as u32 - 1)).collect();
+    let hi_t = Tensor::new(&hi_indices[..], device)?;
+
+    let x_lo = x.index_select(&lo_t, 2)?;
+    let x_hi = x.index_select(&hi_t, 2)?;
+
+    let one_minus_frac = (1.0f64 - &frac_t)?;
+    let result = (x_lo.broadcast_mul(&one_minus_frac)? + x_hi.broadcast_mul(&frac_t)?)?;
+    Ok(result)
 }

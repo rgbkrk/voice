@@ -9,7 +9,7 @@ mod mel;
 
 pub use candle_transformers::models::whisper::Config;
 pub use decoder::{DecodingResult, WhisperDecoder};
-pub use mel::{load_mel_filters, pcm_to_mel};
+pub use mel::{load_mel_filters, pcm_to_mel, GpuMelSpec};
 
 /// Re-export the model types from candle-transformers for loading.
 pub use candle_transformers::models::whisper::model::Whisper;

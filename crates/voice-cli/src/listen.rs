@@ -1062,9 +1062,9 @@ fn trim_silence(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     let window_size = (sample_rate as usize) / 100; // 10ms window
     let rms_threshold: f32 = 0.005; // ~-46 dBFS RMS
 
-    // Keep 250ms of leading context and 100ms trailing to preserve
-    // consonant onsets and natural decay.
-    let lead_padding = (sample_rate as usize) / 4;
+    // Keep 500ms of leading context and 100ms trailing to preserve
+    // soft word onsets, especially after Bluetooth mic spin-up.
+    let lead_padding = (sample_rate as usize) / 2;
     let trail_padding = (sample_rate as usize) / 10;
 
     // Find first window where RMS exceeds threshold
@@ -1150,8 +1150,8 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 // ── STT model helpers ──────────────────────────────────────────────────
 
 /// Default STT model. Override with `STT_MODEL` env var.
-/// distil-medium.en: English-only Whisper distillation, fast and accurate.
-const DEFAULT_STT_MODEL: &str = "distil-whisper/distil-medium.en";
+/// distil-large-v3: best accuracy. Use distil-whisper/distil-medium.en for smaller/faster.
+const DEFAULT_STT_MODEL: &str = "distil-whisper/distil-large-v3";
 
 fn stt_model_repo() -> String {
     std::env::var("STT_MODEL").unwrap_or_else(|_| DEFAULT_STT_MODEL.to_string())

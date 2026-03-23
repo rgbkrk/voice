@@ -2000,25 +2000,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kokoro-candle"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "candle-core",
- "candle-metal-kernels",
- "candle-nn",
- "candle-transformers",
- "half",
- "hf-hub",
- "hound",
- "safetensors 0.6.2",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4335,6 +4316,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "voice-kokoro"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "candle-core",
+ "candle-metal-kernels",
+ "candle-nn",
+ "candle-transformers",
+ "half",
+ "hf-hub",
+ "hound",
+ "safetensors 0.6.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "voice-nn"
 version = "0.2.0"
 dependencies = [
@@ -4368,11 +4368,11 @@ dependencies = [
  "candle-nn",
  "hf-hub",
  "hound",
- "kokoro-candle",
  "safetensors 0.6.2",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "voice-kokoro",
 ]
 
 [[package]]

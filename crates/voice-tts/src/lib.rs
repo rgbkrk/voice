@@ -16,8 +16,8 @@ const DEFAULT_REPO: &str = "prince-canuma/Kokoro-82M";
 
 /// Loaded Kokoro TTS model ready for generation.
 pub struct KokoroModel {
-    model: kokoro_candle::KModel,
-    config: kokoro_candle::ModelConfig,
+    model: voice_kokoro::KModel,
+    config: voice_kokoro::ModelConfig,
     device: Device,
     pub sample_rate: u32,
 }
@@ -42,14 +42,14 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
     };
 
     let config_str = std::fs::read_to_string(&config_path)?;
-    let config: kokoro_candle::ModelConfig = serde_json::from_str(&config_str)?;
+    let config: voice_kokoro::ModelConfig = serde_json::from_str(&config_str)?;
 
     let weights_data = std::fs::read(&weights_path)?;
     let vb = VarBuilder::from_buffered_safetensors(weights_data, DType::F32, &device)
         .map_err(|e| VoicersError::Model(e.to_string()))?;
 
     let model =
-        kokoro_candle::KModel::load(&config, vb).map_err(|e| VoicersError::Model(e.to_string()))?;
+        voice_kokoro::KModel::load(&config, vb).map_err(|e| VoicersError::Model(e.to_string()))?;
 
     let sample_rate = config.sample_rate;
 

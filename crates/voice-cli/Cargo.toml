@@ -28,7 +28,7 @@ candle-core = { version = "0.9", features = ["metal"] }
 voice-g2p = { version = "0.2.0", path = "../voice-g2p" }
 voice-stt = { version = "0.2.0", path = "../voice-stt" }
 clap = { version = "4", features = ["derive"] }
-rodio = "0.22"
+rodio = { version = "0.22", features = ["experimental"] }
 hound = "3"
 pulldown-cmark = "0.13.1"
 ctrlc = "3.5.2"

@@ -150,31 +150,54 @@ impl KModel {
         let duration = duration.broadcast_div(&speed_t)?;
         let pred_dur = duration.round()?.clamp(1.0f32, f32::MAX)?;
 
-        // Build alignment matrix
+        // Build alignment matrix on GPU via repeat_interleave-style expansion.
+        //
+        // The alignment matrix is a [T, total_frames] binary matrix where each
+        // token row has 1s in the frame columns it occupies. Instead of building
+        // this with a CPU loop (which requires GPU→CPU→GPU round-trip), we:
+        //   1. Download durations once (small: ~100 i64 values)
+        //   2. Build per-row one-hot slices and concatenate on GPU
+        //
+        // For typical phoneme counts (50-150 tokens), the duration download is
+        // ~400 bytes — negligible vs the old approach which also downloaded them.
         let pred_dur_vec: Vec<i64> = pred_dur
             .squeeze(0)?
             .to_dtype(DType::F32)?
             .to_vec1::<f32>()?
             .iter()
-            .map(|&v| v as i64)
+            .map(|&v| v.max(1.0) as i64)
             .collect();
 
         let total_frames: usize = pred_dur_vec.iter().sum::<i64>() as usize;
 
-        // pred_aln_trg: [T, total_frames]
-        let mut aln_data = vec![0.0f32; seq_len * total_frames];
-        let mut frame_idx = 0usize;
+        // Build alignment rows on GPU: each row is [0..0, 1..1, 0..0]
+        let mut rows: Vec<Tensor> = Vec::with_capacity(seq_len);
+        let mut frame_offset = 0usize;
         for (token_idx, &dur) in pred_dur_vec.iter().enumerate() {
-            for _ in 0..dur {
-                if frame_idx < total_frames && token_idx < seq_len {
-                    aln_data[token_idx * total_frames + frame_idx] = 1.0;
-                }
-                frame_idx += 1;
+            let dur = dur as usize;
+            if token_idx < seq_len && dur > 0 && frame_offset + dur <= total_frames {
+                // Build row: zeros(frame_offset) | ones(dur) | zeros(remaining)
+                let remaining = total_frames - frame_offset - dur;
+                let row = if frame_offset == 0 && remaining == 0 {
+                    Tensor::ones((1, total_frames), DType::F32, device)?
+                } else {
+                    let mut parts: Vec<Tensor> = Vec::new();
+                    if frame_offset > 0 {
+                        parts.push(Tensor::zeros((1, frame_offset), DType::F32, device)?);
+                    }
+                    parts.push(Tensor::ones((1, dur), DType::F32, device)?);
+                    if remaining > 0 {
+                        parts.push(Tensor::zeros((1, remaining), DType::F32, device)?);
+                    }
+                    Tensor::cat(&parts, 1)?
+                };
+                rows.push(row);
+            } else {
+                rows.push(Tensor::zeros((1, total_frames), DType::F32, device)?);
             }
+            frame_offset += dur;
         }
-        let pred_aln_trg = Tensor::new(&aln_data[..], device)?
-            .reshape((seq_len, total_frames))?
-            .unsqueeze(0)?; // [1, T, total_frames]
+        let pred_aln_trg = Tensor::cat(&rows, 0)?.unsqueeze(0)?; // [1, T, total_frames]
 
         // en = d.transpose(-1,-2) @ pred_aln_trg
         // d is [1, T, hidden_dim] -> transpose to [1, hidden_dim, T]

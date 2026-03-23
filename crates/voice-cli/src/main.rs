@@ -177,6 +177,10 @@ struct ServeArgs {
     /// Load substitutions from a file (one WORD=REPLACEMENT per line, # comments).
     #[arg(long = "sub-file", value_name = "PATH")]
     sub_file: Option<PathBuf>,
+
+    /// Include Metal GPU memory stats (_mem) in MCP tool responses
+    #[arg(long)]
+    mem: bool,
 }
 
 fn resolve_text(say: &SayArgs) -> Result<String, String> {
@@ -646,6 +650,7 @@ fn run_mcp(serve_args: ServeArgs) {
         repo_id: MODEL_REPO.to_string(),
         cli_subs: serve_args.subs,
         sub_file_path: sub_file,
+        mem_stats: serve_args.mem,
     });
 }
 

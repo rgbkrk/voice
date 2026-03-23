@@ -873,57 +873,6 @@ fn cumsum_dim1(x: &Tensor) -> Result<Tensor> {
     Tensor::cat(&slices, 1)
 }
 
-/// Linear interpolation along the last dimension of a [B, C, T_in] tensor.
-///
-/// Uses PyTorch's F.interpolate scale_factor convention:
-///   src_pos = (i + 0.5) / scale_factor - 0.5
-/// where scale_factor is provided explicitly (not computed from sizes).
-fn linear_interpolate_1d_scale(x: &Tensor, scale_factor: f64) -> Result<Tensor> {
-    let (b, c, t_in) = x.dims3()?;
-    let target_len = (t_in as f64 * scale_factor).floor() as usize;
-    if t_in == target_len {
-        return Ok(x.clone());
-    }
-    if t_in == 0 || target_len == 0 {
-        return Tensor::zeros(&[b, c, target_len], x.dtype(), x.device());
-    }
-
-    let data = x
-        .to_dtype(DType::F32)?
-        .to_device(&candle_core::Device::Cpu)?
-        .flatten_all()?
-        .to_vec1::<f32>()?;
-
-    let mut out = vec![0f32; b * c * target_len];
-
-    for batch in 0..b {
-        for ch in 0..c {
-            let src_offset = (batch * c + ch) * t_in;
-            let dst_offset = (batch * c + ch) * target_len;
-
-            for i in 0..target_len {
-                // PyTorch scale_factor formula:
-                // src_pos = (i + 0.5) / scale_factor - 0.5
-                let src_pos = (i as f64 + 0.5) / scale_factor - 0.5;
-                let src_pos = src_pos.max(0.0).min((t_in - 1) as f64);
-                let lo = src_pos.floor() as usize;
-                let hi = (lo + 1).min(t_in - 1);
-                let frac = (src_pos - lo as f64) as f32;
-
-                out[dst_offset + i] =
-                    data[src_offset + lo] * (1.0 - frac) + data[src_offset + hi] * frac;
-            }
-        }
-    }
-
-    let device = x.device();
-    let dtype = x.dtype();
-    Tensor::new(&out[..], &candle_core::Device::Cpu)?
-        .reshape(&[b, c, target_len])?
-        .to_device(device)?
-        .to_dtype(dtype)
-}
-
 /// Nearest-neighbor 1D upsampling for a 2D tensor [B, T] -> [B, T*factor]
 fn upsample_nearest_1d_single(x: &Tensor, factor: usize) -> Result<Tensor> {
     let (b, t) = x.dims2()?;
@@ -969,125 +918,6 @@ fn reflection_pad_1d_channels(x: &Tensor, pad_left: usize, pad_right: usize) -> 
     Tensor::cat(&parts, 2)
 }
 
-/// Phase unwrapping along a given axis.
-/// Removes 2π discontinuities from a phase signal.
-/// Phase unwrap + reduce modulo 2π.
-///
-/// Performs numpy-style phase unwrapping (removing 2π discontinuities) then
-/// reduces the result modulo 2π so that cos/sin remain numerically accurate.
-/// The cumulative correction is always an integer multiple of 2π, so reducing
-/// the unwrapped phase mod 2π is equivalent to reducing the *original* phase
-/// mod 2π. We exploit this by applying the reduction to the original data
-/// (which is already in [-π, π] and thus avoids any precision loss).
-fn phase_unwrap_mod2pi(phase: &Tensor, axis: usize) -> Result<Tensor> {
-    let shape = phase.shape().dims().to_vec();
-    let n = shape[axis];
-    if n <= 1 {
-        return Ok(phase.clone());
-    }
-
-    // Phase unwrap only adds integer multiples of 2π as corrections.
-    // Since cos/sin are 2π-periodic, unwrap(phase) ≡ phase (mod 2π).
-    // Therefore we can skip the actual unwrap computation and just reduce
-    // the original phase to [0, 2π) for numerically accurate cos/sin.
-    let data = phase
-        .to_dtype(DType::F32)?
-        .to_device(&candle_core::Device::Cpu)?
-        .flatten_all()?
-        .to_vec1::<f32>()?;
-
-    let two_pi = 2.0f32 * std::f32::consts::PI;
-    let result: Vec<f32> = data
-        .iter()
-        .map(|&v| {
-            let r = v % two_pi;
-            if r < 0.0 { r + two_pi } else { r }
-        })
-        .collect();
-
-    let device = phase.device();
-    let dtype = phase.dtype();
-    Tensor::new(&result[..], &candle_core::Device::Cpu)?
-        .reshape(shape.as_slice())?
-        .to_device(device)?
-        .to_dtype(dtype)
-}
-
-/// Equivalent to numpy.unwrap / mlx_unwrap.
-#[allow(dead_code)]
-fn phase_unwrap(phase: &Tensor, axis: usize) -> Result<Tensor> {
-    let shape = phase.shape().dims().to_vec();
-    let n = shape[axis];
-    if n <= 1 {
-        return Ok(phase.clone());
-    }
-
-    // Work on CPU for simplicity
-    let data = phase
-        .to_dtype(DType::F32)?
-        .to_device(&candle_core::Device::Cpu)?
-        .flatten_all()?
-        .to_vec1::<f32>()?;
-
-    let total: usize = shape.iter().product();
-    let mut result = data.clone();
-
-    // Compute strides for the given layout
-    let mut strides = vec![1usize; shape.len()];
-    for i in (0..shape.len() - 1).rev() {
-        strides[i] = strides[i + 1] * shape[i + 1];
-    }
-
-    let _axis_stride = strides[axis];
-    let axis_size = shape[axis];
-
-    // Number of independent sequences to unwrap
-    let outer_size: usize = shape[..axis].iter().product::<usize>().max(1);
-    let inner_size: usize = shape[axis + 1..].iter().product::<usize>().max(1);
-
-    let pi = std::f32::consts::PI;
-    let two_pi = 2.0 * pi;
-
-    for outer in 0..outer_size {
-        for inner in 0..inner_size {
-            let _base = outer
-                * strides.get(axis.wrapping_sub(1)).copied().unwrap_or(total)
-                * if axis > 0 { 1 } else { 0 }
-                + inner;
-
-            // Simpler: compute the flat index for element [outer_indices..., t, inner_indices...]
-            // For axis=2 on [B, F, T]: base = b * F * T + f * T, step along T with stride 1
-            let start_idx = outer * (axis_size * inner_size) + inner;
-
-            let mut cumulative_correction = 0.0f32;
-            for t in 1..axis_size {
-                let prev_idx = start_idx + (t - 1) * inner_size;
-                let curr_idx = start_idx + t * inner_size;
-
-                let diff = result[curr_idx] - result[prev_idx];
-                // Wrap diff to [-pi, pi]
-                let wrapped = ((diff + pi) % two_pi + two_pi) % two_pi - pi;
-                // Handle edge case where wrapped == -pi and diff > 0
-                let wrapped = if wrapped == -pi && diff > 0.0 {
-                    pi
-                } else {
-                    wrapped
-                };
-
-                cumulative_correction += wrapped - diff;
-                result[curr_idx] += cumulative_correction;
-            }
-        }
-    }
-
-    let device = phase.device();
-    let dtype = phase.dtype();
-    Tensor::new(&result[..], &candle_core::Device::Cpu)?
-        .reshape(shape.as_slice())?
-        .to_device(device)?
-        .to_dtype(dtype)
-}
-
 /// GPU-native linear downsample of [B, C, T] by factor N.
 /// Equivalent to F.interpolate(x, scale_factor=1/N, mode='linear').
 /// Uses gather + lerp pattern: for each output position, blend two input positions.
@@ -1111,7 +941,7 @@ fn gpu_linear_downsample(
         let src = (i as f64 + 0.5) * factor as f64 - 0.5;
         let src = src.max(0.0).min((t_in - 1) as f64);
         let lo = src.floor() as u32;
-        let hi_idx = ((lo + 1) as usize).min(t_in - 1) as u32;
+        let _hi_idx = ((lo + 1) as usize).min(t_in - 1) as u32;
         let frac = (src - lo as f64) as f32;
         lo_indices.push(lo);
         fracs.push(frac);
@@ -1124,7 +954,10 @@ fn gpu_linear_downsample(
         .reshape(&[1, 1, t_out])?; // [1, 1, t_out] for broadcast
 
     // Gather: x[:, :, lo] and x[:, :, lo+1]
-    let hi_indices: Vec<u32> = lo_indices.iter().map(|&lo| (lo + 1).min(t_in as u32 - 1)).collect();
+    let hi_indices: Vec<u32> = lo_indices
+        .iter()
+        .map(|&lo| (lo + 1).min(t_in as u32 - 1))
+        .collect();
     let hi_t = Tensor::new(&hi_indices[..], device)?;
 
     let x_lo = x.index_select(&lo_t, 2)?; // [B, C, t_out]
@@ -1168,7 +1001,10 @@ fn gpu_linear_upsample(
         .to_dtype(dtype)?
         .reshape(&[1, 1, t_out])?;
 
-    let hi_indices: Vec<u32> = lo_indices.iter().map(|&lo| (lo + 1).min(t_in as u32 - 1)).collect();
+    let hi_indices: Vec<u32> = lo_indices
+        .iter()
+        .map(|&lo| (lo + 1).min(t_in as u32 - 1))
+        .collect();
     let hi_t = Tensor::new(&hi_indices[..], device)?;
 
     let x_lo = x.index_select(&lo_t, 2)?;

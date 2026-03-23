@@ -27,8 +27,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::SampleFormat;
+use rodio::microphone::MicrophoneBuilder;
 use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
 
 use crate::{INTERRUPTED, QUIET};
@@ -258,7 +257,7 @@ fn play_ding() {
             sample_rate: s.sample_rate,
             channels: s.channels,
         });
-    play_cached_or_synth(custom.as_ref(), 880.0, 200, 0.06, 0.15, 50);
+    play_cached_or_synth(custom.as_ref(), 880.0, 100, 0.03, 0.20, 0);
 }
 
 /// Play two ascending blips to signal that listening has stopped.
@@ -329,104 +328,67 @@ fn play_dong() {
 
 // ── Mic input helpers ──────────────────────────────────────────────────
 
-/// Open the default input device and return its config.
-fn open_input_device() -> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or("No input device available")?;
-    let config = device
-        .default_input_config()
-        .map_err(|e| format!("Failed to get input config: {e}"))?;
-    Ok((device, config))
-}
-
-/// Build an input stream that writes mono f32 samples into `buffer`.
+/// Open a microphone via rodio and return (name, sample_rate, mic).
 ///
-/// If `peak_out` is `Some`, each callback also writes the chunk's peak
-/// amplitude (as `f32::to_bits()`) into the atomic for VAD polling.
-fn build_input_stream(
-    device: &cpal::Device,
-    config: &cpal::SupportedStreamConfig,
-    buffer: Arc<Mutex<Vec<f32>>>,
-    peak_out: Option<Arc<std::sync::atomic::AtomicU32>>,
-) -> Result<cpal::Stream, String> {
-    let channels = config.channels() as usize;
+/// Uses the default input device. Rodio handles sample format conversion
+/// and multi-channel mixing internally.
+fn open_mic() -> Result<(String, u32, rodio::microphone::Microphone), String> {
+    let mic = MicrophoneBuilder::new()
+        .default_device()
+        .map_err(|e| format!("No input device: {e}"))?
+        .default_config()
+        .map_err(|e| format!("No input config: {e}"))?
+        .open_stream()
+        .map_err(|e| format!("Failed to open mic: {e}"))?;
 
-    match config.sample_format() {
-        SampleFormat::F32 => {
-            let buf = Arc::clone(&buffer);
-            let peak = peak_out.clone();
-            device
-                .build_input_stream(
-                    &config.clone().into(),
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let mut guard = buf.lock().unwrap();
-                        let mut chunk_peak: f32 = 0.0;
-                        if channels == 1 {
-                            for &s in data {
-                                chunk_peak = chunk_peak.max(s.abs());
-                                guard.push(s);
-                            }
-                        } else {
-                            for chunk in data.chunks(channels) {
-                                let mono: f32 = chunk.iter().sum::<f32>() / channels as f32;
-                                chunk_peak = chunk_peak.max(mono.abs());
-                                guard.push(mono);
-                            }
-                        }
-                        if let Some(ref p) = peak {
-                            p.store(chunk_peak.to_bits(), Ordering::Relaxed);
-                        }
-                    },
-                    |err| eprintln!("Audio input error: {err}"),
-                    None,
-                )
-                .map_err(|e| format!("Failed to build input stream: {e}"))
-        }
-        SampleFormat::I16 => {
-            let buf = Arc::clone(&buffer);
-            let peak = peak_out.clone();
-            device
-                .build_input_stream(
-                    &config.clone().into(),
-                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let mut guard = buf.lock().unwrap();
-                        let mut chunk_peak: f32 = 0.0;
-                        if channels == 1 {
-                            for &s in data {
-                                let f = s as f32 / 32768.0;
-                                chunk_peak = chunk_peak.max(f.abs());
-                                guard.push(f);
-                            }
-                        } else {
-                            for chunk in data.chunks(channels) {
-                                let mono: f32 =
-                                    chunk.iter().map(|&s| s as f32 / 32768.0).sum::<f32>()
-                                        / channels as f32;
-                                chunk_peak = chunk_peak.max(mono.abs());
-                                guard.push(mono);
-                            }
-                        }
-                        if let Some(ref p) = peak {
-                            p.store(chunk_peak.to_bits(), Ordering::Relaxed);
-                        }
-                    },
-                    |err| eprintln!("Audio input error: {err}"),
-                    None,
-                )
-                .map_err(|e| format!("Failed to build input stream: {e}"))
-        }
-        format => Err(format!("Unsupported sample format: {format:?}")),
-    }
+    let config = mic.config();
+    let sample_rate = config.sample_rate.get();
+    let name = "default".to_string(); // rodio doesn't expose device name easily
+
+    Ok((name, sample_rate, mic))
 }
 
-/// Extract final samples from the shared buffer.
-fn extract_samples(buffer: Arc<Mutex<Vec<f32>>>) -> Vec<f32> {
-    match Arc::try_unwrap(buffer) {
-        Ok(mutex) => mutex.into_inner().unwrap(),
-        Err(arc) => arc.lock().unwrap().clone(),
-    }
+/// Drain a Microphone iterator into a shared buffer on a background thread.
+///
+/// Returns the peak amplitude tracker. The mic thread runs until the
+/// `stop` flag is set or the mic stream ends.
+fn start_mic_drain(
+    mic: rodio::microphone::Microphone,
+    buffer: Arc<Mutex<Vec<f32>>>,
+    peak_out: Arc<std::sync::atomic::AtomicU32>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    channels: u16,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let ch = channels.max(1) as usize;
+        let mut chunk_peak: f32 = 0.0;
+        let mut sample_count = 0usize;
+
+        for sample in mic {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let abs = sample.abs();
+            chunk_peak = chunk_peak.max(abs);
+            sample_count += 1;
+
+            // For multi-channel, mix to mono by averaging
+            if ch == 1 {
+                buffer.lock().unwrap().push(sample);
+            } else if sample_count % ch == 0 {
+                // We get interleaved samples — just take every ch-th sample
+                // (rodio's SampleTypeConverter already converts to f32)
+                buffer.lock().unwrap().push(sample);
+            }
+
+            // Update peak every ~100 samples to avoid atomic contention
+            if sample_count % 100 == 0 {
+                peak_out.store(chunk_peak.to_bits(), Ordering::Relaxed);
+                chunk_peak = 0.0;
+            }
+        }
+    })
 }
 
 /// Log recording stats to stderr (unless quiet).
@@ -467,26 +429,27 @@ fn log_recording_stats(samples: &[f32], sample_rate: u32) {
 ///
 /// Returns mono f32 samples at the device's native sample rate, plus the rate.
 pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
-    let (device, config) = open_input_device()?;
-    let sample_rate = config.sample_rate().0;
-
-    if !QUIET.load(Ordering::Relaxed) {
-        let name = device.name().unwrap_or_else(|_| "unknown".to_string());
-        eprintln!(
-            "Recording from: {name} ({sample_rate}Hz, {}ch)",
-            config.channels()
-        );
-    }
-
-    // Play ding before mic so user hears the "ready" signal
+    // Ding before mic so Bluetooth users hear the "ready" signal
     play_ding();
 
-    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let stream = build_input_stream(&device, &config, Arc::clone(&buffer), None)?;
+    let (name, sample_rate, mic) = open_mic()?;
 
-    stream
-        .play()
-        .map_err(|e| format!("Failed to start recording: {e}"))?;
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("Recording from: {name} ({sample_rate}Hz)");
+    }
+
+    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let channels = mic.config().channel_count.get();
+
+    let mic_thread = start_mic_drain(
+        mic,
+        Arc::clone(&buffer),
+        Arc::clone(&peak),
+        Arc::clone(&stop),
+        channels,
+    );
 
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("Press Enter or Ctrl+C to stop recording...");
@@ -509,11 +472,15 @@ pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    drop(stream);
+    stop.store(true, Ordering::SeqCst);
+    let _ = mic_thread.join();
     drop(stdin_thread);
     play_dong();
 
-    let samples = extract_samples(buffer);
+    let samples = match Arc::try_unwrap(buffer) {
+        Ok(mutex) => mutex.into_inner().unwrap(),
+        Err(arc) => arc.lock().unwrap().clone(),
+    };
     log_recording_stats(&samples, sample_rate);
     maybe_save_recording(&samples, sample_rate);
 
@@ -534,41 +501,34 @@ pub fn record_with_vad(
     noise_multiplier: f32,
     calibration_ms: u64,
 ) -> Result<(Vec<f32>, u32), String> {
-    let (device, config) = open_input_device()?;
-    let sample_rate = config.sample_rate().0;
-
+    // Play ding BEFORE opening mic. On Bluetooth (AirPods), opening the
+    // mic triggers an HFP profile switch that can swallow audio output.
+    // Playing first ensures the user hears the "ready" signal.
+    play_ding();
     if !QUIET.load(Ordering::Relaxed) {
-        let name = device.name().unwrap_or_else(|_| "unknown".to_string());
-        eprintln!(
-            "Recording from: {name} ({sample_rate}Hz, {}ch)",
-            config.channels()
-        );
+        eprintln!("Listening...");
     }
 
-    // Play ding BEFORE opening mic so the user hears the "ready" signal.
-    // There's a small gap (~50ms) between ding ending and mic starting
-    // to capture, but the silence trimmer's 500ms lead padding compensates.
-    play_ding();
+    let (name, sample_rate, mic) = open_mic()?;
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("Recording from: {name} ({sample_rate}Hz)");
+    }
 
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let recent_peak: Arc<std::sync::atomic::AtomicU32> =
-        Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let recent_peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let channels = mic.config().channel_count.get();
 
-    let stream = build_input_stream(
-        &device,
-        &config,
+    let mic_thread = start_mic_drain(
+        mic,
         Arc::clone(&buffer),
-        Some(Arc::clone(&recent_peak)),
-    )?;
+        Arc::clone(&recent_peak),
+        Arc::clone(&stop),
+        channels,
+    );
 
-    stream
-        .play()
-        .map_err(|e| format!("Failed to start recording: {e}"))?;
-
-    // Adaptive noise floor calibration — also serves as Bluetooth warmup.
-    // The mic just started so the first ~200ms may be garbage from BT spin-up,
-    // but that's fine — it just inflates the noise floor slightly, making
-    // the speech threshold more conservative (a safe direction).
+    // Adaptive noise floor calibration
     let adaptive_threshold = if calibration_ms > 0 {
         let cal_start = std::time::Instant::now();
         let calibration_duration = std::time::Duration::from_millis(calibration_ms);
@@ -576,8 +536,12 @@ pub fn record_with_vad(
 
         while cal_start.elapsed() < calibration_duration {
             if INTERRUPTED.load(Ordering::Relaxed) {
-                drop(stream);
-                let samples = extract_samples(buffer);
+                stop.store(true, Ordering::SeqCst);
+                let _ = mic_thread.join();
+                let samples = match Arc::try_unwrap(buffer) {
+                    Ok(mutex) => mutex.into_inner().unwrap(),
+                    Err(arc) => arc.lock().unwrap().clone(),
+                };
                 return Ok((samples, sample_rate));
             }
             let peak_bits = recent_peak.load(Ordering::Relaxed);
@@ -599,10 +563,6 @@ pub fn record_with_vad(
     } else {
         silence_threshold
     };
-
-    // Keep calibration audio in the buffer — trim_silence will strip
-    // the leading silence later. Clearing the buffer here causes speech
-    // loss when the user starts speaking during or right after calibration.
 
     // VAD state machine
     let mut speech_started = false;
@@ -652,10 +612,14 @@ pub fn record_with_vad(
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    drop(stream);
+    stop.store(true, Ordering::SeqCst);
+    let _ = mic_thread.join();
     play_dong();
 
-    let samples = extract_samples(buffer);
+    let samples = match Arc::try_unwrap(buffer) {
+        Ok(mutex) => mutex.into_inner().unwrap(),
+        Err(arc) => arc.lock().unwrap().clone(),
+    };
     log_recording_stats(&samples, sample_rate);
     maybe_save_recording(&samples, sample_rate);
 
@@ -672,6 +636,23 @@ pub fn record_with_vad(
 /// is reached.
 ///
 /// Plays a ding at the start. No dings between segments.
+/// Stop handle for continuous recording. Drop or call stop() to end.
+pub struct RecordingHandle {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RecordingHandle {
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for RecordingHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 pub fn record_continuous(
     silence_timeout_ms: u64,
     silence_threshold: f32,
@@ -680,44 +661,35 @@ pub fn record_continuous(
     max_segment_ms: u64,
     noise_multiplier: f32,
     calibration_ms: u64,
-) -> Result<(mpsc::Receiver<Segment>, u32, cpal::Stream), String> {
-    let (device, config) = open_input_device()?;
-    let sample_rate = config.sample_rate().0;
-
-    if !QUIET.load(Ordering::Relaxed) {
-        let name = device.name().unwrap_or_else(|_| "unknown".to_string());
-        eprintln!(
-            "Recording from: {name} ({sample_rate}Hz, {}ch)",
-            config.channels()
-        );
-    }
-
-    // Play ding before mic so user hears the "ready" signal
+) -> Result<(mpsc::Receiver<Segment>, u32, RecordingHandle), String> {
+    // Ding before mic so Bluetooth users hear it
     play_ding();
 
+    let (name, sample_rate, mic) = open_mic()?;
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!("Recording from: {name} ({sample_rate}Hz)");
+    }
+
     let segment_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let recent_peak: Arc<std::sync::atomic::AtomicU32> =
-        Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let recent_peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let channels = mic.config().channel_count.get();
 
-    let stream = build_input_stream(
-        &device,
-        &config,
+    let _mic_thread = start_mic_drain(
+        mic,
         Arc::clone(&segment_buffer),
-        Some(Arc::clone(&recent_peak)),
-    )?;
-
-    stream
-        .play()
-        .map_err(|e| format!("Failed to start recording: {e}"))?;
+        Arc::clone(&recent_peak),
+        Arc::clone(&stop),
+        channels,
+    );
 
     let (tx, rx) = mpsc::channel::<Segment>();
 
     let min_samples = (sample_rate as u64 * min_segment_ms / 1000) as usize;
     let max_samples = (sample_rate as u64 * max_segment_ms / 1000) as usize;
 
-    // VAD monitor thread — watches peak levels, snapshots segments
-    // Note: `stream` is NOT moved here — it's returned to the caller
-    // who must keep it alive for the duration of recording.
+    // VAD monitor thread
     std::thread::spawn(move || {
         let mut speech_started = false;
         let mut silence_start: Option<Instant> = None;
@@ -894,7 +866,10 @@ pub fn record_continuous(
         // Channel drops here, signaling the consumer that recording is done
     });
 
-    Ok((rx, sample_rate, stream))
+    let handle = RecordingHandle {
+        stop: Arc::clone(&stop),
+    };
+    Ok((rx, sample_rate, handle))
 }
 
 /// Consume segments from the recording queue and transcribe each one.
@@ -969,7 +944,7 @@ pub fn listen_continuous() {
         eprintln!("Listening continuously... (Ctrl+C to stop)\n");
     }
 
-    let (segments_rx, _sample_rate, _stream) = match record_continuous(
+    let (segments_rx, _sample_rate, _handle) = match record_continuous(
         1500,     // silence_timeout_ms
         0.01,     // silence_threshold
         u64::MAX, // max_duration_ms (unlimited — Ctrl+C to stop)
@@ -1021,7 +996,7 @@ pub fn listen_continuous_for_rpc(
     noise_multiplier: f32,
     calibration_ms: u64,
 ) -> Result<mpsc::Receiver<SegmentResult>, String> {
-    let (segments_rx, _sample_rate, _stream) = record_continuous(
+    let (segments_rx, _sample_rate, _handle) = record_continuous(
         silence_timeout_ms,
         0.01, // silence_threshold
         max_duration_ms,

@@ -103,18 +103,8 @@ fn load_voice_from_bytes(data: &[u8], device: &Device) -> Result<Tensor> {
     let tensor = Tensor::from_vec(f32_data, shape.as_slice(), device)
         .map_err(|e| VoicersError::Model(e.to_string()))?;
 
-    // Voice files may have shape [N, 1, 256] or [N, 256] — take first voice
-    let tensor = if tensor.dims().len() == 3 {
-        tensor.i(0).and_then(|t| t.squeeze(0))
-            .map_err(|e| VoicersError::Model(e.to_string()))?
-    } else if tensor.dims().len() == 2 && tensor.dim(0).unwrap_or(0) > 1 {
-        tensor.i(0).map_err(|e| VoicersError::Model(e.to_string()))?
-    } else {
-        tensor
-    };
-
-    // Ensure [1, 256]
-    let tensor = tensor.unsqueeze(0).map_err(|e| VoicersError::Model(e.to_string()))?;
+    // Voice files have shape [N, 1, 256] — a "voice pack" with per-length embeddings.
+    // Return the full pack; the generate function selects by phoneme length.
     Ok(tensor)
 }
 
@@ -139,8 +129,23 @@ pub fn generate(
         return Err(VoicersError::Model("no valid tokens from phonemes".into()));
     }
 
+    // Select the right voice embedding from the pack based on phoneme length.
+    // Voice packs have shape [N, 1, 256] where index = phoneme_string_length - 1.
+    // The KPipeline uses: pack[len(ps) - 1]
+    let ref_s = if voice.dims().len() == 3 {
+        // Voice pack [N, 1, 256] — select by phoneme length
+        let pack_len = voice.dim(0).map_err(|e| VoicersError::Model(e.to_string()))?;
+        let idx = (phonemes.len() - 1).min(pack_len - 1);
+        voice.i(idx).and_then(|t| t.squeeze(0))
+            .map_err(|e| VoicersError::Model(e.to_string()))?
+            .unsqueeze(0)
+            .map_err(|e| VoicersError::Model(e.to_string()))?
+    } else {
+        voice.clone()
+    };
+
     let audio = model.model
-        .forward(&input_ids, voice, speed, &model.device)
+        .forward(&input_ids, &ref_s, speed, &model.device)
         .map_err(|e| VoicersError::Model(e.to_string()))?;
 
     let samples = audio.to_vec1::<f32>()

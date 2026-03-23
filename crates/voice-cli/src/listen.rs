@@ -478,23 +478,15 @@ pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
         );
     }
 
-    // Start mic first so Bluetooth hardware warms up
+    // Play ding first, then start mic (avoids audio routing conflicts on macOS)
+    play_ding();
+
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let stream = build_input_stream(&device, &config, Arc::clone(&buffer), None)?;
 
     stream
         .play()
         .map_err(|e| format!("Failed to start recording: {e}"))?;
-
-    // Brief warmup for Bluetooth mics before the ding
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
-    // Ding signals "ready" — discard warmup audio after
-    play_ding();
-    {
-        let mut guard = buffer.lock().unwrap();
-        guard.clear();
-    }
 
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("Press Enter or Ctrl+C to stop recording...");
@@ -553,8 +545,11 @@ pub fn record_with_vad(
         );
     }
 
-    // Start the mic FIRST so Bluetooth hardware has time to spin up during
-    // calibration. The ding plays AFTER calibration as the "ready" signal.
+    // Play ding FIRST as the "get ready" signal, then start the mic.
+    // Playing audio while the mic stream is active can cause issues on
+    // macOS (especially with Bluetooth audio routing).
+    play_ding();
+
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let recent_peak: Arc<std::sync::atomic::AtomicU32> =
         Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -570,8 +565,10 @@ pub fn record_with_vad(
         .play()
         .map_err(|e| format!("Failed to start recording: {e}"))?;
 
-    // Adaptive noise floor calibration — mic is already recording so
-    // Bluetooth hardware warms up during this window.
+    // Adaptive noise floor calibration — also serves as Bluetooth warmup.
+    // The mic just started so the first ~200ms may be garbage from BT spin-up,
+    // but that's fine — it just inflates the noise floor slightly, making
+    // the speech threshold more conservative (a safe direction).
     let adaptive_threshold = if calibration_ms > 0 {
         let cal_start = std::time::Instant::now();
         let calibration_duration = std::time::Duration::from_millis(calibration_ms);
@@ -600,15 +597,10 @@ pub fn record_with_vad(
 
         threshold
     } else {
-        // Skip calibration, use raw threshold
         silence_threshold
     };
 
-    // NOW play the ding — mic is warm, calibration is done, user hears
-    // "ready" and can start speaking immediately after the tone.
-    play_ding();
-
-    // Discard all audio captured during warmup/calibration/ding.
+    // Discard calibration audio so it doesn't pollute the recording.
     {
         let mut guard = buffer.lock().unwrap();
         guard.clear();
@@ -702,7 +694,9 @@ pub fn record_continuous(
         );
     }
 
-    // Start mic first so Bluetooth hardware warms up during calibration.
+    // Play ding first, then start mic (avoids audio routing conflicts on macOS)
+    play_ding();
+
     let segment_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let recent_peak: Arc<std::sync::atomic::AtomicU32> =
         Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -762,10 +756,7 @@ pub fn record_continuous(
                 );
             }
 
-            // Ding signals "ready" after calibration
-            play_ding();
-
-            // Clear all warmup/calibration/ding audio
+            // Clear calibration audio
             {
                 let mut guard = segment_buffer.lock().unwrap();
                 guard.clear();
@@ -773,8 +764,7 @@ pub fn record_continuous(
 
             threshold
         } else {
-            // No calibration — still play ding and clear buffer
-            play_ding();
+            // Clear any initial audio
             {
                 let mut guard = segment_buffer.lock().unwrap();
                 guard.clear();

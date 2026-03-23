@@ -60,24 +60,48 @@ pub struct WhisperModel {
 pub fn load_model(path_or_repo: &str) -> Result<WhisperModel> {
     let device = Device::new_metal(0).map_err(|e| SttError::Model(e.to_string()))?;
 
-    let (config_path, tokenizer_path, weights_path) = if Path::new(path_or_repo).exists() {
-        let dir = PathBuf::from(path_or_repo);
-        (
-            dir.join("config.json"),
-            dir.join("tokenizer.json"),
-            dir.join("model.safetensors"),
-        )
+    // Use embedded config/tokenizer when available (zero network fetch).
+    // Only the weights need downloading from HuggingFace.
+    let config: voice_whisper::Config = if let Some(result) = builtin::config_for_repo(path_or_repo)
+    {
+        result?
+    } else if Path::new(path_or_repo).exists() {
+        let config_str = std::fs::read_to_string(Path::new(path_or_repo).join("config.json"))?;
+        serde_json::from_str(&config_str)?
     } else {
-        download_model(path_or_repo)?
+        let api = hf_hub::api::sync::Api::new().map_err(|e| SttError::Hub(e.to_string()))?;
+        let repo = api.model(path_or_repo.to_string());
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| SttError::Hub(e.to_string()))?;
+        let config_str = std::fs::read_to_string(config_path)?;
+        serde_json::from_str(&config_str)?
     };
 
-    let config_str = std::fs::read_to_string(&config_path)?;
-    let config: voice_whisper::Config = serde_json::from_str(&config_str)?;
+    let tokenizer: tokenizers::Tokenizer =
+        if let Some(result) = builtin::tokenizer_for_repo(path_or_repo) {
+            result?
+        } else if Path::new(path_or_repo).exists() {
+            tokenizers::Tokenizer::from_file(Path::new(path_or_repo).join("tokenizer.json"))
+                .map_err(|e| SttError::Tokenizer(e.to_string()))?
+        } else {
+            let api = hf_hub::api::sync::Api::new().map_err(|e| SttError::Hub(e.to_string()))?;
+            let repo = api.model(path_or_repo.to_string());
+            let tokenizer_path = repo
+                .get("tokenizer.json")
+                .map_err(|e| SttError::Hub(e.to_string()))?;
+            tokenizers::Tokenizer::from_file(tokenizer_path)
+                .map_err(|e| SttError::Tokenizer(e.to_string()))?
+        };
 
     let mel_filters = voice_whisper::load_mel_filters(&config).map_err(SttError::Model)?;
 
-    let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
-        .map_err(|e| SttError::Tokenizer(e.to_string()))?;
+    // Only the weights need a network fetch (or local path)
+    let weights_path = if Path::new(path_or_repo).exists() {
+        PathBuf::from(path_or_repo).join("model.safetensors")
+    } else {
+        download_weights(path_or_repo)?
+    };
 
     let vb = unsafe {
         VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)
@@ -87,9 +111,7 @@ pub fn load_model(path_or_repo: &str) -> Result<WhisperModel> {
     let model = voice_whisper::Whisper::load(&vb, config.clone())
         .map_err(|e| SttError::Model(e.to_string()))?;
 
-    // Determine language token for multilingual models
     let language_token = if builtin::is_multilingual(path_or_repo) {
-        // Default to English for multilingual models
         tokenizer.token_to_id("<|en|>")
     } else {
         None
@@ -112,6 +134,11 @@ pub fn load_model(path_or_repo: &str) -> Result<WhisperModel> {
 ///
 /// Whisper uses a HuggingFace fast tokenizer stored as `tokenizer.json`.
 pub fn load_tokenizer(path_or_repo: &str) -> Result<tokenizers::Tokenizer> {
+    // Use embedded tokenizer when available
+    if let Some(result) = builtin::tokenizer_for_repo(path_or_repo) {
+        return result;
+    }
+
     let tokenizer_path = if Path::new(path_or_repo).exists() {
         PathBuf::from(path_or_repo).join("tokenizer.json")
     } else {
@@ -120,13 +147,6 @@ pub fn load_tokenizer(path_or_repo: &str) -> Result<tokenizers::Tokenizer> {
         repo.get("tokenizer.json")
             .map_err(|e| SttError::Hub(e.to_string()))?
     };
-
-    if !tokenizer_path.exists() {
-        return Err(SttError::Tokenizer(format!(
-            "tokenizer.json not found in {}",
-            tokenizer_path.display()
-        )));
-    }
 
     tokenizers::Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| SttError::Tokenizer(e.to_string()))
@@ -189,25 +209,16 @@ pub fn transcribe_audio_with_tokenizer(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Download model files from HuggingFace Hub.
-/// Returns (config_path, tokenizer_path, weights_path).
-fn download_model(repo_id: &str) -> Result<(PathBuf, PathBuf, PathBuf)> {
+/// Download only model weights from HuggingFace Hub.
+///
+/// Config and tokenizer are embedded for known models, so only the
+/// weights safetensors file needs to be fetched.
+fn download_weights(repo_id: &str) -> Result<PathBuf> {
     let api = hf_hub::api::sync::Api::new().map_err(|e| SttError::Hub(e.to_string()))?;
     let repo = api.model(repo_id.to_string());
 
-    let config_path = repo
-        .get("config.json")
-        .map_err(|e| SttError::Hub(e.to_string()))?;
-
-    let tokenizer_path = repo
-        .get("tokenizer.json")
-        .map_err(|e| SttError::Hub(e.to_string()))?;
-
-    let weights_path = repo
-        .get("model.safetensors")
-        .map_err(|e| SttError::Hub(e.to_string()))?;
-
-    Ok((config_path, tokenizer_path, weights_path))
+    repo.get("model.safetensors")
+        .map_err(|e| SttError::Hub(e.to_string()))
 }
 
 /// Load a WAV file and return mono f32 samples at 16kHz.

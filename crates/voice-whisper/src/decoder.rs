@@ -111,10 +111,29 @@ impl WhisperDecoder {
 
     /// Transcribe PCM audio samples (mono, 16kHz f32).
     ///
-    /// Returns all decoded segments concatenated. For typical voice-command
-    /// audio (<30s), this produces a single segment.
+    /// Audio longer than 30 seconds is truncated to the first 30s.
+    /// For typical voice-command audio (<30s), this produces a single segment.
     pub fn transcribe(&mut self, samples: &[f32]) -> candle_core::Result<DecodingResult> {
+        use candle_transformers::models::whisper::N_SAMPLES;
+
+        // Truncate to 30s (Whisper's max chunk size)
+        let max_samples = N_SAMPLES; // 480000 = 30s at 16kHz
+        let samples = if samples.len() > max_samples {
+            &samples[..max_samples]
+        } else {
+            samples
+        };
+
         let mel = crate::pcm_to_mel(&self.config, samples, &self.mel_filters, &self.device)?;
+
+        // Ensure mel frames don't exceed encoder's max source positions
+        let (_, _, mel_frames) = mel.dims3()?;
+        let mel = if mel_frames > self.config.max_source_positions {
+            mel.narrow(2, 0, self.config.max_source_positions)?
+        } else {
+            mel
+        };
+
         self.decode_with_fallback(&mel)
     }
 
@@ -170,18 +189,13 @@ impl WhisperDecoder {
             let next_token = if temperature > 0.0 {
                 sample_token(&logits, temperature)?
             } else {
-                // Greedy: argmax
-                let logits_v: Vec<f32> = logits.to_vec1()?;
-                logits_v
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, u), (_, v)| u.total_cmp(v))
-                    .map(|(i, _)| i as u32)
-                    .unwrap()
+                // Greedy: argmax on GPU, only download the single index
+                logits.argmax(0)?.to_scalar::<u32>()?
             };
 
             tokens.push(next_token);
 
+            // Compute log-prob on GPU, download single scalar
             let prob = softmax(&logits, candle_core::D::Minus1)?
                 .i(next_token as usize)?
                 .to_scalar::<f32>()? as f64;
@@ -189,6 +203,21 @@ impl WhisperDecoder {
             if next_token == self.eot_token || tokens.len() > self.config.max_target_positions {
                 break;
             }
+
+            // Detect repetition loops: if the last N tokens are all the same,
+            // the model is hallucinating on silence — bail early.
+            if tokens.len() >= 8 {
+                let last = tokens[tokens.len() - 1];
+                let repeating = tokens[tokens.len() - 8..].iter().all(|&t| t == last);
+                if repeating {
+                    // Trim the repeated tokens
+                    while tokens.last() == Some(&last) {
+                        tokens.pop();
+                    }
+                    break;
+                }
+            }
+
             sum_logprob += prob.ln();
         }
 

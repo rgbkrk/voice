@@ -151,6 +151,7 @@ struct Session {
     voice_cache: HashMap<String, voice_tts::Array>,
     stt_model: Option<voice_stt::MoonshineModel>,
     stt_tokenizer: Option<voice_stt::tokenizers::Tokenizer>,
+    mem_stats: bool,
 }
 
 impl Session {
@@ -175,6 +176,7 @@ pub struct ServerConfig {
     pub repo_id: String,
     pub cli_subs: Vec<String>,
     pub sub_file_path: Option<std::path::PathBuf>,
+    pub mem_stats: bool,
 }
 
 enum StdinMsg {
@@ -202,6 +204,7 @@ pub fn run(config: ServerConfig) {
         voice_cache,
         stt_model: None,
         stt_tokenizer: None,
+        mem_stats: config.mem_stats,
     };
 
     // Cap the Metal buffer cache at 2 GB to prevent unbounded memory growth
@@ -214,6 +217,13 @@ pub fn run(config: ServerConfig) {
 
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("voice mcp server ready");
+        if config.mem_stats {
+            let mem = metal_memory_stats();
+            eprintln!(
+                "[mem] startup: active={:.1}MB cache={:.1}MB peak={:.1}MB",
+                mem.active_mb, mem.cache_mb, mem.peak_mb,
+            );
+        }
     }
 
     let (tx, rx) = mpsc::channel::<StdinMsg>();
@@ -489,7 +499,7 @@ fn handle_tools_call(
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
 
-    let result = match name {
+    let mut result = match name {
         "speak" => voice_speak(session, stdout, arguments),
         "listen" => voice_listen(session, arguments),
         "converse" => voice_converse(session, stdout, arguments),
@@ -511,6 +521,27 @@ fn handle_tools_call(
         }
     };
 
+    if session.mem_stats {
+        let mem = metal_memory_stats();
+        eprintln!(
+            "[mem] after {name}: active={:.1}MB cache={:.1}MB peak={:.1}MB",
+            mem.active_mb, mem.cache_mb, mem.peak_mb,
+        );
+
+        if let Ok(ref mut value) = result {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "_mem".to_string(),
+                    serde_json::json!({
+                        "active_mb": round1(mem.active_mb),
+                        "cache_mb": round1(mem.cache_mb),
+                        "peak_mb": round1(mem.peak_mb),
+                    }),
+                );
+            }
+        }
+    }
+
     match result {
         Ok(value) => Response::success(
             id,
@@ -526,6 +557,27 @@ fn handle_tools_call(
             }),
         ),
     }
+}
+
+struct MemStats {
+    active_mb: f64,
+    cache_mb: f64,
+    peak_mb: f64,
+}
+
+fn metal_memory_stats() -> MemStats {
+    let active = quill_mlx::metal::get_active_memory().unwrap_or(0);
+    let cache = quill_mlx::metal::get_cache_memory().unwrap_or(0);
+    let peak = quill_mlx::metal::get_peak_memory().unwrap_or(0);
+    MemStats {
+        active_mb: active as f64 / 1_048_576.0,
+        cache_mb: cache as f64 / 1_048_576.0,
+        peak_mb: peak as f64 / 1_048_576.0,
+    }
+}
+
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
 }
 
 // ── Error helper ──────────────────────────────────────────────────────

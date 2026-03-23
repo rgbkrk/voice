@@ -27,11 +27,14 @@ pub struct DecodingResult {
 /// Whisper decoder wrapping the model, tokenizer, and mel filters.
 ///
 /// Handles greedy autoregressive decoding with KV-caching.
+/// Includes a GPU mel spectrogram processor for Metal-accelerated
+/// audio preprocessing.
 pub struct WhisperDecoder {
     model: m::model::Whisper,
     config: Config,
     device: Device,
     mel_filters: Vec<f32>,
+    gpu_mel: crate::mel::GpuMelSpec,
     tokenizer: Tokenizer,
     suppress_tokens: Tensor,
     sot_token: u32,
@@ -78,11 +81,15 @@ impl WhisperDecoder {
             .collect();
         let suppress_tokens = Tensor::new(suppress_tokens.as_slice(), &device)?;
 
+        // Build GPU mel spectrogram processor
+        let gpu_mel = crate::mel::GpuMelSpec::new(&config, &mel_filters, &device)?;
+
         Ok(Self {
             model,
             config,
             device,
             mel_filters,
+            gpu_mel,
             tokenizer,
             suppress_tokens,
             sot_token,
@@ -111,30 +118,64 @@ impl WhisperDecoder {
 
     /// Transcribe PCM audio samples (mono, 16kHz f32).
     ///
-    /// Audio longer than 30 seconds is truncated to the first 30s.
-    /// For typical voice-command audio (<30s), this produces a single segment.
+    /// Supports audio of any length via chunking. The mel spectrogram is
+    /// computed on GPU, then processed in 30-second windows. Each chunk
+    /// is decoded independently and results are concatenated.
     pub fn transcribe(&mut self, samples: &[f32]) -> candle_core::Result<DecodingResult> {
-        use candle_transformers::models::whisper::N_SAMPLES;
+        // Compute full mel spectrogram on GPU
+        let mel = self.gpu_mel.compute(samples)?;
+        let (_, _, total_frames) = mel.dims3()?;
 
-        // Truncate to 30s (Whisper's max chunk size)
-        let max_samples = N_SAMPLES; // 480000 = 30s at 16kHz
-        let samples = if samples.len() > max_samples {
-            &samples[..max_samples]
+        let max_chunk_frames = m::N_FRAMES; // 3000 = 30s worth of frames
+        let mut seek = 0;
+        let mut all_tokens = vec![];
+        let mut all_text = String::new();
+        let mut total_logprob = 0f64;
+        let mut total_decode_tokens = 0usize;
+        let mut last_no_speech_prob = 0f64;
+
+        while seek < total_frames {
+            let chunk_size = (total_frames - seek).min(max_chunk_frames);
+            let mel_chunk = mel.narrow(2, seek, chunk_size)?;
+
+            // Clamp to encoder's max source positions
+            let mel_chunk = if chunk_size > self.config.max_source_positions {
+                mel_chunk.narrow(2, 0, self.config.max_source_positions)?
+            } else {
+                mel_chunk
+            };
+
+            let dr = self.decode_with_fallback(&mel_chunk)?;
+            last_no_speech_prob = dr.no_speech_prob;
+
+            // Skip silent chunks
+            if dr.no_speech_prob <= m::NO_SPEECH_THRESHOLD || dr.avg_logprob >= m::LOGPROB_THRESHOLD
+            {
+                if !all_text.is_empty() && !dr.text.is_empty() {
+                    all_text.push(' ');
+                }
+                all_text.push_str(&dr.text);
+                all_tokens.extend_from_slice(&dr.tokens);
+                total_logprob += dr.avg_logprob * dr.tokens.len() as f64;
+                total_decode_tokens += dr.tokens.len();
+            }
+
+            seek += chunk_size;
+        }
+
+        let avg_logprob = if total_decode_tokens > 0 {
+            total_logprob / total_decode_tokens as f64
         } else {
-            samples
+            f64::NEG_INFINITY
         };
 
-        let mel = crate::pcm_to_mel(&self.config, samples, &self.mel_filters, &self.device)?;
-
-        // Ensure mel frames don't exceed encoder's max source positions
-        let (_, _, mel_frames) = mel.dims3()?;
-        let mel = if mel_frames > self.config.max_source_positions {
-            mel.narrow(2, 0, self.config.max_source_positions)?
-        } else {
-            mel
-        };
-
-        self.decode_with_fallback(&mel)
+        Ok(DecodingResult {
+            tokens: all_tokens,
+            text: all_text,
+            avg_logprob,
+            no_speech_prob: last_no_speech_prob,
+            temperature: 0.0,
+        })
     }
 
     /// Transcribe and return just the text + tokens (convenience).
@@ -204,15 +245,25 @@ impl WhisperDecoder {
                 break;
             }
 
-            // Detect repetition loops: if the last N tokens are all the same,
-            // the model is hallucinating on silence — bail early.
-            if tokens.len() >= 8 {
-                let last = tokens[tokens.len() - 1];
-                let repeating = tokens[tokens.len() - 8..].iter().all(|&t| t == last);
-                if repeating {
-                    // Trim the repeated tokens
-                    while tokens.last() == Some(&last) {
-                        tokens.pop();
+            // Detect repetition: check if the second half of generated tokens
+            // is a repeat of a pattern from the first half. This catches both
+            // "the the the" and "it's going to do it's going to do" patterns.
+            let sample_begin = if self.language_token.is_some() { 4 } else { 3 };
+            let content = &tokens[sample_begin..];
+            if content.len() >= 20 {
+                // Check if the last 10 tokens match any earlier 10-token window
+                let check_len = 10;
+                let tail = &content[content.len() - check_len..];
+                let search_range = &content[..content.len() - check_len];
+                let has_repeat = search_range.windows(check_len).any(|window| window == tail);
+                if has_repeat {
+                    // Find the first occurrence of this repeated pattern
+                    // and truncate everything after it
+                    if let Some(first_pos) = search_range
+                        .windows(check_len)
+                        .position(|window| window == tail)
+                    {
+                        tokens.truncate(sample_begin + first_pos + check_len);
                     }
                     break;
                 }

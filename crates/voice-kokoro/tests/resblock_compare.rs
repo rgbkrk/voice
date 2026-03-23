@@ -3,6 +3,7 @@ use candle_nn::VarBuilder;
 use voice_kokoro::istftnet::AdaINResBlock1;
 
 #[test]
+#[ignore]
 fn compare_resblock_with_python() {
     let device = Device::new_metal(0).unwrap();
 

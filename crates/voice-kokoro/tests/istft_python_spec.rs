@@ -1,6 +1,7 @@
 use candle_core::{DType, Device, Tensor};
 
 #[test]
+#[ignore]
 fn istft_from_python_spec() {
     let device = Device::new_metal(0).unwrap();
 

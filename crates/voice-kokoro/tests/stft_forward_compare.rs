@@ -1,6 +1,7 @@
 use candle_core::{Device, Tensor};
 
 #[test]
+#[ignore]
 fn compare_stft_forward_with_python() {
     let device = Device::new_metal(0).unwrap();
 

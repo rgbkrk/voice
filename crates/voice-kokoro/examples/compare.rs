@@ -2,7 +2,7 @@ use anyhow::Result;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use hf_hub::api::sync::Api;
-use kokoro_candle::{KModel, ModelConfig};
+use voice_kokoro::{KModel, ModelConfig};
 
 fn main() -> Result<()> {
     let device = Device::new_metal(0)?;

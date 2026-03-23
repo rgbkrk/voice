@@ -209,6 +209,12 @@ pub fn run(config: ServerConfig) {
         mem_stats: config.mem_stats,
     };
 
+    // Cap the Metal buffer cache at 2 GB to prevent unbounded memory growth
+    // across repeated inference calls.
+    if let Err(e) = quill_mlx::metal::set_cache_limit(2 * 1024 * 1024 * 1024) {
+        eprintln!("warning: failed to set Metal cache limit: {e}");
+    }
+
     let mut stdout = io::stdout();
 
     if !QUIET.load(Ordering::Relaxed) {
@@ -562,11 +568,13 @@ struct MemStats {
 }
 
 fn metal_memory_stats() -> MemStats {
-    // Metal memory stats not available with candle backend
+    let active = quill_mlx::metal::get_active_memory().unwrap_or(0);
+    let cache = quill_mlx::metal::get_cache_memory().unwrap_or(0);
+    let peak = quill_mlx::metal::get_peak_memory().unwrap_or(0);
     MemStats {
-        active_mb: 0.0,
-        cache_mb: 0.0,
-        peak_mb: 0.0,
+        active_mb: active as f64 / 1_048_576.0,
+        cache_mb: cache as f64 / 1_048_576.0,
+        peak_mb: peak as f64 / 1_048_576.0,
     }
 }
 

@@ -97,7 +97,7 @@ jobs:
             if cargo publish -p "$crate" --no-verify 2>&1 | tee /tmp/publish.log; then
               echo "✓ $crate published"
             else
-              if grep -q "already uploaded" /tmp/publish.log; then
+              if grep -q -e "already uploaded" -e "already exists" /tmp/publish.log; then
                 echo "✓ $crate already at this version, skipping"
               else
                 echo "::error::Failed to publish $crate"

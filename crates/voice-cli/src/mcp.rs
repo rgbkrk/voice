@@ -157,7 +157,9 @@ struct Session {
 impl Session {
     fn get_voice(&mut self, name: &str) -> Result<&candle_core::Tensor, String> {
         if !self.voice_cache.contains_key(name) {
-            let v = self.model.load_voice(name, Some(&self.repo_id))
+            let v = self
+                .model
+                .load_voice(name, Some(&self.repo_id))
                 .map_err(|e| format!("Failed to load voice '{name}': {e}"))?;
             self.voice_cache.insert(name.to_string(), v);
         }

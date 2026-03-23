@@ -3,7 +3,6 @@ pub mod catalog;
 pub mod config;
 pub mod error;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use candle_core::{DType, Device, IndexOp, Tensor};
@@ -33,8 +32,12 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
     } else {
         let api = Api::new().map_err(|e| VoicersError::Hub(e.to_string()))?;
         let repo = api.model(path_or_repo.to_string());
-        let config = repo.get("config.json").map_err(|e| VoicersError::Hub(e.to_string()))?;
-        let weights = repo.get("kokoro-v1_0.safetensors").map_err(|e| VoicersError::Hub(e.to_string()))?;
+        let config = repo
+            .get("config.json")
+            .map_err(|e| VoicersError::Hub(e.to_string()))?;
+        let weights = repo
+            .get("kokoro-v1_0.safetensors")
+            .map_err(|e| VoicersError::Hub(e.to_string()))?;
         (config, weights)
     };
 
@@ -45,8 +48,8 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
     let vb = VarBuilder::from_buffered_safetensors(weights_data, DType::F32, &device)
         .map_err(|e| VoicersError::Model(e.to_string()))?;
 
-    let model = kokoro_candle::KModel::load(&config, vb)
-        .map_err(|e| VoicersError::Model(e.to_string()))?;
+    let model =
+        kokoro_candle::KModel::load(&config, vb).map_err(|e| VoicersError::Model(e.to_string()))?;
 
     let sample_rate = config.sample_rate;
 
@@ -91,11 +94,14 @@ pub fn load_voice(voice_name: &str, repo_id: Option<&str>, device: &Device) -> R
 fn load_voice_from_bytes(data: &[u8], device: &Device) -> Result<Tensor> {
     let tensors = safetensors::SafeTensors::deserialize(data)
         .map_err(|e| VoicersError::Model(e.to_string()))?;
-    let (_, view) = tensors.iter().next()
+    let (_, view) = tensors
+        .iter()
+        .next()
         .ok_or_else(|| VoicersError::Model("empty voice file".into()))?;
 
     let shape: Vec<usize> = view.shape().to_vec();
-    let f32_data: Vec<f32> = view.data()
+    let f32_data: Vec<f32> = view
+        .data()
         .chunks_exact(4)
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
@@ -134,9 +140,13 @@ pub fn generate(
     // Matches voice (MLX): `ref_s.index(input_ids.len() - 1)`
     // Matches hexgrad KPipeline: `pack[len(ps) - 1]`
     let ref_s = if voice.dims().len() == 3 {
-        let pack_len = voice.dim(0).map_err(|e| VoicersError::Model(e.to_string()))?;
+        let pack_len = voice
+            .dim(0)
+            .map_err(|e| VoicersError::Model(e.to_string()))?;
         let idx = (input_ids.len() - 1).min(pack_len - 1);
-        voice.i(idx).and_then(|t| t.squeeze(0))
+        voice
+            .i(idx)
+            .and_then(|t| t.squeeze(0))
             .map_err(|e| VoicersError::Model(e.to_string()))?
             .unsqueeze(0)
             .map_err(|e| VoicersError::Model(e.to_string()))?
@@ -144,11 +154,13 @@ pub fn generate(
         voice.clone()
     };
 
-    let audio = model.model
+    let audio = model
+        .model
         .forward(&input_ids, &ref_s, speed, &model.device)
         .map_err(|e| VoicersError::Model(e.to_string()))?;
 
-    let samples = audio.to_vec1::<f32>()
+    let samples = audio
+        .to_vec1::<f32>()
         .map_err(|e| VoicersError::Model(e.to_string()))?;
 
     Ok(samples)
@@ -165,10 +177,12 @@ pub fn save_wav(samples: &[f32], path: &Path, sample_rate: u32) -> Result<()> {
     let mut writer = hound::WavWriter::create(path, spec)
         .map_err(|e| VoicersError::Io(std::io::Error::other(e)))?;
     for &sample in samples {
-        writer.write_sample(sample)
+        writer
+            .write_sample(sample)
             .map_err(|e| VoicersError::Io(std::io::Error::other(e)))?;
     }
-    writer.finalize()
+    writer
+        .finalize()
         .map_err(|e| VoicersError::Io(std::io::Error::other(e)))?;
     Ok(())
 }

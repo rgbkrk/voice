@@ -1,7 +1,7 @@
 //! Embedded model config and voice data.
 
 use crate::config::ModelConfig;
-use crate::error::{Result, VoicersError};
+use crate::error::Result;
 
 const BUILTIN_CONFIG_JSON: &str = include_str!("../data/config.json");
 
@@ -14,8 +14,13 @@ const VOICE_AM_ADAM: &[u8] = include_bytes!("../data/voices/am_adam.safetensors"
 const VOICE_BF_EMMA: &[u8] = include_bytes!("../data/voices/bf_emma.safetensors");
 
 pub const BUILTIN_VOICES: &[&str] = &[
-    "af_heart", "af_bella", "af_sarah", "af_sky",
-    "am_michael", "am_adam", "bf_emma",
+    "af_heart",
+    "af_bella",
+    "af_sarah",
+    "af_sky",
+    "am_michael",
+    "am_adam",
+    "bf_emma",
 ];
 
 pub fn builtin_config() -> Result<ModelConfig> {

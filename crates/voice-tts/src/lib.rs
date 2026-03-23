@@ -44,9 +44,10 @@ pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
     let config_str = std::fs::read_to_string(&config_path)?;
     let config: voice_kokoro::ModelConfig = serde_json::from_str(&config_str)?;
 
-    let weights_data = std::fs::read(&weights_path)?;
-    let vb = VarBuilder::from_buffered_safetensors(weights_data, DType::F32, &device)
-        .map_err(|e| VoicersError::Model(e.to_string()))?;
+    let vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)
+            .map_err(|e| VoicersError::Model(e.to_string()))?
+    };
 
     let model =
         voice_kokoro::KModel::load(&config, vb).map_err(|e| VoicersError::Model(e.to_string()))?;

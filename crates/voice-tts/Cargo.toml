@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/rgbkrk/voicers"
 
 [dependencies]
-kokoro-candle = { git = "https://github.com/rgbkrk/kokoro-candle.git" }
+kokoro-candle = { path = "../kokoro-candle" }
 candle-core = { version = "0.9", features = ["metal"] }
 candle-nn = { version = "0.9", features = ["metal"] }
 safetensors = "0.6"

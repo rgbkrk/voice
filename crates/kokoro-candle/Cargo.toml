@@ -1,0 +1,33 @@
+[package]
+name = "kokoro-candle"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+description = "Kokoro-82M TTS on candle with Metal acceleration"
+license = "Apache-2.0"
+repository = "https://github.com/rgbkrk/kokoro-candle"
+
+[dependencies]
+candle-core = { version = "0.9", features = ["metal"] }
+candle-nn = { version = "0.9", features = ["metal"] }
+candle-transformers = { version = "0.9" }
+candle-metal-kernels = "0.9"
+half = { version = "2", features = ["num-traits"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hf-hub = "0.5"
+safetensors = "0.6"
+thiserror = "2"
+
+[dev-dependencies]
+hound = "3"
+anyhow = "1"
+bytemuck = "1"
+
+[[example]]
+name = "generate"
+required-features = ["metal"]
+
+[features]
+default = ["metal"]
+metal = []

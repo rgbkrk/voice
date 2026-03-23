@@ -2002,14 +2002,16 @@ dependencies = [
 [[package]]
 name = "kokoro-candle"
 version = "0.1.0"
-source = "git+https://github.com/rgbkrk/kokoro-candle.git#aa3e149981cb620b864d4d8dc4ab1dec1f98851c"
 dependencies = [
+ "anyhow",
+ "bytemuck",
  "candle-core",
  "candle-metal-kernels",
  "candle-nn",
  "candle-transformers",
  "half",
  "hf-hub",
+ "hound",
  "safetensors 0.6.2",
  "serde",
  "serde_json",

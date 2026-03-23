@@ -149,7 +149,7 @@ struct Session {
     subs: Vec<(String, String)>,
     phoneme_overrides: HashMap<String, String>,
     voice_cache: HashMap<String, candle_core::Tensor>,
-    stt_model: Option<voice_stt::MoonshineModel>,
+    stt_model: Option<voice_stt::WhisperModel>,
     stt_tokenizer: Option<voice_stt::tokenizers::Tokenizer>,
     mem_stats: bool,
 }
@@ -209,11 +209,8 @@ pub fn run(config: ServerConfig) {
         mem_stats: config.mem_stats,
     };
 
-    // Cap the Metal buffer cache at 2 GB to prevent unbounded memory growth
-    // across repeated inference calls.
-    if let Err(e) = quill_mlx::metal::set_cache_limit(2 * 1024 * 1024 * 1024) {
-        eprintln!("warning: failed to set Metal cache limit: {e}");
-    }
+    // Note: Metal memory management is handled by candle's Metal backend.
+    // No explicit cache limit needed — candle manages buffer pools internally.
 
     let mut stdout = io::stdout();
 
@@ -568,13 +565,14 @@ struct MemStats {
 }
 
 fn metal_memory_stats() -> MemStats {
-    let active = quill_mlx::metal::get_active_memory().unwrap_or(0);
-    let cache = quill_mlx::metal::get_cache_memory().unwrap_or(0);
-    let peak = quill_mlx::metal::get_peak_memory().unwrap_or(0);
+    // TODO: candle's Metal backend doesn't expose memory stats yet.
+    // The objc2-metal bindings used by candle don't wrap MTLDevice's
+    // currentAllocatedSize/recommendedMaxWorkingSetSize. We'd need to
+    // call these via raw objc messaging or wait for upstream support.
     MemStats {
-        active_mb: active as f64 / 1_048_576.0,
-        cache_mb: cache as f64 / 1_048_576.0,
-        peak_mb: peak as f64 / 1_048_576.0,
+        active_mb: 0.0,
+        cache_mb: 0.0,
+        peak_mb: 0.0,
     }
 }
 
@@ -638,7 +636,7 @@ fn voice_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
 
     if session.stt_model.is_none() {
         let repo = std::env::var("STT_MODEL")
-            .unwrap_or_else(|_| "UsefulSensors/moonshine-base".to_string());
+            .unwrap_or_else(|_| "distil-whisper/distil-medium.en".to_string());
 
         if !QUIET.load(Ordering::Relaxed) {
             eprintln!("Loading STT model ({repo})...");

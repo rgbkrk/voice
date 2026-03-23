@@ -1,0 +1,18 @@
+[package]
+name = "voice-whisper"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+description = "Whisper STT on candle with Metal acceleration"
+license = "MIT"
+repository = "https://github.com/rgbkrk/voicers"
+
+[dependencies]
+candle-core = { version = "0.9", features = ["metal"] }
+candle-nn = { version = "0.9", features = ["metal"] }
+candle-transformers = "0.9"
+byteorder = "1"
+tokenizers = "0.21"
+thiserror = "2"
+rand = "0.9"
+rand_distr = "0.5"

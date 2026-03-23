@@ -4,8 +4,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum SttError {
-    #[error("MLX error: {0}")]
-    Mlx(#[from] quill_mlx::error::Exception),
+    #[error("Model error: {0}")]
+    Model(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -24,9 +24,6 @@ pub enum SttError {
 
     #[error("Weight error: {0}")]
     Weight(String),
-
-    #[error("Model error: {0}")]
-    Model(String),
 }
 
 pub type Result<T> = std::result::Result<T, SttError>;

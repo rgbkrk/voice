@@ -1078,20 +1078,16 @@ fn trim_silence(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     let trail_padding = (sample_rate as usize) / 10;
 
     // Find first window where RMS exceeds threshold
-    let first_voice = samples
-        .windows(window_size)
-        .position(|w| {
-            let rms = (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt();
-            rms > rms_threshold
-        });
+    let first_voice = samples.windows(window_size).position(|w| {
+        let rms = (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt();
+        rms > rms_threshold
+    });
 
     // Find last window where RMS exceeds threshold
-    let last_voice = samples
-        .windows(window_size)
-        .rposition(|w| {
-            let rms = (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt();
-            rms > rms_threshold
-        });
+    let last_voice = samples.windows(window_size).rposition(|w| {
+        let rms = (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt();
+        rms > rms_threshold
+    });
 
     match (first_voice, last_voice) {
         (Some(start), Some(end)) => {

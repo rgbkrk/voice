@@ -15,7 +15,11 @@ pub fn load_mel_filters(config: &Config) -> Result<Vec<f32>, String> {
     let mel_bytes = match config.num_mel_bins {
         80 => MEL_FILTERS_80,
         128 => MEL_FILTERS_128,
-        n => return Err(format!("unsupported num_mel_bins: {n} (expected 80 or 128)")),
+        n => {
+            return Err(format!(
+                "unsupported num_mel_bins: {n} (expected 80 or 128)"
+            ))
+        }
     };
 
     let mut filters = vec![0f32; mel_bytes.len() / 4];

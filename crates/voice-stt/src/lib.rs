@@ -74,8 +74,7 @@ pub fn load_model(path_or_repo: &str) -> Result<WhisperModel> {
     let config_str = std::fs::read_to_string(&config_path)?;
     let config: voice_whisper::Config = serde_json::from_str(&config_str)?;
 
-    let mel_filters = voice_whisper::load_mel_filters(&config)
-        .map_err(|e| SttError::Model(e))?;
+    let mel_filters = voice_whisper::load_mel_filters(&config).map_err(|e| SttError::Model(e))?;
 
     let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| SttError::Tokenizer(e.to_string()))?;
@@ -91,8 +90,7 @@ pub fn load_model(path_or_repo: &str) -> Result<WhisperModel> {
     // Determine language token for multilingual models
     let language_token = if builtin::is_multilingual(path_or_repo) {
         // Default to English for multilingual models
-        tokenizer
-            .token_to_id("<|en|>")
+        tokenizer.token_to_id("<|en|>")
     } else {
         None
     };
@@ -296,15 +294,9 @@ fn resample_sinc(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f3
     let ratio = to_rate as f64 / from_rate as f64;
     let chunk_size = samples.len();
 
-    let mut resampler = Async::<f64>::new_sinc(
-        ratio,
-        1.1,
-        &params,
-        chunk_size,
-        1,
-        FixedAsync::Input,
-    )
-    .map_err(|e| SttError::Audio(format!("Resampler init failed: {e}")))?;
+    let mut resampler =
+        Async::<f64>::new_sinc(ratio, 1.1, &params, chunk_size, 1, FixedAsync::Input)
+            .map_err(|e| SttError::Audio(format!("Resampler init failed: {e}")))?;
 
     let input_f64: Vec<f64> = samples.iter().map(|&s| s as f64).collect();
     let num_input_frames = input_f64.len();

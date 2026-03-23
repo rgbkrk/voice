@@ -144,7 +144,10 @@ impl WhisperDecoder {
         for i in 0..sample_len {
             let tokens_t = Tensor::new(tokens.as_slice(), mel.device())?;
             let tokens_t = tokens_t.unsqueeze(0)?;
-            let ys = self.model.decoder.forward(&tokens_t, &audio_features, i == 0)?;
+            let ys = self
+                .model
+                .decoder
+                .forward(&tokens_t, &audio_features, i == 0)?;
 
             // Extract no-speech probability on first iteration
             if i == 0 {

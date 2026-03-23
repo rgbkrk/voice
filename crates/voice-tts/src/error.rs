@@ -1,18 +1,10 @@
-use quill_mlx::error::Exception;
-
 #[derive(Debug, thiserror::Error)]
 pub enum VoicersError {
-    #[error("MLX error: {0}")]
-    Mlx(#[from] Exception),
+    #[error("Model error: {0}")]
+    Model(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("Config error: {0}")]
-    Config(String),
-
-    #[error("Weight error: {0}")]
-    Weight(String),
 
     #[error("Hub error: {0}")]
     Hub(String),

@@ -172,7 +172,7 @@ struct ListenParams {
 
 struct Session {
     model: voice_tts::KokoroModel,
-    voice: voice_tts::Array,
+    voice: candle_core::Tensor,
     voice_name: String,
     speed: f32,
     sample_rate: u32,
@@ -180,7 +180,7 @@ struct Session {
     subs: Vec<(String, String)>,
     phoneme_overrides: HashMap<String, String>,
     /// Cache of loaded voices so we don't re-load on every `speak`.
-    voice_cache: HashMap<String, voice_tts::Array>,
+    voice_cache: HashMap<String, candle_core::Tensor>,
     /// Lazily-loaded STT model (only initialized on first `listen` call).
     stt_model: Option<voice_stt::MoonshineModel>,
     /// Lazily-loaded STT tokenizer.
@@ -188,9 +188,11 @@ struct Session {
 }
 
 impl Session {
-    fn get_voice(&mut self, name: &str) -> Result<&voice_tts::Array, String> {
+    fn get_voice(&mut self, name: &str) -> Result<&candle_core::Tensor, String> {
         if !self.voice_cache.contains_key(name) {
-            let v = voice_tts::load_voice(name, Some(&self.repo_id))
+            let v = self
+                .model
+                .load_voice(name, Some(&self.repo_id))
                 .map_err(|e| format!("Failed to load voice '{name}': {e}"))?;
             self.voice_cache.insert(name.to_string(), v);
         }
@@ -204,7 +206,7 @@ impl Session {
 /// passing too many positional arguments.
 pub struct ServerConfig {
     pub model: voice_tts::KokoroModel,
-    pub voice: voice_tts::Array,
+    pub voice: candle_core::Tensor,
     pub voice_name: String,
     pub speed: f32,
     pub sample_rate: u32,
@@ -497,7 +499,7 @@ fn handle_speak(
     let speed = p.speed.unwrap_or(session.speed);
 
     // Determine which voice to use
-    let voice_ref: *const voice_tts::Array = if let Some(ref name) = p.voice {
+    let voice_ref: *const candle_core::Tensor = if let Some(ref name) = p.voice {
         session.get_voice(name).map_err(RpcErr::invalid_params)? as *const _
     } else {
         &session.voice as *const _
@@ -595,7 +597,7 @@ fn handle_list_voices() -> Result<Value, RpcErr> {
 fn stream_chunks(
     session: &mut Session,
     stdout: &mut io::Stdout,
-    voice: &voice_tts::Array,
+    voice: &candle_core::Tensor,
     chunks: &[String],
     speed: f32,
     progress: bool,
@@ -633,8 +635,7 @@ fn stream_chunks(
         }
         match voice_tts::generate(&mut session.model, phonemes, voice, speed) {
             Ok(audio) => {
-                let samples: Vec<f32> = audio.as_slice().to_vec();
-                let source = SamplesBuffer::new(channels, rate, samples);
+                let source = SamplesBuffer::new(channels, rate, audio);
                 player.append(source);
             }
             Err(e) => {

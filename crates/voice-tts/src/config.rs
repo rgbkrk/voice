@@ -1,8 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-pub use voice_nn::albert::AlbertConfig;
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelConfig {
     pub istftnet: ISTFTNetConfig,
@@ -17,7 +15,7 @@ pub struct ModelConfig {
     pub n_token: i32,
     pub style_dim: i32,
     pub text_encoder_kernel_size: i32,
-    pub plbert: AlbertConfig,
+    pub plbert: serde_json::Value,
     pub vocab: HashMap<String, i32>,
     #[serde(default = "default_sample_rate")]
     pub sample_rate: i32,

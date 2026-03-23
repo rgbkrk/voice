@@ -600,9 +600,9 @@ fn main() {
 }
 
 fn run_serve(serve_args: ServeArgs) {
-    let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
+    let model = load_tts_model(std::thread::spawn(|| voice_tts::load_model(MODEL_REPO)));
 
-    let voice = match voice_tts::load_voice(&serve_args.voice, Some(MODEL_REPO)) {
+    let voice = match model.load_voice(&serve_args.voice, Some(MODEL_REPO)) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Failed to load voice '{}': {e}", serve_args.voice);
@@ -610,8 +610,7 @@ fn run_serve(serve_args: ServeArgs) {
         }
     };
 
-    let model = load_tts_model(model_handle);
-    let sample_rate = model.sample_rate as u32;
+    let sample_rate = model.sample_rate;
     let sub_file = serve_args.sub_file.clone().or_else(find_sub_file);
 
     jsonrpc::run(jsonrpc::ServerConfig {
@@ -627,9 +626,9 @@ fn run_serve(serve_args: ServeArgs) {
 }
 
 fn run_mcp(serve_args: ServeArgs) {
-    let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
+    let model = load_tts_model(std::thread::spawn(|| voice_tts::load_model(MODEL_REPO)));
 
-    let voice = match voice_tts::load_voice(&serve_args.voice, Some(MODEL_REPO)) {
+    let voice = match model.load_voice(&serve_args.voice, Some(MODEL_REPO)) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Failed to load voice '{}': {e}", serve_args.voice);
@@ -637,8 +636,7 @@ fn run_mcp(serve_args: ServeArgs) {
         }
     };
 
-    let model = load_tts_model(model_handle);
-    let sample_rate = model.sample_rate as u32;
+    let sample_rate = model.sample_rate;
     let sub_file = serve_args.sub_file.clone().or_else(find_sub_file);
 
     mcp::run(mcp::ServerConfig {
@@ -708,8 +706,12 @@ fn run_say(say_args: SayArgs) {
         }
     };
 
+    let mut model = load_tts_model(model_handle);
+    let sample_rate = model.sample_rate;
+
     // Load voice (fast for builtins — embedded in binary, ~5ms).
-    let voice = match voice_tts::load_voice(&say_args.voice, Some(MODEL_REPO)) {
+    // Must happen after model is loaded so we can share its Metal device.
+    let voice = match model.load_voice(&say_args.voice, Some(MODEL_REPO)) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Failed to load voice '{}': {e}", say_args.voice);
@@ -718,9 +720,6 @@ fn run_say(say_args: SayArgs) {
             std::process::exit(1);
         }
     };
-
-    let mut model = load_tts_model(model_handle);
-    let sample_rate = model.sample_rate as u32;
 
     if let Some(output_path) = &say_args.output {
         generate_to_file(
@@ -785,16 +784,16 @@ fn run_converse(args: ConverseArgs) {
         }
     };
 
-    let voice = match voice_tts::load_voice(&args.voice, Some(MODEL_REPO)) {
+    let mut model = load_tts_model(model_handle);
+    let sample_rate = model.sample_rate;
+
+    let voice = match model.load_voice(&args.voice, Some(MODEL_REPO)) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Failed to load voice '{}': {e}", args.voice);
             std::process::exit(1);
         }
     };
-
-    let mut model = load_tts_model(model_handle);
-    let sample_rate = model.sample_rate as u32;
 
     stream_playback(&mut model, &voice, &phoneme_chunks, args.speed, sample_rate);
 
@@ -845,7 +844,7 @@ fn load_tts_model(
 /// Batch-generate all chunks and write a single WAV file.
 fn generate_to_file(
     model: &mut voice_tts::KokoroModel,
-    voice: &voice_tts::Array,
+    voice: &candle_core::Tensor,
     chunks: &[String],
     speed: f32,
     sample_rate: u32,
@@ -866,7 +865,7 @@ fn generate_to_file(
         }
         match voice_tts::generate(model, phonemes, voice, speed) {
             Ok(audio) => {
-                all_samples.extend_from_slice(audio.as_slice());
+                all_samples.extend_from_slice(&audio);
             }
             Err(e) => {
                 eprintln!("Failed to generate audio for chunk {}: {e}", i + 1);
@@ -900,7 +899,7 @@ fn generate_to_file(
 /// playing while subsequent chunks are still being generated.
 fn stream_playback(
     model: &mut voice_tts::KokoroModel,
-    voice: &voice_tts::Array,
+    voice: &candle_core::Tensor,
     chunks: &[String],
     speed: f32,
     sample_rate: u32,
@@ -927,8 +926,7 @@ fn stream_playback(
         }
         match voice_tts::generate(model, phonemes, voice, speed) {
             Ok(audio) => {
-                let samples: Vec<f32> = audio.as_slice().to_vec();
-                let source = SamplesBuffer::new(channels, rate, samples);
+                let source = SamplesBuffer::new(channels, rate, audio);
                 player.append(source);
             }
             Err(e) => {

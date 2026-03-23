@@ -197,26 +197,24 @@ impl SineGen {
         //         phase = F.interpolate(phase.T * upsample_scale, scale_factor=upsample_scale, mode="linear").T
 
         // Transpose to [B, dim, T] for interpolation along T axis
-        let rv_bdt = rad_values.transpose(1, 2)?; // [B, dim, T]
+        let rv_bdt = rad_values.transpose(1, 2)?.contiguous()?; // [B, dim, T]
 
-        // Downsample by 1/upsample_scale using exact scale_factor
+        // Downsample by 1/upsample_scale (CPU linear interpolation — Metal lacks interpolate1d)
         let down_scale = 1.0 / self.upsample_scale as f64;
-        let rv_down = linear_interpolate_1d_scale(&rv_bdt.contiguous()?, down_scale)?; // [B, dim, T_down]
+        let rv_down = linear_interpolate_1d_scale(&rv_bdt, down_scale)?; // [B, dim, T_down]
 
-        // Transpose back to [B, T_down, dim] for cumsum along dim 1
+        // Cumsum at reduced resolution — GPU matmul-based
         let rv_down_btd = rv_down.transpose(1, 2)?; // [B, T_down, dim]
+        let phase_down = rv_down_btd.cumsum(1)?;
 
-        // Cumsum at reduced resolution
-        let phase_down = rv_down_btd.cumsum(1)?; // GPU matmul-based cumsum
-
-        // Transpose to [B, dim, T_down], multiply by upsample_scale, upsample back
-        let phase_bdt = phase_down.transpose(1, 2)?; // [B, dim, T_down]
+        // Upsample back, multiply by upsample_scale (CPU linear interpolation)
+        let phase_bdt = phase_down.transpose(1, 2)?.contiguous()?; // [B, dim, T_down]
         let scale_t = Tensor::new(self.upsample_scale as f32, device)?.to_dtype(f0.dtype())?;
         let phase_scaled = phase_bdt.broadcast_mul(&scale_t)?;
         let up_scale = self.upsample_scale as f64;
-        let phase_up = linear_interpolate_1d_scale(&phase_scaled.contiguous()?, up_scale)?; // [B, dim, T]
+        let phase_up = linear_interpolate_1d_scale(&phase_scaled.contiguous()?, up_scale)?;
 
-        // Transpose back to [B, T, dim] and multiply by 2*pi
+        // Transpose back to [B, T, dim]
         let phase = phase_up.transpose(1, 2)?; // [B, T, dim]
         let two_pi = Tensor::new(2.0f32 * std::f32::consts::PI, device)?.to_dtype(f0.dtype())?;
         let phase = phase.broadcast_mul(&two_pi)?;
@@ -405,12 +403,8 @@ impl TorchSTFT {
         let (_b, _freq, num_frames) = magnitude.dims3()?;
 
         // Phase unwrapping along time axis (axis 2) — matches mlx-audio behavior.
-        // This removes 2π discontinuities for smoother spectral reconstruction.
-        // We immediately reduce the result modulo 2π to avoid precision loss in cos/sin
-        // for large accumulated phase values.
-        let phase = phase_unwrap_mod2pi(phase, 2)?;
-
-        // Reconstruct complex spectrum: real + imag
+        // Reconstruct complex spectrum: real = mag*cos(phase), imag = mag*sin(phase)
+        // No phase unwrapping needed — cos/sin are 2π-periodic.
         let real: Tensor = (magnitude * phase.cos()?)?;
         let imag: Tensor = (magnitude * phase.sin()?)?;
 

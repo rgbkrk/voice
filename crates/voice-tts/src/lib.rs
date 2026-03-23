@@ -129,13 +129,13 @@ pub fn generate(
         return Err(VoicersError::Model("no valid tokens from phonemes".into()));
     }
 
-    // Select the right voice embedding from the pack based on phoneme length.
-    // Voice packs have shape [N, 1, 256] where index = phoneme_string_length - 1.
-    // The KPipeline uses: pack[len(ps) - 1]
+    // Select the right voice embedding from the pack based on token count.
+    // Voice packs have shape [N, 1, 256] where index = token_count - 1.
+    // Matches voice (MLX): `ref_s.index(input_ids.len() - 1)`
+    // Matches hexgrad KPipeline: `pack[len(ps) - 1]`
     let ref_s = if voice.dims().len() == 3 {
-        // Voice pack [N, 1, 256] — select by phoneme length
         let pack_len = voice.dim(0).map_err(|e| VoicersError::Model(e.to_string()))?;
-        let idx = (phonemes.len() - 1).min(pack_len - 1);
+        let idx = (input_ids.len() - 1).min(pack_len - 1);
         voice.i(idx).and_then(|t| t.squeeze(0))
             .map_err(|e| VoicersError::Model(e.to_string()))?
             .unsqueeze(0)

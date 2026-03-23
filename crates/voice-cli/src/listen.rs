@@ -478,7 +478,7 @@ pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
         );
     }
 
-    // Play ding first, then start mic (avoids audio routing conflicts on macOS)
+    // Play ding before mic so user hears the "ready" signal
     play_ding();
 
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
@@ -545,9 +545,9 @@ pub fn record_with_vad(
         );
     }
 
-    // Play ding FIRST as the "get ready" signal, then start the mic.
-    // Playing audio while the mic stream is active can cause issues on
-    // macOS (especially with Bluetooth audio routing).
+    // Play ding BEFORE opening mic so the user hears the "ready" signal.
+    // There's a small gap (~50ms) between ding ending and mic starting
+    // to capture, but the silence trimmer's 500ms lead padding compensates.
     play_ding();
 
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
@@ -600,11 +600,9 @@ pub fn record_with_vad(
         silence_threshold
     };
 
-    // Discard calibration audio so it doesn't pollute the recording.
-    {
-        let mut guard = buffer.lock().unwrap();
-        guard.clear();
-    }
+    // Keep calibration audio in the buffer — trim_silence will strip
+    // the leading silence later. Clearing the buffer here causes speech
+    // loss when the user starts speaking during or right after calibration.
 
     // VAD state machine
     let mut speech_started = false;
@@ -694,7 +692,7 @@ pub fn record_continuous(
         );
     }
 
-    // Play ding first, then start mic (avoids audio routing conflicts on macOS)
+    // Play ding before mic so user hears the "ready" signal
     play_ding();
 
     let segment_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
@@ -756,19 +754,11 @@ pub fn record_continuous(
                 );
             }
 
-            // Clear calibration audio
-            {
-                let mut guard = segment_buffer.lock().unwrap();
-                guard.clear();
-            }
+            // Don't clear — trim_silence handles leading silence.
+            // Clearing here loses speech if user starts during calibration.
 
             threshold
         } else {
-            // Clear any initial audio
-            {
-                let mut guard = segment_buffer.lock().unwrap();
-                guard.clear();
-            }
             silence_threshold
         };
 

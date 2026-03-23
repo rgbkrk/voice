@@ -74,7 +74,7 @@ pub fn load_model(path_or_repo: &str) -> Result<WhisperModel> {
     let config_str = std::fs::read_to_string(&config_path)?;
     let config: voice_whisper::Config = serde_json::from_str(&config_str)?;
 
-    let mel_filters = voice_whisper::load_mel_filters(&config).map_err(|e| SttError::Model(e))?;
+    let mel_filters = voice_whisper::load_mel_filters(&config).map_err(SttError::Model)?;
 
     let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| SttError::Tokenizer(e.to_string()))?;

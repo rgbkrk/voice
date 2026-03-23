@@ -14,5 +14,5 @@ pub fn is_multilingual(repo_id: &str) -> bool {
         "openai/whisper-medium.en",
         "distil-whisper/distil-medium.en",
     ];
-    !en_only.iter().any(|&r| repo_id == r)
+    !en_only.contains(&repo_id)
 }

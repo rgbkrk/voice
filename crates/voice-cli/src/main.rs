@@ -705,12 +705,11 @@ fn run_converse(args: ConverseArgs) {
     }
 
     // STT should be loaded by now (TTS playback took seconds)
-    let (mut stt_model, tokenizer) = stt_handle.join().expect("STT load panicked");
+    let mut stt_model = stt_handle.join().expect("STT load panicked");
 
     // Listen for response (VAD auto-stop — no Enter key needed)
     if let Some(result) = listen::listen_and_transcribe_vad(
         &mut stt_model,
-        &tokenizer,
         15_000, // max_duration_ms
         1_500,  // silence_timeout_ms
         0.01,   // silence_threshold

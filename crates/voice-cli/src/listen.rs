@@ -858,7 +858,6 @@ pub fn record_continuous(
 /// thread-safe, so single-threaded access is correct.
 pub fn transcribe_segments(
     mut model: voice_stt::WhisperModel,
-    tokenizer: voice_stt::tokenizers::Tokenizer,
     segments: mpsc::Receiver<Segment>,
 ) -> mpsc::Receiver<SegmentResult> {
     let (tx, rx) = mpsc::channel::<SegmentResult>();
@@ -875,12 +874,7 @@ pub fn transcribe_segments(
             }
 
             let t0 = Instant::now();
-            let result = voice_stt::transcribe_audio_with_tokenizer(
-                &mut model,
-                &trimmed,
-                segment.sample_rate,
-                &tokenizer,
-            );
+            let result = voice_stt::transcribe_audio(&mut model, &trimmed, segment.sample_rate);
 
             let transcribe_ms = t0.elapsed().as_millis() as u64;
 
@@ -915,7 +909,7 @@ pub fn transcribe_segments(
 ///
 /// Entry point for `voice listen --continuous`.
 pub fn listen_continuous() {
-    let (model, tokenizer) = load_stt();
+    let model = load_stt();
 
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("Listening continuously... (Ctrl+C to stop)\n");
@@ -937,7 +931,7 @@ pub fn listen_continuous() {
         }
     };
 
-    let results_rx = transcribe_segments(model, tokenizer, segments_rx);
+    let results_rx = transcribe_segments(model, segments_rx);
 
     let start = Instant::now();
     let mut total_segments = 0u64;
@@ -967,7 +961,6 @@ pub fn listen_continuous() {
 #[allow(dead_code)]
 pub fn listen_continuous_for_rpc(
     model: voice_stt::WhisperModel,
-    tokenizer: voice_stt::tokenizers::Tokenizer,
     silence_timeout_ms: u64,
     max_duration_ms: u64,
     noise_multiplier: f32,
@@ -983,7 +976,7 @@ pub fn listen_continuous_for_rpc(
         calibration_ms,
     )?;
 
-    Ok(transcribe_segments(model, tokenizer, segments_rx))
+    Ok(transcribe_segments(model, segments_rx))
 }
 
 // ── Audio processing ───────────────────────────────────────────────────
@@ -1099,8 +1092,10 @@ fn stt_model_repo() -> String {
     std::env::var("STT_MODEL").unwrap_or_else(|_| DEFAULT_STT_MODEL.to_string())
 }
 
-/// Load STT model and tokenizer. Prints progress to stderr unless quiet.
-pub fn load_stt() -> (voice_stt::WhisperModel, voice_stt::tokenizers::Tokenizer) {
+/// Load STT model. Prints progress to stderr unless quiet.
+///
+/// The tokenizer is loaded internally by the model — no separate load needed.
+pub fn load_stt() -> voice_stt::WhisperModel {
     let repo = stt_model_repo();
 
     if !QUIET.load(Ordering::Relaxed) {
@@ -1116,25 +1111,16 @@ pub fn load_stt() -> (voice_stt::WhisperModel, voice_stt::tokenizers::Tokenizer)
         }
     };
 
-    let tokenizer = match voice_stt::load_tokenizer(&repo) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Failed to load tokenizer: {e}");
-            std::process::exit(1);
-        }
-    };
-
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("Model loaded. Ready to listen.\n");
     }
 
-    (model, tokenizer)
+    model
 }
 
 /// Run transcription on recorded audio with silence trimming.
 fn transcribe_samples(
     model: &mut voice_stt::WhisperModel,
-    tokenizer: &voice_stt::tokenizers::Tokenizer,
     samples: &[f32],
     sample_rate: u32,
 ) -> Option<voice_stt::TranscribeResult> {
@@ -1160,7 +1146,7 @@ fn transcribe_samples(
         eprintln!("Transcribing {:.1}s of audio...", trimmed_duration);
     }
 
-    match voice_stt::transcribe_audio_with_tokenizer(model, &trimmed, sample_rate, tokenizer) {
+    match voice_stt::transcribe_audio(model, &trimmed, sample_rate) {
         Ok(r) => Some(r),
         Err(e) => {
             eprintln!("Transcription failed: {e}");
@@ -1175,7 +1161,7 @@ fn transcribe_samples(
 ///
 /// Entry point for `voice listen`.
 pub fn listen_and_transcribe() {
-    let (mut model, tokenizer) = load_stt();
+    let mut model = load_stt();
 
     let (samples, sample_rate) = match record_until_interrupt() {
         Ok(r) => r,
@@ -1193,7 +1179,7 @@ pub fn listen_and_transcribe() {
     // Reset interrupt so the process exits cleanly
     INTERRUPTED.store(false, Ordering::Relaxed);
 
-    if let Some(result) = transcribe_samples(&mut model, &tokenizer, &samples, sample_rate) {
+    if let Some(result) = transcribe_samples(&mut model, &samples, sample_rate) {
         println!("{}", result.text);
         if !QUIET.load(Ordering::Relaxed) {
             let _ = io::stderr().flush();
@@ -1208,7 +1194,6 @@ pub fn listen_and_transcribe() {
 /// was detected or transcription failed.
 pub fn listen_and_transcribe_vad(
     model: &mut voice_stt::WhisperModel,
-    tokenizer: &voice_stt::tokenizers::Tokenizer,
     max_duration_ms: u64,
     silence_timeout_ms: u64,
     silence_threshold: f32,
@@ -1233,14 +1218,14 @@ pub fn listen_and_transcribe_vad(
         return None;
     }
 
-    transcribe_samples(model, tokenizer, &samples, sample_rate)
+    transcribe_samples(model, &samples, sample_rate)
 }
 
 /// Transcribe a WAV file and print the result.
 ///
 /// Entry point for `voice --transcribe <file>`.
 pub fn transcribe_file(path: &Path) {
-    let (mut model, tokenizer) = load_stt();
+    let mut model = load_stt();
 
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("Transcribing: {}", path.display());
@@ -1293,12 +1278,7 @@ pub fn transcribe_file(path: &Path) {
         );
     }
 
-    let result = match voice_stt::transcribe_audio_with_tokenizer(
-        &mut model,
-        &mono,
-        sample_rate,
-        &tokenizer,
-    ) {
+    let result = match voice_stt::transcribe_audio(&mut model, &mono, sample_rate) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Transcription failed: {e}");

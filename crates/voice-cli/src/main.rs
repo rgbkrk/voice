@@ -698,6 +698,11 @@ fn run_converse(args: ConverseArgs) {
     // Start loading STT model in background while TTS plays
     let stt_handle = std::thread::spawn(listen::load_stt);
 
+    // Open mic early so Bluetooth HFP codec switch + warmup happen during
+    // TTS playback instead of after. By the time TTS finishes, the mic is
+    // producing real samples and we can start listening immediately.
+    let warm_mic = listen::WarmMic::open().ok();
+
     stream_playback(&mut model, &voice, &phoneme_chunks, args.speed, sample_rate);
 
     if interrupted() {
@@ -707,15 +712,22 @@ fn run_converse(args: ConverseArgs) {
     // STT should be loaded by now (TTS playback took seconds)
     let mut stt_model = stt_handle.join().expect("STT load panicked");
 
-    // Listen for response (VAD auto-stop — no Enter key needed)
-    if let Some(result) = listen::listen_and_transcribe_vad(
-        &mut stt_model,
-        15_000, // max_duration_ms
-        1_500,  // silence_timeout_ms
-        0.01,   // silence_threshold
-        3.0,    // noise_multiplier
-        300,    // calibration_ms
-    ) {
+    // Listen for response using warm mic if available, cold mic otherwise
+    let result = if let Some(mic) = warm_mic {
+        listen::listen_and_transcribe_vad_warm(
+            &mut stt_model,
+            mic,
+            15_000, // max_duration_ms
+            1_500,  // silence_timeout_ms
+            0.01,   // silence_threshold
+            3.0,    // noise_multiplier
+            300,    // calibration_ms
+        )
+    } else {
+        listen::listen_and_transcribe_vad(&mut stt_model, 15_000, 1_500, 0.01, 3.0, 300)
+    };
+
+    if let Some(result) = result {
         println!("{}", result.text);
         if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = std::io::stderr().flush();

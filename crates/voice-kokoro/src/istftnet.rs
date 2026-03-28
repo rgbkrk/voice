@@ -334,11 +334,7 @@ impl TorchSTFT {
         for k in 0..n_bins {
             for n in 0..n_fft {
                 let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
-                let w = if n < win_length {
-                    window[n] as f64
-                } else {
-                    0.0
-                };
+                let w = window.get(n).copied().unwrap_or(0.0) as f64;
                 fwd_cos.push((angle.cos() * w) as f32);
                 fwd_sin.push((-angle.sin() * w) as f32);
             }
@@ -361,11 +357,7 @@ impl TorchSTFT {
                 2.0 / n_fft as f64
             };
             for n in 0..n_fft {
-                let w = if n < win_length {
-                    window[n] as f64
-                } else {
-                    0.0
-                };
+                let w = window.get(n).copied().unwrap_or(0.0) as f64;
                 let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
                 inv_cos.push((scale * w * angle.cos()) as f32);
                 inv_sin.push((scale * w * angle.sin()) as f32);

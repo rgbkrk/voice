@@ -1,7 +1,7 @@
 //! Embedded model config and voice data.
 
-use voice_kokoro::ModelConfig;
 use crate::error::Result;
+use voice_kokoro::ModelConfig;
 
 const BUILTIN_CONFIG_JSON: &str = include_str!("../data/config.json");
 

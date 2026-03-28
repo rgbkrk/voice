@@ -129,13 +129,7 @@ async fn main() {
             .iter()
             .any(|w| lower.contains(w))
         {
-            speak(
-                &mut tts_model,
-                &voice,
-                "Goodbye!",
-                args.speed,
-                sample_rate,
-            );
+            speak(&mut tts_model, &voice, "Goodbye!", args.speed, sample_rate);
             break;
         }
 
@@ -203,7 +197,15 @@ async fn main() {
             if has_sentence_end(&sentence_buf) {
                 let text = prepare_for_tts(&sentence_buf);
                 if !text.trim().is_empty() {
-                    generate_and_queue(&mut tts_model, &voice, &text, args.speed, &player, channels, rate);
+                    generate_and_queue(
+                        &mut tts_model,
+                        &voice,
+                        &text,
+                        args.speed,
+                        &player,
+                        channels,
+                        rate,
+                    );
                 }
                 sentence_buf.clear();
             }
@@ -213,7 +215,15 @@ async fn main() {
         if !sentence_buf.trim().is_empty() {
             let text = prepare_for_tts(&sentence_buf);
             if !text.trim().is_empty() {
-                generate_and_queue(&mut tts_model, &voice, &text, args.speed, &player, channels, rate);
+                generate_and_queue(
+                    &mut tts_model,
+                    &voice,
+                    &text,
+                    args.speed,
+                    &player,
+                    channels,
+                    rate,
+                );
             }
         }
 

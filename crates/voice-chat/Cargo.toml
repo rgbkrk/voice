@@ -1,0 +1,22 @@
+[package]
+name = "voice-chat"
+version = "0.1.0"
+edition = "2021"
+description = "Audio chat with local LLMs via ollama — speak, listen, repeat"
+
+[[bin]]
+name = "voice-chat"
+path = "src/main.rs"
+
+[dependencies]
+voice-tts = { path = "../voice-tts" }
+voice-stt = { path = "../voice-stt" }
+voice-g2p = { path = "../voice-g2p" }
+candle-core = { version = "0.9", features = ["metal"] }
+rodio = { version = "0.22", features = ["experimental"] }
+pulldown-cmark = "0.13.1"
+ollama-rs = { version = "0.3", features = ["stream"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+clap = { version = "4", features = ["derive"] }
+ctrlc = "3.5"

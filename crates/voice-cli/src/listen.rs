@@ -147,7 +147,7 @@ pub fn set_stop_sound(sound: Option<CachedSound>) {
 ///
 /// Returns an error if the audio output device cannot be opened.
 pub fn play_cached_sound(sound: &CachedSound) -> Result<(), String> {
-    play_on_all_devices(sound.samples.clone(), sound.sample_rate, sound.channels);
+    play_sound(&sound.samples, sound.sample_rate, sound.channels);
     Ok(())
 }
 
@@ -176,40 +176,37 @@ pub struct SegmentResult {
 // ── Ding sound ─────────────────────────────────────────────────────────
 
 /// Generate the default ding samples: short 880Hz sine with exponential decay.
+/// Stereo (both ears) with a short silence tail to prevent clipping.
 fn synth_ding_samples() -> (Vec<f32>, u32, u16) {
     let sample_rate = 44100u32;
-    let duration_ms = 100;
+    let duration_ms = 120;
+    let tail_ms = 20; // silence tail so the player doesn't cut the last samples
     let decay = 0.03f32;
     let volume = 0.20f32;
     let num_samples = sample_rate as usize * duration_ms / 1000;
+    let tail_samples = sample_rate as usize * tail_ms / 1000;
 
-    let mut samples = Vec::with_capacity(num_samples);
+    // Stereo: L R L R ...
+    let mut samples = Vec::with_capacity((num_samples + tail_samples) * 2);
     for i in 0..num_samples {
         let t = i as f32 / sample_rate as f32;
         let envelope = (-t / decay).exp() * volume;
-        let sample = (2.0 * std::f32::consts::PI * 880.0 * t).sin() * envelope;
-        samples.push(sample);
+        let s = (2.0 * std::f32::consts::PI * 880.0 * t).sin() * envelope;
+        samples.push(s); // L
+        samples.push(s); // R
     }
-    (samples, sample_rate, 1)
+    // Silence tail
+    samples.extend(std::iter::repeat_n(0.0f32, tail_samples * 2));
+    (samples, sample_rate, 2)
 }
 
-/// Play a sound on a specific output device. Returns when playback finishes.
-fn play_on_device(
-    output: rodio::speakers::Output,
-    samples: Vec<f32>,
-    sample_rate: u32,
-    channels: u16,
-) {
-    let mixer = rodio::speakers::SpeakersBuilder::new()
-        .device(output)
-        .and_then(|b| b.default_config())
-        .map(|b| b.open_mixer());
-
-    let Ok(Ok(mut sink)) = mixer else {
+/// Play a sound on the default output device. Blocks until playback finishes.
+fn play_sound(samples: &[f32], sample_rate: u32, channels: u16) {
+    let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
         return;
     };
-    sink.log_on_drop(false);
-    let player = Player::connect_new(sink.mixer());
+    stream.log_on_drop(false);
+    let player = Player::connect_new(stream.mixer());
 
     let Some(ch) = NonZero::new(channels) else {
         return;
@@ -217,74 +214,33 @@ fn play_on_device(
     let Some(rate) = NonZero::new(sample_rate) else {
         return;
     };
-    let source = SamplesBuffer::new(ch, rate, samples);
-    player.append(source);
+    player.append(SamplesBuffer::new(ch, rate, samples.to_vec()));
 
     while !player.empty() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
 
-/// Play a notification sound on ALL available output devices simultaneously.
-///
-/// This ensures Bluetooth headphones, built-in speakers, and any other
-/// audio outputs all play the ding — the user hears it regardless of
-/// which device macOS considers "default" at the moment.
-fn play_on_all_devices(samples: Vec<f32>, sample_rate: u32, channels: u16) {
-    let outputs = match rodio::speakers::available_outputs() {
-        Ok(o) if !o.is_empty() => o,
-        _ => {
-            // Fallback to default sink
-            let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
-                return;
-            };
-            stream.log_on_drop(false);
-            let player = Player::connect_new(stream.mixer());
-            let Some(ch) = NonZero::new(channels) else {
-                return;
-            };
-            let Some(rate) = NonZero::new(sample_rate) else {
-                return;
-            };
-            player.append(SamplesBuffer::new(ch, rate, samples));
-            while !player.empty() {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            return;
-        }
-    };
+/// Cached default ding samples (synthesized once).
+static DEFAULT_DING: std::sync::OnceLock<(Vec<f32>, u32, u16)> = std::sync::OnceLock::new();
 
-    // Play on all devices in parallel
-    let handles: Vec<_> = outputs
-        .into_iter()
-        .map(|output| {
-            let samples = samples.clone();
-            std::thread::spawn(move || {
-                play_on_device(output, samples, sample_rate, channels);
-            })
-        })
-        .collect();
-
-    for handle in handles {
-        let _ = handle.join();
-    }
-}
+/// Cached default dong samples (synthesized once).
+static DEFAULT_DONG: std::sync::OnceLock<(Vec<f32>, u32, u16)> = std::sync::OnceLock::new();
 
 /// Play a short pleasant ding to signal that recording has started.
 ///
-/// Plays on ALL output devices simultaneously so the user hears it
-/// regardless of Bluetooth routing state. Uses custom start sound if
-/// configured, otherwise synthesizes an 880Hz sine ding.
+/// Uses custom start sound if configured, otherwise plays a cached 880Hz sine ding.
 fn play_ding() {
     let config = sound_config().lock().unwrap();
-    let (samples, sample_rate, channels) = if let Some(sound) = &config.start_sound {
-        (sound.samples.clone(), sound.sample_rate, sound.channels)
+    if let Some(sound) = &config.start_sound {
+        let (samples, rate, ch) = (sound.samples.clone(), sound.sample_rate, sound.channels);
+        drop(config);
+        play_sound(&samples, rate, ch);
     } else {
-        synth_ding_samples()
-    };
-    drop(config); // Release lock before playing
-
-    play_on_all_devices(samples, sample_rate, channels);
+        drop(config);
+        let (samples, rate, ch) = DEFAULT_DING.get_or_init(synth_ding_samples);
+        play_sound(samples, *rate, *ch);
+    }
 }
 
 /// Play two ascending blips to signal that listening has stopped.
@@ -294,46 +250,57 @@ fn play_ding() {
 /// sine-shaped envelope and a short gap between them. Feels like a
 /// positive "got it" confirmation.
 /// Generate the default dong samples: two ascending blips (C5 → E5).
+/// Stereo (both ears) with a silence tail to prevent clipping.
 fn synth_dong_samples() -> (Vec<f32>, u32, u16) {
     let sample_rate = 44100u32;
     let pi2 = 2.0 * std::f32::consts::PI;
     let volume = 0.10f32;
+    let tail_ms = 20;
 
     let blip_samples = sample_rate as usize * 120 / 1000;
     let gap_samples = sample_rate as usize * 60 / 1000;
+    let tail_samples = sample_rate as usize * tail_ms / 1000;
 
-    let mut samples = Vec::with_capacity(blip_samples * 2 + gap_samples);
+    let mut samples = Vec::with_capacity((blip_samples * 2 + gap_samples + tail_samples) * 2);
 
     // First blip: C5
     for i in 0..blip_samples {
         let t = i as f32 / sample_rate as f32;
         let envelope = (std::f32::consts::PI * i as f32 / blip_samples as f32).sin() * volume;
-        samples.push((pi2 * 523.25 * t).sin() * envelope);
+        let s = (pi2 * 523.25 * t).sin() * envelope;
+        samples.push(s); // L
+        samples.push(s); // R
     }
 
-    // Gap
-    samples.extend(std::iter::repeat_n(0.0f32, gap_samples));
+    // Gap (stereo silence)
+    samples.extend(std::iter::repeat_n(0.0f32, gap_samples * 2));
 
     // Second blip: E5
     for i in 0..blip_samples {
         let t = i as f32 / sample_rate as f32;
         let envelope = (std::f32::consts::PI * i as f32 / blip_samples as f32).sin() * volume;
-        samples.push((pi2 * 659.26 * t).sin() * envelope);
+        let s = (pi2 * 659.26 * t).sin() * envelope;
+        samples.push(s); // L
+        samples.push(s); // R
     }
 
-    (samples, sample_rate, 1)
+    // Silence tail
+    samples.extend(std::iter::repeat_n(0.0f32, tail_samples * 2));
+
+    (samples, sample_rate, 2)
 }
 
 fn play_dong() {
     let config = sound_config().lock().unwrap();
-    let (samples, sample_rate, channels) = if let Some(sound) = &config.stop_sound {
-        (sound.samples.clone(), sound.sample_rate, sound.channels)
+    if let Some(sound) = &config.stop_sound {
+        let (samples, rate, ch) = (sound.samples.clone(), sound.sample_rate, sound.channels);
+        drop(config);
+        play_sound(&samples, rate, ch);
     } else {
-        synth_dong_samples()
-    };
-    drop(config);
-
-    play_on_all_devices(samples, sample_rate, channels);
+        drop(config);
+        let (samples, rate, ch) = DEFAULT_DONG.get_or_init(synth_dong_samples);
+        play_sound(samples, *rate, *ch);
+    }
 }
 
 // ── Mic input helpers ──────────────────────────────────────────────────
@@ -1133,7 +1100,7 @@ fn stt_model_repo() -> String {
 }
 
 /// Load STT model and tokenizer. Prints progress to stderr unless quiet.
-fn load_stt() -> (voice_stt::WhisperModel, voice_stt::tokenizers::Tokenizer) {
+pub fn load_stt() -> (voice_stt::WhisperModel, voice_stt::tokenizers::Tokenizer) {
     let repo = stt_model_repo();
 
     if !QUIET.load(Ordering::Relaxed) {
@@ -1207,29 +1174,6 @@ fn transcribe_samples(
 /// Record from mic (manual stop), transcribe, print result.
 ///
 /// Entry point for `voice listen`.
-/// Record from mic with VAD auto-stop, transcribe, print result.
-///
-/// Like `listen_and_transcribe` but uses voice activity detection instead
-/// of waiting for Enter/Ctrl+C — stops automatically after silence.
-pub fn listen_and_transcribe_auto() {
-    let (mut model, tokenizer) = load_stt();
-
-    if let Some(result) = listen_and_transcribe_vad(
-        &mut model, &tokenizer,
-        15_000, // max_duration_ms (15s — good for conversational turns)
-        1_500,  // silence_timeout_ms
-        0.01,   // silence_threshold
-        3.0,    // noise_multiplier
-        300,    // calibration_ms
-    ) {
-        println!("{}", result.text);
-        if !QUIET.load(Ordering::Relaxed) {
-            let _ = io::stderr().flush();
-            eprintln!("\n({} tokens)", result.tokens.len());
-        }
-    }
-}
-
 pub fn listen_and_transcribe() {
     let (mut model, tokenizer) = load_stt();
 

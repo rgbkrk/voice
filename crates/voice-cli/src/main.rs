@@ -5,7 +5,7 @@ mod mcp;
 use clap::Parser;
 use pulldown_cmark::{Event, Options, Parser as MdParser, Tag, TagEnd};
 use std::collections::HashMap;
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -695,14 +695,34 @@ fn run_converse(args: ConverseArgs) {
         }
     };
 
+    // Start loading STT model in background while TTS plays
+    let stt_handle = std::thread::spawn(listen::load_stt);
+
     stream_playback(&mut model, &voice, &phoneme_chunks, args.speed, sample_rate);
 
     if interrupted() {
         std::process::exit(130);
     }
 
+    // STT should be loaded by now (TTS playback took seconds)
+    let (mut stt_model, tokenizer) = stt_handle.join().expect("STT load panicked");
+
     // Listen for response (VAD auto-stop — no Enter key needed)
-    listen::listen_and_transcribe_auto();
+    if let Some(result) = listen::listen_and_transcribe_vad(
+        &mut stt_model,
+        &tokenizer,
+        15_000, // max_duration_ms
+        1_500,  // silence_timeout_ms
+        0.01,   // silence_threshold
+        3.0,    // noise_multiplier
+        300,    // calibration_ms
+    ) {
+        println!("{}", result.text);
+        if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = std::io::stderr().flush();
+            eprintln!("\n({} tokens)", result.tokens.len());
+        }
+    }
 }
 
 /// Wait for TTS model loading to finish and handle errors.

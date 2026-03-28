@@ -183,8 +183,6 @@ struct Session {
     voice_cache: HashMap<String, candle_core::Tensor>,
     /// Lazily-loaded STT model (only initialized on first `listen` call).
     stt_model: Option<voice_stt::WhisperModel>,
-    /// Lazily-loaded STT tokenizer.
-    stt_tokenizer: Option<voice_stt::tokenizers::Tokenizer>,
 }
 
 impl Session {
@@ -244,7 +242,6 @@ pub fn run(config: ServerConfig) {
         phoneme_overrides,
         voice_cache,
         stt_model: None,
-        stt_tokenizer: None,
     };
 
     let mut stdout = io::stdout();
@@ -443,11 +440,8 @@ fn handle_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> 
 
         let model = voice_stt::load_model(&repo)
             .map_err(|e| RpcErr::internal(format!("Failed to load STT model: {e}")))?;
-        let tokenizer = voice_stt::load_tokenizer(&repo)
-            .map_err(|e| RpcErr::internal(format!("Failed to load tokenizer: {e}")))?;
 
         session.stt_model = Some(model);
-        session.stt_tokenizer = Some(tokenizer);
 
         if !QUIET.load(Ordering::Relaxed) {
             eprintln!("STT model loaded.");
@@ -455,13 +449,11 @@ fn handle_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> 
     }
 
     let stt_model = session.stt_model.as_mut().unwrap();
-    let stt_tokenizer = session.stt_tokenizer.as_ref().unwrap();
 
     let started = Instant::now();
 
     let result = listen::listen_and_transcribe_vad(
         stt_model,
-        stt_tokenizer,
         max_duration,
         silence_timeout,
         threshold,

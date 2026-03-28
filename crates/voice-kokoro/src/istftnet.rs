@@ -301,10 +301,25 @@ pub struct TorchSTFT {
     win_length: usize,
     /// Hann window coefficients
     window: Vec<f32>,
+    /// Pre-computed forward DFT kernels (for transform)
+    fwd_cos_kernel: Tensor,
+    fwd_sin_kernel: Tensor,
+    /// Pre-computed inverse DFT kernels (for inverse)
+    inv_cos_kernel: Tensor,
+    inv_sin_kernel: Tensor,
 }
 
 impl TorchSTFT {
-    pub fn new(filter_length: usize, hop_length: usize, win_length: usize) -> Self {
+    pub fn new(
+        filter_length: usize,
+        hop_length: usize,
+        win_length: usize,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        let n_fft = filter_length;
+        let n_bins = n_fft / 2 + 1;
+
         // Generate Hann window
         let window: Vec<f32> = (0..win_length)
             .map(|i| {
@@ -313,12 +328,59 @@ impl TorchSTFT {
             })
             .collect();
 
-        Self {
+        // Forward DFT kernels (windowed)
+        let mut fwd_cos = Vec::with_capacity(n_bins * n_fft);
+        let mut fwd_sin = Vec::with_capacity(n_bins * n_fft);
+        for k in 0..n_bins {
+            for n in 0..n_fft {
+                let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
+                let w = window.get(n).copied().unwrap_or(0.0) as f64;
+                fwd_cos.push((angle.cos() * w) as f32);
+                fwd_sin.push((-angle.sin() * w) as f32);
+            }
+        }
+
+        let fwd_cos_kernel = Tensor::new(&fwd_cos[..], device)?
+            .reshape((n_bins, 1, n_fft))?
+            .to_dtype(dtype)?;
+        let fwd_sin_kernel = Tensor::new(&fwd_sin[..], device)?
+            .reshape((n_bins, 1, n_fft))?
+            .to_dtype(dtype)?;
+
+        // Inverse DFT kernels (windowed, scaled)
+        let mut inv_cos = Vec::with_capacity(n_bins * n_fft);
+        let mut inv_sin = Vec::with_capacity(n_bins * n_fft);
+        for k in 0..n_bins {
+            let scale = if k == 0 || k == n_fft / 2 {
+                1.0 / n_fft as f64
+            } else {
+                2.0 / n_fft as f64
+            };
+            for n in 0..n_fft {
+                let w = window.get(n).copied().unwrap_or(0.0) as f64;
+                let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
+                inv_cos.push((scale * w * angle.cos()) as f32);
+                inv_sin.push((scale * w * angle.sin()) as f32);
+            }
+        }
+
+        let inv_cos_kernel = Tensor::new(&inv_cos[..], device)?
+            .reshape((n_bins, 1, n_fft))?
+            .to_dtype(dtype)?;
+        let inv_sin_kernel = Tensor::new(&inv_sin[..], device)?
+            .reshape((n_bins, 1, n_fft))?
+            .to_dtype(dtype)?;
+
+        Ok(Self {
             filter_length,
             hop_length,
             win_length,
             window,
-        }
+            fwd_cos_kernel,
+            fwd_sin_kernel,
+            inv_cos_kernel,
+            inv_sin_kernel,
+        })
     }
 
     /// Compute STFT magnitude and phase via DFT convolution.
@@ -329,32 +391,6 @@ impl TorchSTFT {
         let device = input_data.device();
         let dtype = input_data.dtype();
         let n_fft = self.filter_length;
-        let n_bins = n_fft / 2 + 1;
-
-        // Build DFT basis as Conv1d filters
-        // Real and imaginary parts: [n_bins, 1, n_fft]
-        let mut cos_basis = Vec::with_capacity(n_bins * n_fft);
-        let mut sin_basis = Vec::with_capacity(n_bins * n_fft);
-
-        for k in 0..n_bins {
-            for n in 0..n_fft {
-                let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
-                let w = if n < self.win_length {
-                    self.window[n] as f64
-                } else {
-                    0.0
-                };
-                cos_basis.push((angle.cos() * w) as f32);
-                sin_basis.push((-angle.sin() * w) as f32);
-            }
-        }
-
-        let cos_kernel = Tensor::new(&cos_basis[..], device)?
-            .reshape((n_bins, 1, n_fft))?
-            .to_dtype(dtype)?;
-        let sin_kernel = Tensor::new(&sin_basis[..], device)?
-            .reshape((n_bins, 1, n_fft))?
-            .to_dtype(dtype)?;
 
         // Pad input for STFT framing
         let pad_amount = n_fft / 2;
@@ -363,14 +399,9 @@ impl TorchSTFT {
         // [B, L] -> [B, 1, L] for conv1d
         let x = input_padded.unsqueeze(1)?;
 
-        let conv_cfg = nn::Conv1dConfig {
-            stride: self.hop_length,
-            ..Default::default()
-        };
-
-        // Apply DFT via conv1d
-        let real = x.conv1d(&cos_kernel, 0, conv_cfg.stride, 1, 1)?;
-        let imag = x.conv1d(&sin_kernel, 0, conv_cfg.stride, 1, 1)?;
+        // Apply DFT via conv1d with pre-computed kernels
+        let real = x.conv1d(&self.fwd_cos_kernel, 0, self.hop_length, 1, 1)?;
+        let imag = x.conv1d(&self.fwd_sin_kernel, 0, self.hop_length, 1, 1)?;
 
         // Magnitude and phase
         let magnitude = (real.sqr()? + imag.sqr()?)?.sqrt()?;
@@ -398,55 +429,17 @@ impl TorchSTFT {
         let device = magnitude.device();
         let dtype = magnitude.dtype();
         let n_fft = self.filter_length;
-        let n_bins = n_fft / 2 + 1;
+        let win_len = self.win_length;
         let (_b, _freq, num_frames) = magnitude.dims3()?;
 
-        // Phase unwrapping along time axis (axis 2) — matches mlx-audio behavior.
         // Reconstruct complex spectrum: real = mag*cos(phase), imag = mag*sin(phase)
         // No phase unwrapping needed — cos/sin are 2π-periodic.
         let real: Tensor = (magnitude * phase.cos()?)?;
         let imag: Tensor = (magnitude * phase.sin()?)?;
 
-        // Build windowed inverse DFT kernels for conv_transpose1d.
-        // Kernel shape: [n_bins, 1, n_fft] (in_channels=n_bins, out_channels/groups=1, kernel_size=n_fft)
-        // kernel[k, 0, n] = scale * window[n] * cos(2πkn/N)  (cos_kernel)
-        //                  = scale * window[n] * sin(2πkn/N)  (sin_kernel)
-        // where scale = 1/N for DC and Nyquist (k=0, k=N/2), 2/N otherwise.
-        // conv_transpose1d with stride=hop_length performs iDFT + overlap-add in one GPU op.
-        let win_len = self.win_length;
-        let mut cos_data = Vec::with_capacity(n_bins * n_fft);
-        let mut sin_data = Vec::with_capacity(n_bins * n_fft);
-
-        for k in 0..n_bins {
-            let scale = if k == 0 || k == n_fft / 2 {
-                1.0 / n_fft as f64
-            } else {
-                2.0 / n_fft as f64
-            };
-            for n in 0..n_fft {
-                let w = if n < win_len {
-                    self.window[n] as f64
-                } else {
-                    0.0
-                };
-                let angle = 2.0 * std::f64::consts::PI * k as f64 * n as f64 / n_fft as f64;
-                cos_data.push((scale * w * angle.cos()) as f32);
-                sin_data.push((scale * w * angle.sin()) as f32);
-            }
-        }
-
-        let cos_kernel = Tensor::new(&cos_data[..], device)?
-            .reshape((n_bins, 1, n_fft))?
-            .to_dtype(dtype)?;
-        let sin_kernel = Tensor::new(&sin_data[..], device)?
-            .reshape((n_bins, 1, n_fft))?
-            .to_dtype(dtype)?;
-
-        // iDFT + window + overlap-add via conv_transpose1d on GPU.
-        // Each input channel (freq bin) is convolved with its kernel and results are summed,
-        // with stride=hop_length providing the overlap-add automatically.
-        let output = (real.conv_transpose1d(&cos_kernel, 0, 0, self.hop_length, 1, 1)?
-            - imag.conv_transpose1d(&sin_kernel, 0, 0, self.hop_length, 1, 1)?)?;
+        // iDFT + window + overlap-add via conv_transpose1d on GPU with pre-computed kernels.
+        let output = (real.conv_transpose1d(&self.inv_cos_kernel, 0, 0, self.hop_length, 1, 1)?
+            - imag.conv_transpose1d(&self.inv_sin_kernel, 0, 0, self.hop_length, 1, 1)?)?;
         // output: [B, 1, output_len] where output_len = (T-1)*hop_length + n_fft
 
         // COLA normalization: compute window squared sum on CPU (small, depends only on
@@ -622,7 +615,13 @@ impl Generator {
             vb.pp("conv_post"),
         )?;
 
-        let stft = TorchSTFT::new(gen_istft_n_fft, gen_istft_hop_size, gen_istft_n_fft);
+        let stft = TorchSTFT::new(
+            gen_istft_n_fft,
+            gen_istft_hop_size,
+            gen_istft_n_fft,
+            vb.device(),
+            vb.dtype(),
+        )?;
 
         Ok(Self {
             m_source,

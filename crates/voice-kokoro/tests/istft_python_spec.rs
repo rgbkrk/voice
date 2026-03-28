@@ -15,7 +15,7 @@ fn istft_from_python_spec() {
     eprintln!("spec: {:?}, phase: {:?}", spec.shape(), phase.shape());
 
     // Run our iSTFT
-    let stft = voice_kokoro::istftnet::TorchSTFT::new(20, 5, 20);
+    let stft = voice_kokoro::istftnet::TorchSTFT::new(20, 5, 20, &device, DType::F32).unwrap();
     let audio = stft.inverse(&spec, &phase).unwrap();
 
     eprintln!("audio: {:?}", audio.shape());

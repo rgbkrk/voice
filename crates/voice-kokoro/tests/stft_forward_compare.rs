@@ -13,7 +13,8 @@ fn compare_stft_forward_with_python() {
     let expected_mag = load_npy_f32(&mag_npy, &Device::Cpu);
     let expected_phase = load_npy_f32(&phase_npy, &Device::Cpu);
 
-    let stft = voice_kokoro::istftnet::TorchSTFT::new(20, 5, 20);
+    let stft = voice_kokoro::istftnet::TorchSTFT::new(20, 5, 20, &device, candle_core::DType::F32)
+        .unwrap();
     let (mag, phase) = stft.transform(&x).unwrap();
 
     let mag_cpu = mag.to_device(&Device::Cpu).unwrap();

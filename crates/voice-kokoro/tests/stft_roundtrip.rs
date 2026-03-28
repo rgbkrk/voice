@@ -1,4 +1,4 @@
-use candle_core::{Device, Tensor};
+use candle_core::{DType, Device, Tensor};
 use voice_kokoro::istftnet::TorchSTFT;
 
 #[test]
@@ -13,7 +13,7 @@ fn stft_roundtrip() {
 
     let x = Tensor::from_vec(samples.clone(), &[1, n], &device).unwrap();
 
-    let stft = TorchSTFT::new(20, 5, 20);
+    let stft = TorchSTFT::new(20, 5, 20, &device, DType::F32).unwrap();
 
     // Forward: [1, 2400] -> (mag: [1, 11, T], phase: [1, 11, T])
     let (mag, phase) = stft.transform(&x).unwrap();

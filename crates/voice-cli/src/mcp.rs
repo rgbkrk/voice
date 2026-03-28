@@ -150,7 +150,6 @@ struct Session {
     phoneme_overrides: HashMap<String, String>,
     voice_cache: HashMap<String, candle_core::Tensor>,
     stt_model: Option<voice_stt::WhisperModel>,
-    stt_tokenizer: Option<voice_stt::tokenizers::Tokenizer>,
     mem_stats: bool,
 }
 
@@ -205,7 +204,6 @@ pub fn run(config: ServerConfig) {
         phoneme_overrides,
         voice_cache,
         stt_model: None,
-        stt_tokenizer: None,
         mem_stats: config.mem_stats,
     };
 
@@ -565,14 +563,78 @@ struct MemStats {
 }
 
 fn metal_memory_stats() -> MemStats {
-    // TODO: candle's Metal backend doesn't expose memory stats yet.
-    // The objc2-metal bindings used by candle don't wrap MTLDevice's
-    // currentAllocatedSize/recommendedMaxWorkingSetSize. We'd need to
-    // call these via raw objc messaging or wait for upstream support.
+    // Use macOS task_info to get real process memory stats.
+    // Candle's Metal backend doesn't expose GPU-specific stats, but on
+    // Apple Silicon with unified memory, process RSS is a good proxy.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PEAK_RSS: AtomicU64 = AtomicU64::new(0);
+
+    let rss_bytes = process_rss_bytes();
+    let rss_mb = rss_bytes as f64 / (1024.0 * 1024.0);
+
+    // Track peak across calls
+    let mut prev = PEAK_RSS.load(Ordering::Relaxed);
+    loop {
+        if rss_bytes <= prev {
+            break;
+        }
+        match PEAK_RSS.compare_exchange_weak(prev, rss_bytes, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => break,
+            Err(p) => prev = p,
+        }
+    }
+    let peak_mb = PEAK_RSS.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0);
+
     MemStats {
-        active_mb: 0.0,
-        cache_mb: 0.0,
-        peak_mb: 0.0,
+        active_mb: rss_mb,
+        cache_mb: 0.0, // no separate cache metric without Metal API
+        peak_mb,
+    }
+}
+
+/// Get process resident set size in bytes via mach task_info.
+fn process_rss_bytes() -> u64 {
+    use std::mem;
+
+    extern "C" {
+        fn mach_task_self() -> u32;
+        fn task_info(
+            target_task: u32,
+            flavor: u32,
+            task_info_out: *mut std::ffi::c_void,
+            task_info_count: *mut u32,
+        ) -> i32;
+    }
+
+    // MACH_TASK_BASIC_INFO = 20
+    #[repr(C)]
+    struct MachTaskBasicInfo {
+        virtual_size: u64,
+        resident_size: u64,
+        resident_size_max: u64,
+        user_time: [u32; 2],   // time_value_t
+        system_time: [u32; 2], // time_value_t
+        policy: i32,
+        suspend_count: i32,
+    }
+
+    let mut info: MachTaskBasicInfo = unsafe { mem::zeroed() };
+    let mut count = (mem::size_of::<MachTaskBasicInfo>() / mem::size_of::<u32>()) as u32;
+
+    let kr = unsafe {
+        task_info(
+            mach_task_self(),
+            20,
+            &mut info as *mut _ as *mut _,
+            &mut count,
+        )
+    };
+
+    if kr == 0 {
+        info.resident_size
+    } else {
+        0
     }
 }
 
@@ -644,11 +706,8 @@ fn voice_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
 
         let model = voice_stt::load_model(&repo)
             .map_err(|e| RpcErr::internal(format!("Failed to load STT model: {e}")))?;
-        let tokenizer = voice_stt::load_tokenizer(&repo)
-            .map_err(|e| RpcErr::internal(format!("Failed to load tokenizer: {e}")))?;
 
         session.stt_model = Some(model);
-        session.stt_tokenizer = Some(tokenizer);
 
         if !QUIET.load(Ordering::Relaxed) {
             eprintln!("STT model loaded.");
@@ -656,13 +715,11 @@ fn voice_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
     }
 
     let stt_model = session.stt_model.as_mut().unwrap();
-    let stt_tokenizer = session.stt_tokenizer.as_ref().unwrap();
 
     let started = Instant::now();
 
     let result = listen::listen_and_transcribe_vad(
         stt_model,
-        stt_tokenizer,
         max_duration,
         silence_timeout,
         threshold,

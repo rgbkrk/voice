@@ -1,4 +1,3 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["crates/voice-nn", "crates/voice-dsp"]
 resolver = "2"

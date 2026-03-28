@@ -147,23 +147,7 @@ pub fn set_stop_sound(sound: Option<CachedSound>) {
 ///
 /// Returns an error if the audio output device cannot be opened.
 pub fn play_cached_sound(sound: &CachedSound) -> Result<(), String> {
-    let mut stream = DeviceSinkBuilder::open_default_sink()
-        .map_err(|e| format!("Failed to open audio output: {e}"))?;
-    stream.log_on_drop(false);
-    let player = Player::connect_new(stream.mixer());
-
-    let Some(channels) = NonZero::new(sound.channels) else {
-        return Err("Invalid sound: zero channels".to_string());
-    };
-    let Some(rate) = NonZero::new(sound.sample_rate) else {
-        return Err("Invalid sound: zero sample rate".to_string());
-    };
-    let source = SamplesBuffer::new(channels, rate, sound.samples.clone());
-    player.append(source);
-
-    while !player.empty() {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    play_on_all_devices(sound.samples.clone(), sound.sample_rate, sound.channels);
     Ok(())
 }
 
@@ -191,73 +175,116 @@ pub struct SegmentResult {
 
 // ── Ding sound ─────────────────────────────────────────────────────────
 
-/// Play a notification sound using cached samples or synthesized defaults.
-fn play_cached_or_synth(
-    cached: Option<&CachedSound>,
-    default_freq: f32,
-    default_duration_ms: usize,
-    default_decay: f32,
-    default_volume: f32,
-    post_delay_ms: u64,
-) {
-    let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
-        return; // Silent failure — sounds are optional
-    };
-    stream.log_on_drop(false);
-    let player = Player::connect_new(stream.mixer());
+/// Generate the default ding samples: short 880Hz sine with exponential decay.
+fn synth_ding_samples() -> (Vec<f32>, u32, u16) {
+    let sample_rate = 44100u32;
+    let duration_ms = 100;
+    let decay = 0.03f32;
+    let volume = 0.20f32;
+    let num_samples = sample_rate as usize * duration_ms / 1000;
 
-    if let Some(sound) = cached {
-        let Some(channels) = NonZero::new(sound.channels) else {
-            return;
-        };
-        let Some(rate) = NonZero::new(sound.sample_rate) else {
-            return;
-        };
-        let source = SamplesBuffer::new(channels, rate, sound.samples.clone());
-        player.append(source);
-    } else {
-        let sample_rate = 44100u32;
-        let num_samples = sample_rate as usize * default_duration_ms / 1000;
-
-        let mut samples = Vec::with_capacity(num_samples);
-        for i in 0..num_samples {
-            let t = i as f32 / sample_rate as f32;
-            let envelope = (-t / default_decay).exp() * default_volume;
-            let sample = (2.0 * std::f32::consts::PI * default_freq * t).sin() * envelope;
-            samples.push(sample);
-        }
-
-        let channels = NonZero::new(1u16).unwrap();
-        let rate = NonZero::new(sample_rate).unwrap();
-        let source = SamplesBuffer::new(channels, rate, samples);
-        player.append(source);
+    let mut samples = Vec::with_capacity(num_samples);
+    for i in 0..num_samples {
+        let t = i as f32 / sample_rate as f32;
+        let envelope = (-t / decay).exp() * volume;
+        let sample = (2.0 * std::f32::consts::PI * 880.0 * t).sin() * envelope;
+        samples.push(sample);
     }
+    (samples, sample_rate, 1)
+}
+
+/// Play a sound on a specific output device. Returns when playback finishes.
+fn play_on_device(
+    output: rodio::speakers::Output,
+    samples: Vec<f32>,
+    sample_rate: u32,
+    channels: u16,
+) {
+    let mixer = rodio::speakers::SpeakersBuilder::new()
+        .device(output)
+        .and_then(|b| b.default_config())
+        .map(|b| b.open_mixer());
+
+    let Ok(Ok(mut sink)) = mixer else {
+        return;
+    };
+    sink.log_on_drop(false);
+    let player = Player::connect_new(sink.mixer());
+
+    let Some(ch) = NonZero::new(channels) else {
+        return;
+    };
+    let Some(rate) = NonZero::new(sample_rate) else {
+        return;
+    };
+    let source = SamplesBuffer::new(ch, rate, samples);
+    player.append(source);
 
     while !player.empty() {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    if post_delay_ms > 0 {
-        std::thread::sleep(std::time::Duration::from_millis(post_delay_ms));
+}
+
+/// Play a notification sound on ALL available output devices simultaneously.
+///
+/// This ensures Bluetooth headphones, built-in speakers, and any other
+/// audio outputs all play the ding — the user hears it regardless of
+/// which device macOS considers "default" at the moment.
+fn play_on_all_devices(samples: Vec<f32>, sample_rate: u32, channels: u16) {
+    let outputs = match rodio::speakers::available_outputs() {
+        Ok(o) if !o.is_empty() => o,
+        _ => {
+            // Fallback to default sink
+            let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
+                return;
+            };
+            stream.log_on_drop(false);
+            let player = Player::connect_new(stream.mixer());
+            let Some(ch) = NonZero::new(channels) else {
+                return;
+            };
+            let Some(rate) = NonZero::new(sample_rate) else {
+                return;
+            };
+            player.append(SamplesBuffer::new(ch, rate, samples));
+            while !player.empty() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            return;
+        }
+    };
+
+    // Play on all devices in parallel
+    let handles: Vec<_> = outputs
+        .into_iter()
+        .map(|output| {
+            let samples = samples.clone();
+            std::thread::spawn(move || {
+                play_on_device(output, samples, sample_rate, channels);
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        let _ = handle.join();
     }
 }
 
 /// Play a short pleasant ding to signal that recording has started.
 ///
-/// Uses custom start sound if configured, otherwise synthesizes an
-/// 880Hz (A5) sine tone with a gentle exponential decay over ~200ms.
+/// Plays on ALL output devices simultaneously so the user hears it
+/// regardless of Bluetooth routing state. Uses custom start sound if
+/// configured, otherwise synthesizes an 880Hz sine ding.
 fn play_ding() {
-    // Clone samples under lock, then play without holding it
-    let custom = sound_config()
-        .lock()
-        .unwrap()
-        .start_sound
-        .as_ref()
-        .map(|s| CachedSound {
-            samples: s.samples.clone(),
-            sample_rate: s.sample_rate,
-            channels: s.channels,
-        });
-    play_cached_or_synth(custom.as_ref(), 880.0, 100, 0.03, 0.20, 0);
+    let config = sound_config().lock().unwrap();
+    let (samples, sample_rate, channels) = if let Some(sound) = &config.start_sound {
+        (sound.samples.clone(), sound.sample_rate, sound.channels)
+    } else {
+        synth_ding_samples()
+    };
+    drop(config); // Release lock before playing
+
+    play_on_all_devices(samples, sample_rate, channels);
 }
 
 /// Play two ascending blips to signal that listening has stopped.
@@ -266,34 +293,12 @@ fn play_ding() {
 /// sine blips — C5 (523Hz) then E5 (659Hz) — each with a smooth
 /// sine-shaped envelope and a short gap between them. Feels like a
 /// positive "got it" confirmation.
-fn play_dong() {
-    let custom = sound_config()
-        .lock()
-        .unwrap()
-        .stop_sound
-        .as_ref()
-        .map(|s| CachedSound {
-            samples: s.samples.clone(),
-            sample_rate: s.sample_rate,
-            channels: s.channels,
-        });
-
-    if custom.is_some() {
-        play_cached_or_synth(custom.as_ref(), 0.0, 0, 0.0, 0.0, 0);
-        return;
-    }
-
-    let Ok(mut stream) = DeviceSinkBuilder::open_default_sink() else {
-        return;
-    };
-    stream.log_on_drop(false);
-    let player = Player::connect_new(stream.mixer());
-
+/// Generate the default dong samples: two ascending blips (C5 → E5).
+fn synth_dong_samples() -> (Vec<f32>, u32, u16) {
     let sample_rate = 44100u32;
     let pi2 = 2.0 * std::f32::consts::PI;
     let volume = 0.10f32;
 
-    // Two blips: C5 (120ms) → gap (60ms) → E5 (120ms)
     let blip_samples = sample_rate as usize * 120 / 1000;
     let gap_samples = sample_rate as usize * 60 / 1000;
 
@@ -316,14 +321,19 @@ fn play_dong() {
         samples.push((pi2 * 659.26 * t).sin() * envelope);
     }
 
-    let channels = NonZero::new(1u16).unwrap();
-    let rate = NonZero::new(sample_rate).unwrap();
-    let source = SamplesBuffer::new(channels, rate, samples);
-    player.append(source);
+    (samples, sample_rate, 1)
+}
 
-    while !player.empty() {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+fn play_dong() {
+    let config = sound_config().lock().unwrap();
+    let (samples, sample_rate, channels) = if let Some(sound) = &config.stop_sound {
+        (sound.samples.clone(), sound.sample_rate, sound.channels)
+    } else {
+        synth_dong_samples()
+    };
+    drop(config);
+
+    play_on_all_devices(samples, sample_rate, channels);
 }
 
 // ── Mic input helpers ──────────────────────────────────────────────────

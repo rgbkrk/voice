@@ -305,6 +305,168 @@ fn play_dong() {
 
 // ── Mic input helpers ──────────────────────────────────────────────────
 
+/// A pre-opened microphone that's already draining audio into a buffer.
+///
+/// Use in long-running processes (MCP server) to keep the mic open across
+/// calls, avoiding repeated Bluetooth HFP codec switches. The first open
+/// triggers the switch; subsequent recordings reuse the warm mic.
+pub struct WarmMic {
+    pub sample_rate: u32,
+    buffer: Arc<Mutex<Vec<f32>>>,
+    recent_peak: Arc<std::sync::atomic::AtomicU32>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    mic_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl WarmMic {
+    /// Open the mic and start buffering immediately.
+    pub fn open() -> Result<Self, String> {
+        let (_, sample_rate, mic) = open_mic()?;
+        let channels = mic.config().channel_count.get();
+        let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let recent_peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let mic_thread = start_mic_drain(
+            mic,
+            Arc::clone(&buffer),
+            Arc::clone(&recent_peak),
+            Arc::clone(&stop),
+            channels,
+        );
+
+        Ok(Self {
+            sample_rate,
+            buffer,
+            recent_peak,
+            stop,
+            mic_thread: Some(mic_thread),
+        })
+    }
+
+    /// Clear the audio buffer, discarding any previously captured audio.
+    pub fn clear(&self) {
+        self.buffer.lock().unwrap().clear();
+    }
+
+    /// Record with VAD using this warm mic. Plays ding, clears buffer,
+    /// calibrates, then records until silence after speech.
+    pub fn record_vad(
+        &self,
+        max_duration_ms: u64,
+        silence_timeout_ms: u64,
+        silence_threshold: f32,
+        noise_multiplier: f32,
+        calibration_ms: u64,
+    ) -> Result<(Vec<f32>, u32), String> {
+        play_ding();
+        if !QUIET.load(Ordering::Relaxed) {
+            eprintln!("Listening...");
+            eprintln!("Recording from: warm mic ({}Hz)", self.sample_rate);
+        }
+
+        // Clear buffer — discard audio from before this recording
+        self.clear();
+
+        // Adaptive noise floor calibration
+        let adaptive_threshold = if calibration_ms > 0 {
+            let cal_start = std::time::Instant::now();
+            let calibration_duration = std::time::Duration::from_millis(calibration_ms);
+            let mut max_ambient_peak: f32 = 0.0;
+
+            while cal_start.elapsed() < calibration_duration {
+                if INTERRUPTED.load(Ordering::Relaxed) {
+                    let samples = self.buffer.lock().unwrap().clone();
+                    return Ok((samples, self.sample_rate));
+                }
+                let peak_bits = self.recent_peak.load(Ordering::Relaxed);
+                let current_peak = f32::from_bits(peak_bits);
+                max_ambient_peak = max_ambient_peak.max(current_peak);
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+
+            let threshold = (max_ambient_peak * noise_multiplier).max(silence_threshold);
+
+            if !QUIET.load(Ordering::Relaxed) {
+                eprintln!(
+                    "Noise floor: {:.4}, threshold: {:.4} (×{:.1})",
+                    max_ambient_peak, threshold, noise_multiplier
+                );
+            }
+
+            threshold
+        } else {
+            silence_threshold
+        };
+
+        // VAD state machine
+        let mut speech_started = false;
+        let mut silence_start: Option<std::time::Instant> = None;
+        let start_time = std::time::Instant::now();
+        let max_dur = std::time::Duration::from_millis(max_duration_ms);
+        let silence_dur = std::time::Duration::from_millis(silence_timeout_ms);
+
+        loop {
+            if INTERRUPTED.load(Ordering::Relaxed) {
+                break;
+            }
+
+            if start_time.elapsed() >= max_dur {
+                if !QUIET.load(Ordering::Relaxed) {
+                    eprintln!("Max recording duration reached.");
+                }
+                break;
+            }
+
+            let peak_bits = self.recent_peak.load(Ordering::Relaxed);
+            let current_peak = f32::from_bits(peak_bits);
+            let is_speech = current_peak > adaptive_threshold;
+
+            if is_speech {
+                if !speech_started {
+                    speech_started = true;
+                    if !QUIET.load(Ordering::Relaxed) {
+                        eprintln!("Speech detected...");
+                    }
+                }
+                silence_start = None;
+            } else if speech_started {
+                if silence_start.is_none() {
+                    silence_start = Some(std::time::Instant::now());
+                }
+                if let Some(ss) = silence_start {
+                    if ss.elapsed() >= silence_dur {
+                        if !QUIET.load(Ordering::Relaxed) {
+                            eprintln!("Silence detected, stopping recording.");
+                        }
+                        break;
+                    }
+                }
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        play_dong();
+
+        // Take a snapshot of the buffer — don't stop the mic thread
+        let samples = self.buffer.lock().unwrap().clone();
+        log_recording_stats(&samples, self.sample_rate);
+        maybe_save_recording(&samples, self.sample_rate);
+
+        Ok((samples, self.sample_rate))
+    }
+}
+
+impl Drop for WarmMic {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(t) = self.mic_thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 /// Open a microphone via rodio and return (name, sample_rate, mic).
 ///
 /// Uses the default input device. Rodio handles sample format conversion
@@ -1201,6 +1363,39 @@ pub fn listen_and_transcribe_vad(
     calibration_ms: u64,
 ) -> Option<voice_stt::TranscribeResult> {
     let (samples, sample_rate) = match record_with_vad(
+        max_duration_ms,
+        silence_timeout_ms,
+        silence_threshold,
+        noise_multiplier,
+        calibration_ms,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Recording failed: {e}");
+            return None;
+        }
+    };
+
+    if INTERRUPTED.load(Ordering::Relaxed) || samples.is_empty() {
+        return None;
+    }
+
+    transcribe_samples(model, &samples, sample_rate)
+}
+
+/// Like `listen_and_transcribe_vad` but uses a pre-warmed mic.
+///
+/// The mic stays open after recording — caller retains ownership.
+pub fn listen_and_transcribe_vad_warm(
+    model: &mut voice_stt::WhisperModel,
+    warm_mic: &WarmMic,
+    max_duration_ms: u64,
+    silence_timeout_ms: u64,
+    silence_threshold: f32,
+    noise_multiplier: f32,
+    calibration_ms: u64,
+) -> Option<voice_stt::TranscribeResult> {
+    let (samples, sample_rate) = match warm_mic.record_vad(
         max_duration_ms,
         silence_timeout_ms,
         silence_threshold,

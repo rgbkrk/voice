@@ -150,6 +150,8 @@ struct Session {
     phoneme_overrides: HashMap<String, String>,
     voice_cache: HashMap<String, candle_core::Tensor>,
     stt_model: Option<voice_stt::WhisperModel>,
+    /// Persistent mic — kept open across calls to avoid Bluetooth HFP switches.
+    warm_mic: Option<listen::WarmMic>,
     mem_stats: bool,
 }
 
@@ -204,8 +206,27 @@ pub fn run(config: ServerConfig) {
         phoneme_overrides,
         voice_cache,
         stt_model: None,
+        warm_mic: None,
         mem_stats: config.mem_stats,
     };
+
+    // Open mic at startup so the Bluetooth HFP codec switch happens now,
+    // not on the first converse/listen call. The mic stays open for the
+    // session — subsequent calls record instantly with no switch delay.
+    match listen::WarmMic::open() {
+        Ok(mic) => {
+            if !QUIET.load(Ordering::Relaxed) {
+                eprintln!("Mic opened (persistent for session).");
+            }
+            session.warm_mic = Some(mic);
+        }
+        Err(e) => {
+            // Non-fatal — listen will fall back to opening a cold mic per call
+            if !QUIET.load(Ordering::Relaxed) {
+                eprintln!("Warning: could not pre-open mic: {e}");
+            }
+        }
+    }
 
     // Note: Metal memory management is handled by candle's Metal backend.
     // No explicit cache limit needed — candle manages buffer pools internally.
@@ -718,14 +739,26 @@ fn voice_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
 
     let started = Instant::now();
 
-    let result = listen::listen_and_transcribe_vad(
-        stt_model,
-        max_duration,
-        silence_timeout,
-        threshold,
-        noise_multiplier,
-        calibration_ms,
-    );
+    let result = if let Some(ref warm_mic) = session.warm_mic {
+        listen::listen_and_transcribe_vad_warm(
+            stt_model,
+            warm_mic,
+            max_duration,
+            silence_timeout,
+            threshold,
+            noise_multiplier,
+            calibration_ms,
+        )
+    } else {
+        listen::listen_and_transcribe_vad(
+            stt_model,
+            max_duration,
+            silence_timeout,
+            threshold,
+            noise_multiplier,
+            calibration_ms,
+        )
+    };
 
     let duration_ms = started.elapsed().as_millis() as u64;
     INTERRUPTED.store(false, Ordering::Relaxed);

@@ -711,7 +711,7 @@ fn voice_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
             .map_err(|e| RpcErr::invalid_params(format!("bad listen params: {e}")))?
     };
 
-    let max_duration = p.max_duration_ms.unwrap_or(30_000);
+    let max_duration = p.max_duration_ms.unwrap_or(60_000);
     let silence_timeout = p.silence_timeout_ms.unwrap_or(2_000);
     let threshold = p.silence_threshold.unwrap_or(0.01);
     let noise_multiplier = p.noise_multiplier.unwrap_or(3.0);

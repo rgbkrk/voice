@@ -1,6 +1,5 @@
 pub mod builtin;
 pub mod catalog;
-pub mod config;
 pub mod error;
 
 use std::path::{Path, PathBuf};
@@ -9,7 +8,6 @@ use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use hf_hub::api::sync::Api;
 
-pub use config::ModelConfig;
 pub use error::{Result, VoicersError};
 
 const DEFAULT_REPO: &str = "prince-canuma/Kokoro-82M";

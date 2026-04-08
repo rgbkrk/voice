@@ -80,6 +80,14 @@ impl G2P {
             ("jupyter", "ʤˈupɪTəɹ"),
             ("nteract", "ˈɛntəɹˌækt"),
             ("todo", "tˈudu"),
+            // Developer acronyms and initialisms
+            ("ipynb", "nˈOtbˌʊk fˈIl"),
+            ("pr", "pˈi ˈɑɹ"),
+            ("prs", "pˈi ˈɑɹz"),
+            ("rxjs", "ˈɑɹ ˈɛks ʤˈA ˈɛs"),
+            ("tsconfig", "tˈi ˈɛs kˌɑnfˈɪɡ"),
+            ("vitest", "vˈItˌɛst"),
+            ("wasm", "wˈɑzᵊm"),
         ];
         ENTRIES
             .iter()
@@ -336,7 +344,7 @@ impl G2P {
                     tk.phonemes = Some(String::new());
                     tk.underscore.rating = Some(3);
                 }
-            } else if i > 0 {
+            } else if i > 0 && !tk.underscore.prespace {
                 tk.underscore.prespace = prespace;
             }
         }
@@ -756,5 +764,34 @@ mod tests {
         assert_eq!(g2p.convert("demultiplex").unwrap(), "dˌimˈʌltɪplɛks");
         assert_eq!(g2p.convert("Jupyter").unwrap(), "ʤˈupɪTəɹ");
         assert_eq!(g2p.convert("nteract").unwrap(), "ˈɛntəɹˌækt");
+    }
+
+    // -- camelCase tests ------------------------------------------------------
+
+    #[test]
+    fn test_camel_case_spaced_phonemes() {
+        let g2p = G2P::new();
+
+        // Two-part camelCase
+        let result = g2p.convert("useEffect").unwrap();
+        assert!(
+            result.contains(' '),
+            "camelCase should produce space-separated phonemes: {result}"
+        );
+
+        // Three-part camelCase
+        let result = g2p.convert("fromTauriEvent").unwrap();
+        let spaces = result.chars().filter(|c| *c == ' ').count();
+        assert!(
+            spaces >= 2,
+            "Three-part camelCase should have 2+ spaces: {result}"
+        );
+
+        // Single word should not gain a space
+        let result = g2p.convert("hello").unwrap();
+        assert!(
+            !result.contains(' '),
+            "Single word should not have spaces: {result}"
+        );
     }
 }

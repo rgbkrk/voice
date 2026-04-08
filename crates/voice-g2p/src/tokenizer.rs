@@ -488,6 +488,19 @@ pub fn retokenize(tokens: Vec<MToken>) -> Vec<TokenOrGroup> {
             );
             sub_tok.underscore.is_head = i == 0;
 
+            // Mark camelCase boundaries so merged phonemes get a space.
+            // Fires when the previous subtoken ends lowercase and this one
+            // starts uppercase (e.g. "use" | "Effect" from "useEffect").
+            if i > 0 && !is_junk {
+                if let Some(prev) = subtokens.get(i - 1) {
+                    if prev.chars().last().is_some_and(|c| c.is_lowercase())
+                        && sub_text.chars().next().is_some_and(|c| c.is_uppercase())
+                    {
+                        sub_tok.underscore.prespace = true;
+                    }
+                }
+            }
+
             if is_junk {
                 sub_tok.phonemes = Some(String::new());
                 sub_tok.underscore.rating = Some(3);

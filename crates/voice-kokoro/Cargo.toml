@@ -4,20 +4,20 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85.0"
 description = "Kokoro-82M TTS on candle with Metal acceleration"
-license = "Apache-2.0"
-repository = "https://github.com/rgbkrk/kokoro-candle"
+license = "MIT"
+repository = "https://github.com/rgbkrk/voice"
 
 [dependencies]
-candle-core = { version = "0.9", features = ["metal"] }
-candle-nn = { version = "0.9", features = ["metal"] }
-candle-transformers = { version = "0.9" }
-candle-metal-kernels = "0.9"
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+candle-transformers = { workspace = true }
+candle-metal-kernels = { workspace = true }
 half = { version = "2", features = ["num-traits"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-hf-hub = "0.5"
-safetensors = "0.6"
-thiserror = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+hf-hub = { workspace = true }
+safetensors = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 hound = "3"

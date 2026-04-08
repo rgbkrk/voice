@@ -5,14 +5,14 @@ edition = "2021"
 rust-version = "1.85.0"
 description = "Whisper STT on candle with Metal acceleration"
 license = "MIT"
-repository = "https://github.com/rgbkrk/voicers"
+repository = "https://github.com/rgbkrk/voice"
 
 [dependencies]
-candle-core = { version = "0.9", features = ["metal"] }
-candle-nn = { version = "0.9", features = ["metal"] }
-candle-transformers = "0.9"
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+candle-transformers = { workspace = true }
 byteorder = "1"
-tokenizers = "0.21"
-thiserror = "2"
+tokenizers = { workspace = true }
+thiserror = { workspace = true }
 rand = "0.9"
 rand_distr = "0.5"

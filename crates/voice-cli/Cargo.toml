@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.85.0"
 description = "CLI for fast text-to-speech and speech-to-text"
 license = "MIT"
-repository = "https://github.com/rgbkrk/voicers"
+repository = "https://github.com/rgbkrk/voice"
 readme = "README.md"
 
 [[bin]]
@@ -24,13 +24,13 @@ pubkey = "RWRmHACtt9SpjQB/l+dAoCe+3iqxq/Xe/90P6dyCW70axzy3UkWl+Ave"
 
 [dependencies]
 voice-tts = { version = "0.3.0", path = "../voice-tts" }
-candle-core = { version = "0.9", features = ["metal"] }
-voice-g2p = { version = "0.2.0", path = "../voice-g2p" }
+candle-core = { workspace = true }
+voice-g2p = { version = "0.2.2", path = "../voice-g2p" }
 voice-stt = { version = "0.2.0", path = "../voice-stt" }
 clap = { version = "4", features = ["derive"] }
 rodio = { version = "0.22", features = ["experimental"] }
-hound = "3"
+hound = { workspace = true }
 pulldown-cmark = "0.13.1"
 ctrlc = "3.5.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }

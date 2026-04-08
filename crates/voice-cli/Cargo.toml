@@ -25,7 +25,7 @@ pubkey = "RWRmHACtt9SpjQB/l+dAoCe+3iqxq/Xe/90P6dyCW70axzy3UkWl+Ave"
 [dependencies]
 voice-tts = { version = "0.3.0", path = "../voice-tts" }
 candle-core = { version = "0.9", features = ["metal"] }
-voice-g2p = { version = "0.2.0", path = "../voice-g2p" }
+voice-g2p = { version = "0.2.2", path = "../voice-g2p" }
 voice-stt = { version = "0.2.0", path = "../voice-stt" }
 clap = { version = "4", features = ["derive"] }
 rodio = { version = "0.22", features = ["experimental"] }

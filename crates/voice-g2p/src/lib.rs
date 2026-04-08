@@ -64,8 +64,27 @@ impl G2P {
             lexicon: Lexicon::new(),
             fallback: EspeakFallback::with_path(config.espeak_path),
             unk: String::new(),
-            overrides: HashMap::new(),
+            overrides: Self::builtin_overrides(),
         }
+    }
+
+    /// Words whose default lexicon/espeak phonemes are wrong or misleading.
+    fn builtin_overrides() -> HashMap<String, String> {
+        const ENTRIES: &[(&str, &str)] = &[
+            ("demo", "dˈɛmO"),
+            ("demos", "dˈɛmOz"),
+            ("demultiplex", "dˌimˈʌltɪplɛks"),
+            ("demultiplexing", "dˌimˈʌltɪplɛksɪŋ"),
+            ("demux", "dˌimˈʌks"),
+            ("demuxing", "dˌimˈʌksɪŋ"),
+            ("jupyter", "ʤˈupɪTəɹ"),
+            ("nteract", "ˈɛntəɹˌækt"),
+            ("todo", "tˈudu"),
+        ];
+        ENTRIES
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect()
     }
 
     /// Set custom word-to-phoneme overrides (builder pattern).
@@ -73,7 +92,7 @@ impl G2P {
     /// Overrides map lowercase words to phoneme strings, checked before
     /// the lexicon and espeak fallback.
     pub fn with_overrides(mut self, overrides: HashMap<String, String>) -> Self {
-        self.overrides = overrides;
+        self.overrides.extend(overrides);
         self
     }
 
@@ -723,5 +742,19 @@ mod tests {
             result.contains(';'),
             "Semicolon should appear in phonemes: {result}"
         );
+    }
+
+    #[test]
+    fn test_builtin_overrides() {
+        let g2p = G2P::new();
+        assert_eq!(g2p.convert("demos").unwrap(), "dˈɛmOz");
+        assert_eq!(g2p.convert("demo").unwrap(), "dˈɛmO");
+        assert_eq!(g2p.convert("TODO").unwrap(), "tˈudu");
+        assert_eq!(g2p.convert("demuxing").unwrap(), "dˌimˈʌksɪŋ");
+        assert_eq!(g2p.convert("demux").unwrap(), "dˌimˈʌks");
+        assert_eq!(g2p.convert("demultiplexing").unwrap(), "dˌimˈʌltɪplɛksɪŋ");
+        assert_eq!(g2p.convert("demultiplex").unwrap(), "dˌimˈʌltɪplɛks");
+        assert_eq!(g2p.convert("Jupyter").unwrap(), "ʤˈupɪTəɹ");
+        assert_eq!(g2p.convert("nteract").unwrap(), "ˈɛntəɹˌækt");
     }
 }

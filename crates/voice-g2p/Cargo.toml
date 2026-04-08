@@ -7,6 +7,10 @@ description = "Grapheme-to-phoneme conversion: misaki dictionary + espeak-ng fal
 license = "MIT"
 repository = "https://github.com/rgbkrk/voice"
 
+[[bin]]
+name = "generate-bronze"
+path = "src/bin/generate_bronze.rs"
+
 [dependencies]
 fancy-regex = "0.17"
 serde = { workspace = true }

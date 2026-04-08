@@ -29,6 +29,7 @@ pub enum LexEntry {
 
 const US_GOLD_JSON: &str = include_str!("../data/us_gold.json");
 const US_SILVER_JSON: &str = include_str!("../data/us_silver.json");
+const US_BRONZE_JSON: &str = include_str!("../data/us_bronze.json");
 
 // ---------------------------------------------------------------------------
 // Symbol tables (mirrors Python ADD_SYMBOLS / SYMBOLS)
@@ -87,6 +88,7 @@ pub struct Lexicon {
     cap_stresses: (f32, f32),
     golds: HashMap<String, LexEntry>,
     silvers: HashMap<String, LexEntry>,
+    bronzes: HashMap<String, LexEntry>,
 }
 
 impl Default for Lexicon {
@@ -102,11 +104,14 @@ impl Lexicon {
             serde_json::from_str(US_GOLD_JSON).expect("failed to parse us_gold.json");
         let silvers_raw: HashMap<String, LexEntry> =
             serde_json::from_str(US_SILVER_JSON).expect("failed to parse us_silver.json");
+        let bronzes_raw: HashMap<String, LexEntry> =
+            serde_json::from_str(US_BRONZE_JSON).expect("failed to parse us_bronze.json");
 
         Self {
             cap_stresses: (0.5, 2.0),
             golds: Self::grow_dictionary(golds_raw),
             silvers: Self::grow_dictionary(silvers_raw),
+            bronzes: Self::grow_dictionary(bronzes_raw),
         }
     }
 
@@ -285,7 +290,11 @@ impl Lexicon {
     // -----------------------------------------------------------------------
 
     pub fn is_known(&self, word: &str, _tag: &str) -> bool {
-        if self.golds.contains_key(word) || is_symbol(word) || self.silvers.contains_key(word) {
+        if self.golds.contains_key(word)
+            || is_symbol(word)
+            || self.silvers.contains_key(word)
+            || self.bronzes.contains_key(word)
+        {
             return true;
         } else if !is_alpha(word) || !all_lexicon_ords(word) {
             return false;
@@ -328,6 +337,13 @@ impl Lexicon {
             if let Some(entry) = self.silvers.get(&word) {
                 ps_entry = Some(entry.clone());
                 rating = 3;
+            }
+        }
+
+        if ps_entry.is_none() && is_nnp != Some(true) {
+            if let Some(entry) = self.bronzes.get(&word) {
+                ps_entry = Some(entry.clone());
+                rating = 2;
             }
         }
 
@@ -575,9 +591,11 @@ impl Lexicon {
             && (tag != "NNP" || word.chars().count() > 7)
             && !self.golds.contains_key(&word)
             && !self.silvers.contains_key(&word)
+            && !self.bronzes.contains_key(&word)
             && (word == word.to_uppercase() || is_lower_after_first(&word))
             && (self.golds.contains_key(&wl)
                 || self.silvers.contains_key(&wl)
+                || self.bronzes.contains_key(&wl)
                 || self.stem_s(&wl, tag, stress, ctx).0.is_some()
                 || self.stem_ed(&wl, tag, stress, ctx).0.is_some()
                 || self.stem_ing(&wl, tag, stress, ctx).0.is_some())

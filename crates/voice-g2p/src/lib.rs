@@ -87,7 +87,6 @@ impl G2P {
             ("rxjs", "ˈɑɹ ˈɛks ʤˈA ˈɛs"),
             ("tsconfig", "tˈi ˈɛs kˌɑnfˈɪɡ"),
             ("vitest", "vˈItˌɛst"),
-            ("wasm", "wˈɑzᵊm"),
         ];
         ENTRIES
             .iter()
@@ -198,6 +197,19 @@ impl G2P {
     ///
     /// Ported from en.py:694-731.
     fn resolve_group(&self, group: &mut [MToken], ctx: &TokenContext) {
+        // Check overrides for the whole merged text before the expand/shrink loop
+        let merged_text: String = group.iter().map(|tk| tk.text.as_str()).collect();
+        let lookup_key = merged_text.to_lowercase();
+        if let Some(ps) = self.overrides.get(&lookup_key) {
+            group[0].phonemes = Some(ps.clone());
+            group[0].underscore.rating = Some(5);
+            for j in 1..group.len() {
+                group[j].phonemes = Some(String::new());
+                group[j].underscore.rating = Some(5);
+            }
+            return;
+        }
+
         let n = group.len();
         let mut left = 0;
         let mut right = n;
@@ -764,6 +776,11 @@ mod tests {
         assert_eq!(g2p.convert("demultiplex").unwrap(), "dˌimˈʌltɪplɛks");
         assert_eq!(g2p.convert("Jupyter").unwrap(), "ʤˈupɪTəɹ");
         assert_eq!(g2p.convert("nteract").unwrap(), "ˈɛntəɹˌækt");
+        assert_eq!(g2p.convert("vitest").unwrap(), "vˈItˌɛst");
+        assert_eq!(g2p.convert("tsconfig").unwrap(), "tˈi ˈɛs kˌɑnfˈɪɡ");
+        assert_eq!(g2p.convert("ipynb").unwrap(), "nˈOtbˌʊk fˈIl");
+        assert_eq!(g2p.convert("PR").unwrap(), "pˈi ˈɑɹ");
+        assert_eq!(g2p.convert("PRs").unwrap(), "pˈi ˈɑɹz");
     }
 
     // -- camelCase tests ------------------------------------------------------

@@ -244,6 +244,35 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_e2m_us_goat_vowel() {
+        // o^ʊ → O (goat diphthong with tie marker)
+        let input = "h\u{0259}l\u{02C8}o^\u{028A}";
+        let result = apply_e2m_us(input);
+        assert!(
+            result.contains('O'),
+            "Expected O diphthong in: {result}"
+        );
+        assert!(
+            !result.contains('^'),
+            "Tie markers should be removed: {result}"
+        );
+    }
+
+    #[test]
+    fn test_apply_e2m_us_affricates() {
+        // d^ʒ → ʤ, t^ʃ → ʧ
+        assert!(apply_e2m_us("d^\u{0292}\u{028C}mp").contains('\u{02A4}'));
+        assert!(apply_e2m_us("t^\u{0283}\u{026A}p").contains('\u{02A7}'));
+    }
+
+    #[test]
+    fn test_apply_e2m_us_nurse_vowel() {
+        // ɜːɹ → ɜɹ (nurse vowel, remove length mark)
+        let result = apply_e2m_us("w\u{025C}\u{02D0}\u{0279}ld");
+        assert_eq!(result, "w\u{025C}\u{0279}ld");
+    }
+
+    #[test]
     fn test_convert_word_available() {
         let fb = EspeakFallback::new();
         if !fb.is_available() {

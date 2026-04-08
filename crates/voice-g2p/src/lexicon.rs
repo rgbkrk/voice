@@ -111,7 +111,9 @@ impl Lexicon {
             cap_stresses: (0.5, 2.0),
             golds: Self::grow_dictionary(golds_raw),
             silvers: Self::grow_dictionary(silvers_raw),
-            bronzes: Self::grow_dictionary(bronzes_raw),
+            // Bronze entries are all lowercase (generated), so skip grow_dictionary —
+            // the get_word lowercasing logic handles case variants already.
+            bronzes: bronzes_raw,
         }
     }
 

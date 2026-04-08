@@ -22,12 +22,11 @@ const US_SILVER_JSON: &str = include_str!("../../data/us_silver.json");
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    let wordlist_path = get_arg(&args, "--wordlist")
-        .unwrap_or_else(|| "/usr/share/dict/words".to_string());
-    let output_path = get_arg(&args, "--output")
-        .unwrap_or_else(|| "data/us_bronze.json".to_string());
-    let espeak_path = get_arg(&args, "--espeak-path")
-        .unwrap_or_else(|| "espeak-ng".to_string());
+    let wordlist_path =
+        get_arg(&args, "--wordlist").unwrap_or_else(|| "/usr/share/dict/words".to_string());
+    let output_path =
+        get_arg(&args, "--output").unwrap_or_else(|| "data/us_bronze.json".to_string());
+    let espeak_path = get_arg(&args, "--espeak-path").unwrap_or_else(|| "espeak-ng".to_string());
 
     // Load existing dictionaries to skip known words
     eprintln!("Loading gold and silver dictionaries...");
@@ -51,8 +50,7 @@ fn main() {
 
     // Read and filter word list
     eprintln!("Reading word list from {}...", wordlist_path);
-    let wordlist_file =
-        std::fs::read_to_string(&wordlist_path).expect("failed to read word list");
+    let wordlist_file = std::fs::read_to_string(&wordlist_path).expect("failed to read word list");
 
     let mut words: Vec<String> = wordlist_file
         .lines()
@@ -75,11 +73,7 @@ fn main() {
     eprintln!("Running espeak-ng in chunks of {}...", CHUNK_SIZE);
     for (chunk_idx, chunk) in words.chunks(CHUNK_SIZE).enumerate() {
         let chunk_start = chunk_idx * CHUNK_SIZE;
-        eprint!(
-            "\r  {}/{} words processed...",
-            chunk_start,
-            words.len()
-        );
+        eprint!("\r  {}/{} words processed...", chunk_start, words.len());
 
         let mut child = Command::new(&espeak_path)
             .args(["--ipa", "-q", "-v", "en-us", "--tie=^"])
@@ -98,7 +92,10 @@ fn main() {
 
         let output = child.wait_with_output().expect("espeak-ng failed");
         if !output.status.success() {
-            eprintln!("\nespeak-ng failed on chunk {}, falling back to per-word", chunk_idx);
+            eprintln!(
+                "\nespeak-ng failed on chunk {}, falling back to per-word",
+                chunk_idx
+            );
             let fallback = process_per_word(chunk, &espeak_path);
             result.extend(fallback);
             continue;
@@ -110,7 +107,9 @@ fn main() {
         if lines.len() != chunk.len() {
             eprintln!(
                 "\nWARNING: chunk {} got {} lines for {} words, falling back",
-                chunk_idx, lines.len(), chunk.len()
+                chunk_idx,
+                lines.len(),
+                chunk.len()
             );
             let fallback = process_per_word(chunk, &espeak_path);
             result.extend(fallback);
@@ -172,8 +171,7 @@ fn process_per_word(words: &[String], espeak_path: &str) -> BTreeMap<String, Str
 }
 
 fn write_output(result: &BTreeMap<String, String>, output_path: &str) {
-    let json =
-        serde_json::to_string_pretty(result).expect("failed to serialize JSON");
+    let json = serde_json::to_string_pretty(result).expect("failed to serialize JSON");
     std::fs::write(output_path, &json).expect("failed to write output file");
     let size_mb = json.len() as f64 / 1_048_576.0;
     eprintln!(

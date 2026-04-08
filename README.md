@@ -1,6 +1,6 @@
 # voice
 
-Rust TTS & STT on Apple Silicon, powered by [MLX](https://github.com/oxiglade/mlx-rs). Ships the [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) 82M-parameter TTS model with a full English G2P pipeline, and [Moonshine](https://huggingface.co/UsefulSensors/moonshine-base) for speech-to-text.
+Rust TTS & STT on Apple Silicon, powered by [candle](https://github.com/huggingface/candle) with Metal GPU acceleration. Ships the [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) 82M-parameter TTS model with a full English G2P pipeline, and [Whisper](https://huggingface.co/distil-whisper/distil-large-v3) for speech-to-text.
 
 Faster time-to-first-speech than macOS `say`, with dramatically better audio quality. STT runs at ~50× real-time on Apple Silicon.
 
@@ -32,8 +32,6 @@ git clone https://github.com/rgbkrk/voice.git
 cd voice
 cargo install --path crates/voice-cli
 ```
-
-> **Why not `cargo install voice`?** The Metal shader library path is baked in at compile time by mlx-sys and points to a temp directory that gets cleaned up after install. This is an [upstream mlx-rs issue](https://github.com/oxiglade/mlx-rs/issues/327). Building from source or using `cargo binstall` avoids this entirely.
 
 > **Why git-lfs?** Voice data (`.safetensors`) and tagger weights are stored with Git LFS. Without it, those files are tiny pointers instead of actual data — the build will catch this and tell you what to do.
 
@@ -139,21 +137,21 @@ Options:
 
 ## Speech-to-text
 
-STT uses the [Moonshine](https://huggingface.co/UsefulSensors/moonshine-base) model from Useful Sensors — a compact encoder-decoder transformer designed for on-device speech recognition.
+STT uses [distil-whisper](https://huggingface.co/distil-whisper/distil-large-v3) models running on Metal GPU via candle — knowledge-distilled versions of OpenAI's Whisper optimized for fast on-device transcription.
 
-| Model | Repo ID | Params |
-|-------|---------|--------|
-| Moonshine Tiny | `UsefulSensors/moonshine-tiny` | 27M |
-| Moonshine Base | `UsefulSensors/moonshine-base` | 61M |
+| Model | Repo ID | Params | Notes |
+|-------|---------|--------|-------|
+| Distil Large v3 | `distil-whisper/distil-large-v3` | 756M | Multilingual (default) |
+| Distil Medium English | `distil-whisper/distil-medium.en` | 394M | English-only, faster |
 
-Performance is ~50× real-time on Apple Silicon (a 10-second recording transcribes in ~200ms).
+Performance is ~50× real-time on Apple Silicon (a 10-second recording transcribes in ~200ms). Configs and tokenizers for known models are embedded in the binary.
 
 **Adaptive noise floor**: Before recording, `voice listen` calibrates against ambient noise for ~500ms, then sets a silence threshold relative to the noise floor. This avoids false triggers in noisy environments and missed speech in quiet ones. A **ding** sound plays when the mic is ready.
 
-**Model selection**: The default model is `moonshine-base`. Override with the `STT_MODEL` environment variable:
+**Model selection**: The default model is `distil-whisper/distil-large-v3`. Override with the `STT_MODEL` environment variable:
 
 ```bash
-STT_MODEL=UsefulSensors/moonshine-tiny voice listen
+STT_MODEL=distil-whisper/distil-medium.en voice listen
 ```
 
 ## JSON-RPC server
@@ -266,9 +264,9 @@ All other voices are fetched from HuggingFace Hub on first use:
 |-------|-------------|
 | [`voice`](https://crates.io/crates/voice) | CLI binary — installs as `voice` |
 | [`voice-tts`](https://crates.io/crates/voice-tts) | Core TTS library — model loading, inference, WAV output |
-| [`voice-stt`](https://crates.io/crates/voice-stt) | Speech-to-text library — Moonshine model, transcription, resampling |
-| [`voice-nn`](https://crates.io/crates/voice-nn) | Neural network modules — ALBERT, BiLSTM, vocoder, prosody |
-| [`voice-dsp`](https://crates.io/crates/voice-dsp) | DSP primitives — STFT, iSTFT, overlap-add, windowing |
+| [`voice-stt`](https://crates.io/crates/voice-stt) | Speech-to-text library — Whisper transcription, resampling |
+| [`voice-kokoro`](https://crates.io/crates/voice-kokoro) | Kokoro TTS backend — ALBERT encoder, prosody predictor, iSTFT decoder |
+| [`voice-whisper`](https://crates.io/crates/voice-whisper) | Whisper STT backend — greedy decoding, GPU mel spectrogram |
 | [`voice-g2p`](https://crates.io/crates/voice-g2p) | Grapheme-to-phoneme — misaki dictionary + espeak-ng fallback |
 
 ## Library usage
@@ -323,7 +321,7 @@ fn main() -> voice_tts::Result<()> {
 
 ```rust
 fn main() -> voice_stt::Result<()> {
-    let mut model = voice_stt::load_model("UsefulSensors/moonshine-tiny")?;
+    let mut model = voice_stt::load_model("distil-whisper/distil-large-v3")?;
     let result = voice_stt::transcribe(&mut model, "audio.wav")?;
     println!("{}", result.text);
     Ok(())
@@ -338,28 +336,20 @@ fn main() -> voice_stt::Result<()> {
 - **Inference**: StyleTTS2-based model with ISTFT vocoder head. Audio chunks stream to speakers as they're generated — the first chunk plays while subsequent chunks are still synthesizing
 - **Startup**: Model loads in a background thread while text resolution, G2P, and voice loading happen on the main thread
 
-### STT: Moonshine (27M / 61M)
+### STT: Whisper (distil-large-v3 / distil-medium.en)
 
-- **Learned audio frontend**: Three Conv1d layers with progressive stride (384× total downsampling) replace mel spectrograms — raw 16kHz audio goes directly into the encoder
-- **Partial RoPE**: Only a fraction of head dimensions receive rotary positional encoding; the rest pass through unmodified
-- **SwiGLU decoder MLP**: Gated SiLU activation for better gradient flow
-- **Tied embeddings**: Output projection reuses the token embedding matrix
+- **GPU mel spectrogram**: Preprocessing runs on Metal GPU via candle
+- **Encoder-decoder transformer**: Standard Whisper architecture with knowledge distillation for faster inference
 - **Greedy decode with KV cache**: Encoder output is computed once, then cached cross-attention keys/values are reused across all decoder steps
+- **Embedded configs**: Tokenizers and model configs for known distil-whisper models are built into the binary
 
 ## Requirements
 
-- macOS with Apple Silicon (MLX requirement)
+- macOS with Apple Silicon (Metal GPU acceleration)
 - Rust 1.85+
 - Git LFS (`brew install git-lfs && git lfs install`)
-- Xcode command line tools (for MLX Metal compilation)
-- Xcode license accepted: `sudo xcodebuild -license`
-- Metal Toolchain (Xcode 17+): `xcodebuild -downloadComponent MetalToolchain`
+- Xcode command line tools
 - espeak-ng (optional, for G2P fallback on unknown words): `brew install espeak-ng`
-
-> **Fresh Mac?** If the build fails with linker errors mentioning "You have not
-> agreed to the Xcode license agreements", run `sudo xcodebuild -license`.
-> If it fails with "cannot execute tool 'metal' due to missing Metal Toolchain",
-> run `xcodebuild -downloadComponent MetalToolchain`. Then retry the build.
 
 ## License
 

@@ -70,15 +70,21 @@ impl G2P {
 
     /// Words whose default lexicon/espeak phonemes are wrong or misleading.
     fn builtin_overrides() -> HashMap<String, String> {
-        HashMap::from([
-            ("demos".into(), "dˈɛmOz".into()),
-            ("demo".into(), "dˈɛmO".into()),
-            ("todo".into(), "tˈudu".into()),
-            ("demuxing".into(), "dˌimˈʌksɪŋ".into()),
-            ("demux".into(), "dˌimˈʌks".into()),
-            ("demultiplexing".into(), "dˌimˈʌltɪplɛksɪŋ".into()),
-            ("demultiplex".into(), "dˌimˈʌltɪplɛks".into()),
-        ])
+        const ENTRIES: &[(&str, &str)] = &[
+            ("demo", "dˈɛmO"),
+            ("demos", "dˈɛmOz"),
+            ("demultiplex", "dˌimˈʌltɪplɛks"),
+            ("demultiplexing", "dˌimˈʌltɪplɛksɪŋ"),
+            ("demux", "dˌimˈʌks"),
+            ("demuxing", "dˌimˈʌksɪŋ"),
+            ("jupyter", "ʤˈupɪTəɹ"),
+            ("nteract", "ˈɛntəɹˌækt"),
+            ("todo", "tˈudu"),
+        ];
+        ENTRIES
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect()
     }
 
     /// Set custom word-to-phoneme overrides (builder pattern).
@@ -748,5 +754,7 @@ mod tests {
         assert_eq!(g2p.convert("demux").unwrap(), "dˌimˈʌks");
         assert_eq!(g2p.convert("demultiplexing").unwrap(), "dˌimˈʌltɪplɛksɪŋ");
         assert_eq!(g2p.convert("demultiplex").unwrap(), "dˌimˈʌltɪplɛks");
+        assert_eq!(g2p.convert("Jupyter").unwrap(), "ʤˈupɪTəɹ");
+        assert_eq!(g2p.convert("nteract").unwrap(), "ˈɛntəɹˌækt");
     }
 }

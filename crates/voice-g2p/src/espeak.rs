@@ -248,10 +248,7 @@ mod tests {
         // o^ʊ → O (goat diphthong with tie marker)
         let input = "h\u{0259}l\u{02C8}o^\u{028A}";
         let result = apply_e2m_us(input);
-        assert!(
-            result.contains('O'),
-            "Expected O diphthong in: {result}"
-        );
+        assert!(result.contains('O'), "Expected O diphthong in: {result}");
         assert!(
             !result.contains('^'),
             "Tie markers should be removed: {result}"

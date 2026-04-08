@@ -203,9 +203,9 @@ impl G2P {
         if let Some(ps) = self.overrides.get(&lookup_key) {
             group[0].phonemes = Some(ps.clone());
             group[0].underscore.rating = Some(5);
-            for j in 1..group.len() {
-                group[j].phonemes = Some(String::new());
-                group[j].underscore.rating = Some(5);
+            for tk in group.iter_mut().skip(1) {
+                tk.phonemes = Some(String::new());
+                tk.underscore.rating = Some(5);
             }
             return;
         }

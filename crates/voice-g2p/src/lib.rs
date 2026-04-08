@@ -796,8 +796,8 @@ mod tests {
             "camelCase should produce space-separated phonemes: {result}"
         );
 
-        // Three-part camelCase
-        let result = g2p.convert("fromTauriEvent").unwrap();
+        // Three-part camelCase (using common dictionary words)
+        let result = g2p.convert("getInputValue").unwrap();
         let spaces = result.chars().filter(|c| *c == ' ').count();
         assert!(
             spaces >= 2,

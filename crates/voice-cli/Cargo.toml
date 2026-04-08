@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.85.0"
 description = "CLI for fast text-to-speech and speech-to-text"
 license = "MIT"
-repository = "https://github.com/rgbkrk/voicers"
+repository = "https://github.com/rgbkrk/voice"
 readme = "README.md"
 
 [[bin]]

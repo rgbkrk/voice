@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.85.0"
 description = "Whisper STT on candle with Metal acceleration"
 license = "MIT"
-repository = "https://github.com/rgbkrk/voicers"
+repository = "https://github.com/rgbkrk/voice"
 
 [dependencies]
 candle-core = { workspace = true }

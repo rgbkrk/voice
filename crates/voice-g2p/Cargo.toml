@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.85.0"
 description = "Grapheme-to-phoneme conversion: misaki dictionary + espeak-ng fallback"
 license = "MIT"
-repository = "https://github.com/rgbkrk/voicers"
+repository = "https://github.com/rgbkrk/voice"
 
 [dependencies]
 fancy-regex = "0.17"

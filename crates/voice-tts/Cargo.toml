@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.85.0"
 description = "Rust TTS library backed by candle + Metal, starting with Kokoro"
 license = "MIT"
-repository = "https://github.com/rgbkrk/voicers"
+repository = "https://github.com/rgbkrk/voice"
 
 [dependencies]
 voice-kokoro = { path = "../voice-kokoro" }

@@ -80,6 +80,13 @@ impl G2P {
             ("jupyter", "ʤˈupɪTəɹ"),
             ("nteract", "ˈɛntəɹˌækt"),
             ("todo", "tˈudu"),
+            // Developer acronyms and initialisms
+            ("ipynb", "nˈOtbˌʊk fˈIl"),
+            ("pr", "pˈi ˈɑɹ"),
+            ("prs", "pˈi ˈɑɹz"),
+            ("rxjs", "ˈɑɹ ˈɛks ʤˈA ˈɛs"),
+            ("tsconfig", "tˈi ˈɛs kˌɑnfˈɪɡ"),
+            ("vitest", "vˈItˌɛst"),
         ];
         ENTRIES
             .iter()
@@ -190,6 +197,19 @@ impl G2P {
     ///
     /// Ported from en.py:694-731.
     fn resolve_group(&self, group: &mut [MToken], ctx: &TokenContext) {
+        // Check overrides for the whole merged text before the expand/shrink loop
+        let merged_text: String = group.iter().map(|tk| tk.text.as_str()).collect();
+        let lookup_key = merged_text.to_lowercase();
+        if let Some(ps) = self.overrides.get(&lookup_key) {
+            group[0].phonemes = Some(ps.clone());
+            group[0].underscore.rating = Some(5);
+            for tk in group.iter_mut().skip(1) {
+                tk.phonemes = Some(String::new());
+                tk.underscore.rating = Some(5);
+            }
+            return;
+        }
+
         let n = group.len();
         let mut left = 0;
         let mut right = n;
@@ -336,7 +356,7 @@ impl G2P {
                     tk.phonemes = Some(String::new());
                     tk.underscore.rating = Some(3);
                 }
-            } else if i > 0 {
+            } else if i > 0 && !tk.underscore.prespace {
                 tk.underscore.prespace = prespace;
             }
         }
@@ -756,5 +776,39 @@ mod tests {
         assert_eq!(g2p.convert("demultiplex").unwrap(), "dˌimˈʌltɪplɛks");
         assert_eq!(g2p.convert("Jupyter").unwrap(), "ʤˈupɪTəɹ");
         assert_eq!(g2p.convert("nteract").unwrap(), "ˈɛntəɹˌækt");
+        assert_eq!(g2p.convert("vitest").unwrap(), "vˈItˌɛst");
+        assert_eq!(g2p.convert("tsconfig").unwrap(), "tˈi ˈɛs kˌɑnfˈɪɡ");
+        assert_eq!(g2p.convert("ipynb").unwrap(), "nˈOtbˌʊk fˈIl");
+        assert_eq!(g2p.convert("PR").unwrap(), "pˈi ˈɑɹ");
+        assert_eq!(g2p.convert("PRs").unwrap(), "pˈi ˈɑɹz");
+    }
+
+    // -- camelCase tests ------------------------------------------------------
+
+    #[test]
+    fn test_camel_case_spaced_phonemes() {
+        let g2p = G2P::new();
+
+        // Two-part camelCase
+        let result = g2p.convert("useEffect").unwrap();
+        assert!(
+            result.contains(' '),
+            "camelCase should produce space-separated phonemes: {result}"
+        );
+
+        // Three-part camelCase (using common dictionary words)
+        let result = g2p.convert("getInputValue").unwrap();
+        let spaces = result.chars().filter(|c| *c == ' ').count();
+        assert!(
+            spaces >= 2,
+            "Three-part camelCase should have 2+ spaces: {result}"
+        );
+
+        // Single word should not gain a space
+        let result = g2p.convert("hello").unwrap();
+        assert!(
+            !result.contains(' '),
+            "Single word should not have spaces: {result}"
+        );
     }
 }

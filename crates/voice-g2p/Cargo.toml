@@ -9,7 +9,7 @@ repository = "https://github.com/rgbkrk/voicers"
 
 [dependencies]
 fancy-regex = "0.17"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 unicode-normalization = "0.1"

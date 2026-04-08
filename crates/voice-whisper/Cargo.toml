@@ -8,11 +8,11 @@ license = "MIT"
 repository = "https://github.com/rgbkrk/voicers"
 
 [dependencies]
-candle-core = { version = "0.9", features = ["metal"] }
-candle-nn = { version = "0.9", features = ["metal"] }
-candle-transformers = "0.9"
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+candle-transformers = { workspace = true }
 byteorder = "1"
-tokenizers = "0.21"
-thiserror = "2"
+tokenizers = { workspace = true }
+thiserror = { workspace = true }
 rand = "0.9"
 rand_distr = "0.5"

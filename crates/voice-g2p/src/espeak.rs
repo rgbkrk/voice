@@ -9,7 +9,7 @@ use std::process::Command;
 
 /// Espeak-to-Misaki replacement pairs, sorted by key length descending
 /// so longest-match-first replacement works correctly.
-const E2M: &[(&str, &str)] = &[
+pub(crate) const E2M: &[(&str, &str)] = &[
     // 4+ character sequences
     ("\u{0294}\u{02CC}n\u{0329}", "t\u{1D4A}n"), // ʔˌn̩ → tᵊn
     // 3 character sequences
@@ -91,38 +91,23 @@ impl EspeakFallback {
             return None;
         }
 
-        let mut ps = ps.to_string();
-
-        // Apply E2M replacements (longest-match-first, already sorted by key length desc)
-        for &(old, new) in E2M {
-            ps = ps.replace(old, new);
-        }
-
-        // Handle syllabic consonant diacritic U+0329: (\S)\u0329 → ᵊ\1
-        // We do this with a simple char-based approach instead of pulling in regex.
-        ps = replace_syllabic_mark(&ps);
-
-        // Language-specific adjustments
         if self.british {
+            // British path kept inline (not extracted since bronze is US-only)
+            let mut ps = ps.to_string();
+            for &(old, new) in E2M {
+                ps = ps.replace(old, new);
+            }
+            ps = replace_syllabic_mark(&ps);
             ps = ps.replace("e^ə", "\u{025B}\u{02D0}"); // e^ə → ɛː
             ps = ps.replace("i\u{0259}", "\u{026A}\u{0259}"); // iə → ɪə
             ps = ps.replace("\u{0259}^\u{028A}", "Q"); // ə^ʊ → Q
+            ps = ps.replace('^', "");
+            ps = ps.replace('\u{027E}', "T");
+            ps = ps.replace('\u{0294}', "t");
+            Some((ps, 2))
         } else {
-            ps = ps.replace("o^\u{028A}", "O"); // o^ʊ → O
-            ps = ps.replace("\u{025C}\u{02D0}\u{0279}", "\u{025C}\u{0279}"); // ɜːɹ → ɜɹ
-            ps = ps.replace("\u{025C}\u{02D0}", "\u{025C}\u{0279}"); // ɜː → ɜɹ
-            ps = ps.replace("\u{026A}\u{0259}", "i\u{0259}"); // ɪə → iə
-            ps = ps.replace('\u{02D0}', ""); // remove remaining ː
+            Some((apply_e2m_us(ps), 2))
         }
-
-        // Remove remaining tie markers
-        ps = ps.replace('^', "");
-
-        // Legacy conversion (version != 2.0)
-        ps = ps.replace('\u{027E}', "T"); // ɾ → T
-        ps = ps.replace('\u{0294}', "t"); // ʔ → t
-
-        Some((ps, 2))
     }
 }
 
@@ -135,7 +120,7 @@ impl Default for EspeakFallback {
 /// Handle the syllabic consonant diacritic (U+0329 COMBINING VERTICAL LINE BELOW).
 /// Pattern: any non-whitespace char followed by U+0329 → ᵊ + that char.
 /// Then remove any remaining U+0329.
-fn replace_syllabic_mark(input: &str) -> String {
+pub(crate) fn replace_syllabic_mark(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
     let mut result = String::with_capacity(input.len());
     let mut i = 0;
@@ -156,6 +141,38 @@ fn replace_syllabic_mark(input: &str) -> String {
     }
 
     result
+}
+
+/// Convert raw espeak-ng IPA output (with tie markers) to Kokoro phonemes.
+///
+/// Applies the E2M mapping table, syllabic mark handling, US-English vowel
+/// adjustments, tie marker removal, and legacy conversions.
+pub fn apply_e2m_us(raw_ipa: &str) -> String {
+    let mut ps = raw_ipa.to_string();
+
+    // Apply E2M replacements (longest-match-first, already sorted by key length desc)
+    for &(old, new) in E2M {
+        ps = ps.replace(old, new);
+    }
+
+    // Handle syllabic consonant diacritic U+0329
+    ps = replace_syllabic_mark(&ps);
+
+    // US-English adjustments
+    ps = ps.replace("o^\u{028A}", "O"); // o^ʊ → O
+    ps = ps.replace("\u{025C}\u{02D0}\u{0279}", "\u{025C}\u{0279}"); // ɜːɹ → ɜɹ
+    ps = ps.replace("\u{025C}\u{02D0}", "\u{025C}\u{0279}"); // ɜː → ɜɹ
+    ps = ps.replace("\u{026A}\u{0259}", "i\u{0259}"); // ɪə → iə
+    ps = ps.replace('\u{02D0}', ""); // remove remaining ː
+
+    // Remove remaining tie markers
+    ps = ps.replace('^', "");
+
+    // Legacy conversion
+    ps = ps.replace('\u{027E}', "T"); // ɾ → T
+    ps = ps.replace('\u{0294}', "t"); // ʔ → t
+
+    ps
 }
 
 /// Sentence-level espeak-ng phonemization (no tie marker).
@@ -224,6 +241,32 @@ mod tests {
             s = s.replace(old, new);
         }
         assert_eq!(s, "I");
+    }
+
+    #[test]
+    fn test_apply_e2m_us_goat_vowel() {
+        // o^ʊ → O (goat diphthong with tie marker)
+        let input = "h\u{0259}l\u{02C8}o^\u{028A}";
+        let result = apply_e2m_us(input);
+        assert!(result.contains('O'), "Expected O diphthong in: {result}");
+        assert!(
+            !result.contains('^'),
+            "Tie markers should be removed: {result}"
+        );
+    }
+
+    #[test]
+    fn test_apply_e2m_us_affricates() {
+        // d^ʒ → ʤ, t^ʃ → ʧ
+        assert!(apply_e2m_us("d^\u{0292}\u{028C}mp").contains('\u{02A4}'));
+        assert!(apply_e2m_us("t^\u{0283}\u{026A}p").contains('\u{02A7}'));
+    }
+
+    #[test]
+    fn test_apply_e2m_us_nurse_vowel() {
+        // ɜːɹ → ɜɹ (nurse vowel, remove length mark)
+        let result = apply_e2m_us("w\u{025C}\u{02D0}\u{0279}ld");
+        assert_eq!(result, "w\u{025C}\u{0279}ld");
     }
 
     #[test]

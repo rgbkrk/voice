@@ -6,6 +6,6 @@ export default defineConfig({
   build: {
     target: 'esnext',
     minify: 'terser',
-    outDir: '../src-tauri/gen/assets',
+    outDir: 'dist',
   },
 })

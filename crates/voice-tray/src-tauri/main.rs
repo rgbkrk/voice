@@ -74,8 +74,8 @@ fn main() {
                                         if let Ok(Some(monitor)) = window.current_monitor() {
                                             let size = monitor.size();
                                             // Position in top-right, below menu bar
-                                            let x = size.width as f64 - 400.0;  // 380 width + 20 padding
-                                            let y = 25.0;  // Below menu bar
+                                            let x = size.width as f64 - 400.0; // 380 width + 20 padding
+                                            let y = 25.0; // Below menu bar
                                             let _ = window.set_position(LogicalPosition::new(x, y));
                                         }
                                     }
@@ -89,12 +89,12 @@ fn main() {
                 });
             }
 
-            // Spawn file watcher in background thread
-            std::thread::spawn(move || {
-                eprintln!("Starting file watcher thread...");
+            // Spawn file watcher task on Tauri's async runtime
+            tauri::async_runtime::spawn(async move {
+                eprintln!("Starting file watcher task...");
 
                 // Create file watcher
-                let watcher = match automerge_sync::FileWatcher::new() {
+                let mut watcher = match automerge_sync::FileWatcher::new() {
                     Ok(w) => w,
                     Err(e) => {
                         eprintln!("Failed to create file watcher: {}", e);
@@ -122,7 +122,7 @@ fn main() {
 
                 // Watch for changes in a loop
                 loop {
-                    if let Some(new_state) = watcher.wait_for_change(Duration::from_secs(1)) {
+                    if let Some(new_state) = watcher.wait_for_change(Duration::from_secs(1)).await {
                         eprintln!("State file changed, updating...");
                         watcher_state.update_voice_state(new_state.clone());
 

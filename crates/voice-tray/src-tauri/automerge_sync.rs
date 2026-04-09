@@ -6,8 +6,8 @@ use automorph::{Automorph, ChangeReport};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::time::Duration;
 
 /// Temporary struct to read state from Automerge document.
 #[derive(Automorph)]
@@ -130,7 +130,7 @@ fn extract_voice_state(doc: &AutoCommit) -> Result<VoiceState, String> {
 /// File system watcher for Automerge state file.
 pub struct FileWatcher {
     _watcher: RecommendedWatcher,
-    rx: mpsc::Receiver<Result<Event, notify::Error>>,
+    rx: mpsc::UnboundedReceiver<Result<Event, notify::Error>>,
     path: PathBuf,
 }
 
@@ -145,10 +145,12 @@ impl FileWatcher {
                 .map_err(|e| format!("Failed to create .voice dir: {}", e))?;
         }
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::unbounded_channel();
 
-        let mut watcher = notify::recommended_watcher(tx)
-            .map_err(|e| format!("Failed to create file watcher: {}", e))?;
+        let mut watcher = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        })
+        .map_err(|e| format!("Failed to create file watcher: {}", e))?;
 
         // Watch the parent directory (more reliable than watching file directly)
         let watch_dir = path.parent().unwrap();
@@ -163,10 +165,10 @@ impl FileWatcher {
         })
     }
 
-    /// Wait for next file change (blocking). Returns new state if file changed.
-    pub fn wait_for_change(&self, timeout: Duration) -> Option<VoiceState> {
-        match self.rx.recv_timeout(timeout) {
-            Ok(Ok(event)) => {
+    /// Wait for next file change (async). Returns new state if file changed.
+    pub async fn wait_for_change(&mut self, timeout: Duration) -> Option<VoiceState> {
+        match tokio::time::timeout(timeout, self.rx.recv()).await {
+            Ok(Some(Ok(event))) => {
                 // Check if event is for our state file
                 if self.is_state_file_event(&event) {
                     // File changed, reload state
@@ -181,15 +183,15 @@ impl FileWatcher {
                     None
                 }
             }
-            Ok(Err(e)) => {
+            Ok(Some(Err(e))) => {
                 eprintln!("File watcher error: {}", e);
                 None
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Ok(None) => {
                 eprintln!("File watcher disconnected");
                 None
             }
+            Err(_) => None, // Timeout
         }
     }
 

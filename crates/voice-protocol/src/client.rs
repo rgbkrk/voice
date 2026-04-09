@@ -87,14 +87,14 @@ impl DaemonClient {
         serde_json::from_slice::<Response>(payload).map_err(|e| format!("parse response: {}", e))
     }
 
-    /// Convenience: send a speak request.
+    /// Convenience: send a speak request. Blocks until playback completes.
     pub fn speak(
         &mut self,
         text: &str,
         voice: Option<&str>,
         speed: Option<f64>,
     ) -> Result<Response, String> {
-        let mut params = serde_json::json!({"text": text});
+        let mut params = serde_json::json!({"text": text, "wait": true});
         if let Some(v) = voice {
             params["voice"] = Value::String(v.to_string());
         }
@@ -104,18 +104,18 @@ impl DaemonClient {
         self.call("speak", params)
     }
 
-    /// Convenience: send a listen request.
+    /// Convenience: send a listen request. Blocks until transcription completes.
     pub fn listen(&mut self, max_duration_ms: Option<u64>) -> Result<Response, String> {
-        let mut params = serde_json::json!({});
+        let mut params = serde_json::json!({"wait": true});
         if let Some(ms) = max_duration_ms {
             params["max_duration_ms"] = serde_json::json!(ms);
         }
         self.call("listen", params)
     }
 
-    /// Convenience: send a converse request.
+    /// Convenience: send a converse request. Blocks until speak+listen completes.
     pub fn converse(&mut self, text: &str, voice: Option<&str>) -> Result<Response, String> {
-        let mut params = serde_json::json!({"text": text});
+        let mut params = serde_json::json!({"text": text, "wait": true});
         if let Some(v) = voice {
             params["voice"] = Value::String(v.to_string());
         }

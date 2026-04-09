@@ -1,7 +1,7 @@
 //! Request queue for serializing voice operations.
 
-use std::collections::VecDeque;
-use tokio::sync::{Mutex, Notify};
+use std::collections::{HashMap, VecDeque};
+use tokio::sync::{oneshot, Mutex, Notify};
 use uuid::Uuid;
 use voice_protocol::rpc::{DaemonState, ItemStatus, QueueItem};
 
@@ -42,7 +42,7 @@ impl VoiceRequest {
     }
 }
 
-/// Internal queue entry (richer than the protocol QueueItem).
+/// Internal queue entry.
 #[derive(Debug, Clone)]
 pub struct QueueEntry {
     pub id: String,
@@ -54,7 +54,6 @@ pub struct QueueEntry {
 }
 
 impl QueueEntry {
-    /// Convert to the protocol's QueueItem for serialization.
     fn to_protocol(&self) -> QueueItem {
         QueueItem {
             id: self.id.clone(),
@@ -68,10 +67,19 @@ impl QueueEntry {
     }
 }
 
+/// Result sent through the completion channel.
+#[derive(Debug, Clone)]
+pub struct CompletionResult {
+    pub status: ItemStatus,
+    pub result: Option<String>,
+}
+
 pub struct RequestQueue {
     items: Mutex<VecDeque<QueueEntry>>,
     current: Mutex<Option<QueueEntry>>,
     recent: Mutex<VecDeque<QueueEntry>>,
+    /// Completion channels: queue_id → sender. Signaled when an item finishes.
+    waiters: Mutex<HashMap<String, oneshot::Sender<CompletionResult>>>,
     pub notify: Notify,
 }
 
@@ -81,6 +89,7 @@ impl RequestQueue {
             items: Mutex::new(VecDeque::new()),
             current: Mutex::new(None),
             recent: Mutex::new(VecDeque::new()),
+            waiters: Mutex::new(HashMap::new()),
             notify: Notify::new(),
         }
     }
@@ -126,6 +135,14 @@ impl RequestQueue {
         id
     }
 
+    /// Register a waiter for a queue item. Returns a receiver that fires
+    /// when the item completes (or fails).
+    pub async fn wait_for(&self, queue_id: &str) -> oneshot::Receiver<CompletionResult> {
+        let (tx, rx) = oneshot::channel();
+        self.waiters.lock().await.insert(queue_id.to_string(), tx);
+        rx
+    }
+
     pub async fn dequeue(&self) -> Option<QueueEntry> {
         let mut items = self.items.lock().await;
         if let Some(mut entry) = items.pop_front() {
@@ -139,18 +156,35 @@ impl RequestQueue {
 
     pub async fn complete(&self, result: Option<String>) {
         if let Some(mut entry) = self.current.lock().await.take() {
+            let id = entry.id.clone();
             entry.status = ItemStatus::Completed;
-            entry.result = result;
+            entry.result = result.clone();
             self.push_recent(entry).await;
+            self.signal_waiter(
+                &id,
+                CompletionResult {
+                    status: ItemStatus::Completed,
+                    result,
+                },
+            )
+            .await;
         }
     }
 
-    #[allow(dead_code)]
     pub async fn fail(&self, error: String) {
         if let Some(mut entry) = self.current.lock().await.take() {
+            let id = entry.id.clone();
             entry.status = ItemStatus::Failed;
-            entry.result = Some(error);
+            entry.result = Some(error.clone());
             self.push_recent(entry).await;
+            self.signal_waiter(
+                &id,
+                CompletionResult {
+                    status: ItemStatus::Failed,
+                    result: Some(error),
+                },
+            )
+            .await;
         }
     }
 
@@ -161,7 +195,6 @@ impl RequestQueue {
         before - items.len()
     }
 
-    /// Snapshot using the shared protocol types.
     pub async fn snapshot(&self) -> DaemonState {
         let current = self.current.lock().await.as_ref().map(|e| e.to_protocol());
         let pending: Vec<QueueItem> = self
@@ -203,6 +236,12 @@ impl RequestQueue {
         recent.push_front(entry);
         if recent.len() > 20 {
             recent.pop_back();
+        }
+    }
+
+    async fn signal_waiter(&self, id: &str, result: CompletionResult) {
+        if let Some(tx) = self.waiters.lock().await.remove(id) {
+            let _ = tx.send(result);
         }
     }
 }

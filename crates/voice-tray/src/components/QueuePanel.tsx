@@ -7,8 +7,8 @@ import { invoke } from "@tauri-apps/api/core";
 export default function QueuePanel() {
   const queueState = useAppStore((s) => s.queueState);
 
-  const handleQuit = async () => {
-    await invoke("quit_app");
+  const handleClose = async () => {
+    await invoke("hide_window");
   };
 
   if (!queueState) {
@@ -34,9 +34,9 @@ export default function QueuePanel() {
           </p>
         </div>
         <button
-          onClick={handleQuit}
+          onClick={handleClose}
           className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
-          title="Quit Application"
+          title="Close"
         >
           <X className="w-4 h-4" />
         </button>

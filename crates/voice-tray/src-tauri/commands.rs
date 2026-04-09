@@ -62,9 +62,9 @@ pub fn toggle_window(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
-/// Quit the application.
+/// Hide the window (for tray apps, this is the "close" behavior).
 #[tauri::command]
-pub fn quit_app() {
-    log::info!("Quit requested from UI");
-    std::process::exit(0);
+pub fn hide_window(window: tauri::Window) -> Result<(), String> {
+    log::info!("Hide window requested from UI");
+    window.hide().map_err(|e| e.to_string())
 }

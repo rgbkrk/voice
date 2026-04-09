@@ -78,80 +78,87 @@ fn main() {
 
                 use tauri::tray::MouseButton;
 
-                // Handle direct tray click to show window (always show, never toggle)
+                // Handle direct tray click to toggle window visibility
                 let window_handle = app.handle().clone();
                 tray.on_tray_icon_event(move |_tray, event| {
                     info!("Tray icon event: {:?}", event);
                     if let tauri::tray::TrayIconEvent::Click { button, rect, .. } = event {
                         if button == MouseButton::Left {
                             if let Some(window) = window_handle.get_webview_window("main") {
-                                info!("Left click on tray, showing window");
+                                let is_visible = window.is_visible().unwrap_or(false);
+                                info!("Left click on tray, window visible: {}", is_visible);
 
-                                #[cfg(target_os = "macos")]
-                                {
-                                    use tauri::{PhysicalPosition, Position, Size};
-
-                                    // Extract physical position and size from the rect
-                                    if let (Position::Physical(pos), Size::Physical(size)) =
-                                        (&rect.position, &rect.size)
+                                if is_visible {
+                                    info!("Hiding window");
+                                    let _ = window.hide();
+                                } else {
+                                    info!("Showing window");
+                                    #[cfg(target_os = "macos")]
                                     {
-                                        let tray_x = pos.x;
-                                        let tray_y = pos.y;
-                                        let tray_width = size.width;
-                                        let tray_height = size.height;
+                                        use tauri::{PhysicalPosition, Position, Size};
 
-                                        info!(
-                                            "Tray icon rect: x={}, y={}, width={}, height={}",
-                                            tray_x, tray_y, tray_width, tray_height
-                                        );
-
-                                        // Position window below the tray icon
-                                        // Window width is 400px, so center it under the tray icon
-                                        let window_x =
-                                            (tray_x + tray_width as i32 / 2 - 200).max(0);
-                                        let window_y = tray_y + tray_height as i32 + 5; // 5px gap
-
-                                        info!(
-                                            "Positioning window at physical: x={}, y={}",
-                                            window_x, window_y
-                                        );
-
-                                        if let Err(e) = window
-                                            .set_position(PhysicalPosition::new(window_x, window_y))
+                                        // Extract physical position and size from the rect
+                                        if let (Position::Physical(pos), Size::Physical(size)) =
+                                            (&rect.position, &rect.size)
                                         {
-                                            error!("Failed to set window position: {}", e);
+                                            let tray_x = pos.x;
+                                            let tray_y = pos.y;
+                                            let tray_width = size.width;
+                                            let tray_height = size.height;
+
+                                            info!(
+                                                "Tray icon rect: x={}, y={}, width={}, height={}",
+                                                tray_x, tray_y, tray_width, tray_height
+                                            );
+
+                                            // Position window below the tray icon
+                                            // Window width is 400px, so center it under the tray icon
+                                            let window_x =
+                                                (tray_x + tray_width as i32 / 2 - 200).max(0);
+                                            let window_y = tray_y + tray_height as i32 + 5; // 5px gap
+
+                                            info!(
+                                                "Positioning window at physical: x={}, y={}",
+                                                window_x, window_y
+                                            );
+
+                                            if let Err(e) = window
+                                                .set_position(PhysicalPosition::new(window_x, window_y))
+                                            {
+                                                error!("Failed to set window position: {}", e);
+                                            }
+                                        } else {
+                                            warn!(
+                                                "Tray rect not in physical coordinates, using fallback"
+                                            );
+                                            // Fallback positioning
+                                            let _ = window.set_position(PhysicalPosition::new(100, 40));
                                         }
-                                    } else {
-                                        warn!(
-                                            "Tray rect not in physical coordinates, using fallback"
-                                        );
-                                        // Fallback positioning
-                                        let _ = window.set_position(PhysicalPosition::new(100, 40));
+
+                                        // Show and focus the window
+                                        if let Err(e) = window.show() {
+                                            error!("Error showing window: {}", e);
+                                        }
+                                        if let Err(e) = window.set_focus() {
+                                            error!("Error focusing window: {}", e);
+                                        }
+
+                                        // Track show time
+                                        *last_show.lock().unwrap() = Instant::now();
                                     }
 
-                                    // Show and focus the window
-                                    if let Err(e) = window.show() {
-                                        error!("Error showing window: {}", e);
-                                    }
-                                    if let Err(e) = window.set_focus() {
-                                        error!("Error focusing window: {}", e);
-                                    }
+                                    #[cfg(not(target_os = "macos"))]
+                                    {
+                                        if let Err(e) = window.show() {
+                                            error!("Error showing window: {}", e);
+                                        }
+                                        if let Err(e) = window.set_focus() {
+                                            error!("Error focusing window: {}", e);
+                                        }
 
-                                    // Track show time
-                                    *last_show.lock().unwrap() = Instant::now();
-                                }
-
-                                #[cfg(not(target_os = "macos"))]
-                                {
-                                    if let Err(e) = window.show() {
-                                        error!("Error showing window: {}", e);
+                                        // Track show time
+                                        *last_show.lock().unwrap() = Instant::now();
                                     }
-                                    if let Err(e) = window.set_focus() {
-                                        error!("Error focusing window: {}", e);
-                                    }
-
-                                    // Track show time
-                                    *last_show.lock().unwrap() = Instant::now();
                                 }
                             }
                         }
@@ -243,7 +250,7 @@ fn main() {
             commands::cancel_item,
             commands::is_daemon_running,
             commands::toggle_window,
-            commands::quit_app,
+            commands::hide_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6802,6 +6802,7 @@ name = "voice-daemon"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "automorph",
  "candle-core",
  "dirs 6.0.0",
  "hound",

@@ -456,6 +456,22 @@ fn main() {
         Some(Command::Listen(listen_args)) => {
             if listen_args.continuous {
                 listen::listen_continuous();
+            } else if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
+                match daemon.listen(None) {
+                    Ok(resp) => {
+                        if let Some(result) = resp.result {
+                            if let Some(r) = result.get("result").and_then(|v| v.as_str()) {
+                                println!("{}", r);
+                            }
+                        } else if let Some(err) = resp.error {
+                            eprintln!("Daemon error: {}", err.message);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Daemon error: {e}, falling back to local");
+                        listen::listen_and_transcribe();
+                    }
+                }
             } else {
                 listen::listen_and_transcribe();
             }
@@ -553,6 +569,25 @@ fn run_mcp(serve_args: ServeArgs) {
 }
 
 fn run_say(say_args: SayArgs) {
+    // If the daemon is running and we're not writing to a file, delegate to it.
+    if say_args.output.is_none() {
+        if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
+            let text = match resolve_text(&say_args) {
+                Ok(t) => t,
+                Err(msg) => {
+                    eprintln!("Error: {msg}");
+                    std::process::exit(1);
+                }
+            };
+            match daemon.speak(&text, Some(&say_args.voice), Some(say_args.speed as f64)) {
+                Ok(_resp) => return,
+                Err(e) => {
+                    eprintln!("Daemon error: {e}, falling back to local");
+                }
+            }
+        }
+    }
+
     // Start model loading in a background thread immediately — this is the
     // slowest startup step (~200ms) and can run while we resolve text + G2P.
     let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
@@ -648,6 +683,27 @@ fn run_converse(args: ConverseArgs) {
     }
 
     let text = args.text.join(" ");
+
+    // Delegate to daemon if available
+    if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
+        match daemon.converse(&text, Some(&args.voice)) {
+            Ok(resp) => {
+                // Extract and print the heard text
+                if let Some(result) = resp.result {
+                    if let Some(r) = result.get("result").and_then(|v| v.as_str()) {
+                        println!("{}", r);
+                    }
+                } else if let Some(err) = resp.error {
+                    eprintln!("Daemon error: {}", err.message);
+                }
+                return;
+            }
+            Err(e) => {
+                eprintln!("Daemon error: {e}, falling back to local");
+            }
+        }
+    }
+
     let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
 
     let sub_file = args.sub_file.clone().or_else(find_sub_file);

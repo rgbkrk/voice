@@ -24,3 +24,5 @@ voice-g2p = { path = "../voice-g2p" }
 candle-core = { workspace = true }
 rodio = { version = "0.22", features = ["experimental"] }
 hound = { workspace = true }
+automerge = "0.5"
+automorph = "0.2"

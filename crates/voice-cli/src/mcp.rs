@@ -1,7 +1,7 @@
 //! MCP (Model Context Protocol) stdio server for voice TTS/STT.
 //!
 //! Implements the MCP protocol on top of JSON-RPC 2.0, exposing voice tools
-//! (speak, converse, set_voice, set_speed, list_voices, set_start_sound, set_stop_sound, play_sound, cancel) to
+//! (speak, converse, set_voice, set_speed, list_voices, set_start_sound, set_stop_sound, play_sound) to
 //! MCP-compatible clients like Claude Code.
 //!
 //! ## Usage
@@ -426,11 +426,6 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
                 }
             },
             {
-                "name": "cancel",
-                "description": "Cancel the current speak or listen operation.",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
                 "name": "set_voice",
                 "description": "Change the default voice for subsequent speak calls.",
                 "inputSchema": {
@@ -509,7 +504,7 @@ fn handle_tools_call(
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
 
-    // Delegate to the voice daemon if connected (speak/listen/converse/cancel).
+    // Delegate to the voice daemon if connected (speak/listen/converse).
     // Config tools (set_voice/set_speed/list_voices) stay local.
     // The daemon queues requests and owns the audio hardware.
     if let Some(ref mut daemon) = session.daemon {
@@ -539,7 +534,6 @@ fn handle_tools_call(
                 let text = preprocess_for_daemon(raw, markdown, &session.subs);
                 Some(daemon.converse(&text, arguments.get("voice").and_then(|v| v.as_str())))
             }
-            "cancel" => Some(daemon.cancel()),
             _ => None,
         };
 
@@ -585,7 +579,6 @@ fn handle_tools_call(
         "speak" => voice_speak(session, stdout, arguments),
         "listen" => voice_listen(session, arguments),
         "converse" => voice_converse(session, stdout, arguments),
-        "cancel" => voice_cancel(),
         "set_voice" => voice_set_voice(session, arguments),
         "set_speed" => voice_set_speed(session, arguments),
         "list_voices" => voice_list_voices(session, arguments),

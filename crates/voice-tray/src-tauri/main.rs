@@ -66,94 +66,28 @@ fn main() {
             // Get tray handle for badge updates
             let tray_app_handle = app.handle().clone();
 
-            // Set up tray menu with show/hide option
+            // Set up tray with quit menu only
             if let Some(tray) = app.tray_by_id("main-tray") {
                 info!("Tray icon found, setting up menu");
 
                 use tauri::menu::{Menu, MenuItem};
                 use tauri::tray::MouseButton;
 
-                // Create tray menu
-                let toggle_item = MenuItem::with_id(app, "toggle", "Show/Hide", true, None::<&str>)
-                    .expect("Failed to create menu item");
+                // Create minimal tray menu with just quit
                 let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
                     .expect("Failed to create menu item");
 
-                let menu = Menu::with_items(app, &[&toggle_item, &quit_item])
+                let menu = Menu::with_items(app, &[&quit_item])
                     .expect("Failed to create menu");
 
                 if let Err(e) = tray.set_menu(Some(menu)) {
                     error!("Failed to set tray menu: {}", e);
                 }
 
-                // Set up menu event handler
-                let window_handle = app.handle().clone();
+                // Set up menu event handler (just for quit)
                 tray.on_menu_event(move |_app_handle, event| {
                     info!("Tray menu event: {:?}", event.id());
                     match event.id().as_ref() {
-                        "toggle" => {
-                            if let Some(window) = window_handle.get_webview_window("main") {
-                                let is_visible = window.is_visible().unwrap_or(false);
-                                info!("Toggle clicked, window visible: {}", is_visible);
-
-                                if is_visible {
-                                    info!("Hiding window");
-                                    let _ = window.hide();
-                                } else {
-                                    info!("Showing window");
-                                    // Position window at fixed location (top-right area)
-                                    #[cfg(target_os = "macos")]
-                                    {
-                                        use tauri::LogicalPosition;
-                                        match window.current_monitor() {
-                                            Ok(Some(monitor)) => {
-                                                let size = monitor.size();
-                                                info!(
-                                                    "Monitor size: {}x{}",
-                                                    size.width, size.height
-                                                );
-                                                // Position in top-right with padding
-                                                let x = (size.width as f64 - 400.0).max(20.0);
-                                                let y = 40.0; // Below menu bar
-                                                info!("Positioning window at ({}, {})", x, y);
-                                                if let Err(e) =
-                                                    window.set_position(LogicalPosition::new(x, y))
-                                                {
-                                                    error!("Failed to position window: {}", e);
-                                                }
-                                            }
-                                            Ok(None) => {
-                                                info!("No monitor found, using default position");
-                                                // Fallback to fixed position
-                                                let _ = window.set_position(LogicalPosition::new(
-                                                    100.0, 40.0,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                error!("Error getting monitor: {}", e);
-                                                // Fallback to fixed position
-                                                let _ = window.set_position(LogicalPosition::new(
-                                                    100.0, 40.0,
-                                                ));
-                                            }
-                                        }
-                                    }
-
-                                    info!("About to show window");
-                                    if let Err(e) = window.show() {
-                                        error!("Error showing window: {}", e);
-                                    } else {
-                                        info!("Window shown successfully");
-                                    }
-
-                                    if let Err(e) = window.set_focus() {
-                                        error!("Error focusing window: {}", e);
-                                    } else {
-                                        info!("Window focused successfully");
-                                    }
-                                }
-                            }
-                        }
                         "quit" => {
                             info!("Quit requested");
                             std::process::exit(0);
@@ -162,29 +96,68 @@ fn main() {
                     }
                 });
 
-                // Also handle direct tray click (left click to show/hide)
-                let window_handle2 = app.handle().clone();
+                // Handle direct tray click to show/hide window
+                let window_handle = app.handle().clone();
                 tray.on_tray_icon_event(move |_tray, event| {
                     info!("Tray icon event: {:?}", event);
-                    if let tauri::tray::TrayIconEvent::Click { button, .. } = event {
+                    if let tauri::tray::TrayIconEvent::Click { button, rect, .. } = event {
                         if button == MouseButton::Left {
-                            if let Some(window) = window_handle2.get_webview_window("main") {
+                            if let Some(window) = window_handle.get_webview_window("main") {
                                 let is_visible = window.is_visible().unwrap_or(false);
+                                info!("Left click on tray, window visible: {}", is_visible);
+
                                 if is_visible {
+                                    info!("Hiding window");
                                     let _ = window.hide();
                                 } else {
+                                    info!("Showing window");
                                     #[cfg(target_os = "macos")]
                                     {
-                                        use tauri::LogicalPosition;
-                                        if let Ok(Some(monitor)) = window.current_monitor() {
-                                            let size = monitor.size();
-                                            let x = size.width as f64 - 400.0;
-                                            let y = 25.0;
-                                            let _ = window.set_position(LogicalPosition::new(x, y));
+                                        use tauri::{PhysicalPosition, Position, Size};
+
+                                        // Extract physical position and size from the rect
+                                        if let (Position::Physical(pos), Size::Physical(size)) = (&rect.position, &rect.size) {
+                                            let tray_x = pos.x;
+                                            let tray_y = pos.y;
+                                            let tray_width = size.width;
+                                            let tray_height = size.height;
+
+                                            info!("Tray icon rect: x={}, y={}, width={}, height={}", tray_x, tray_y, tray_width, tray_height);
+
+                                            // Position window below the tray icon
+                                            // Window width is 400px, so center it under the tray icon
+                                            let window_x = (tray_x + tray_width as i32 / 2 - 200).max(0);
+                                            let window_y = tray_y + tray_height as i32 + 5; // 5px gap
+
+                                            info!("Positioning window at physical: x={}, y={}", window_x, window_y);
+
+                                            if let Err(e) = window.set_position(PhysicalPosition::new(window_x, window_y)) {
+                                                error!("Failed to set window position: {}", e);
+                                            }
+                                        } else {
+                                            warn!("Tray rect not in physical coordinates, using fallback");
+                                            // Fallback positioning
+                                            let _ = window.set_position(PhysicalPosition::new(100, 40));
+                                        }
+
+                                        // Show and focus the window
+                                        if let Err(e) = window.show() {
+                                            error!("Error showing window: {}", e);
+                                        }
+                                        if let Err(e) = window.set_focus() {
+                                            error!("Error focusing window: {}", e);
                                         }
                                     }
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
+
+                                    #[cfg(not(target_os = "macos"))]
+                                    {
+                                        if let Err(e) = window.show() {
+                                            error!("Error showing window: {}", e);
+                                        }
+                                        if let Err(e) = window.set_focus() {
+                                            error!("Error focusing window: {}", e);
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -141,8 +141,11 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
                 VoiceRequest::Listen { max_duration_ms } => {
                     let max_ms = *max_duration_ms;
                     let stt = stt.clone();
+                    let queue_id = entry.id.clone();
 
-                    let result = tokio::task::spawn_blocking(move || listen(&stt, max_ms)).await;
+                    let result =
+                        tokio::task::spawn_blocking(move || listen(&stt, max_ms, Some(&queue_id)))
+                            .await;
 
                     match result {
                         Ok(Ok(msg)) => queue.complete(Some(msg)).await,
@@ -330,6 +333,7 @@ fn ensure_stt(stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>) -> Result<(), S
 fn listen(
     stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
     max_duration_ms: Option<u64>,
+    queue_id: Option<&str>,
 ) -> Result<String, String> {
     ensure_stt(stt)?;
 
@@ -444,6 +448,17 @@ fn listen(
         Ok(mutex) => mutex.into_inner().unwrap(),
         Err(arc) => arc.lock().unwrap().clone(),
     };
+
+    // Save answer audio if queue_id provided
+    if let Some(qid) = queue_id {
+        if !samples.is_empty() && speech_detected {
+            let path = audio_recorder::answer_path(qid);
+            // Save with original sample rate before transcription
+            if let Err(e) = audio_recorder::save_wav(&path, &samples, sample_rate) {
+                eprintln!("voiced: failed to save answer audio: {}", e);
+            }
+        }
+    }
 
     if samples.is_empty() || !speech_detected {
         return Ok(serde_json::json!({

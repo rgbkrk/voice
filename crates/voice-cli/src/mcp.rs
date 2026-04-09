@@ -510,6 +510,7 @@ fn handle_tools_call(
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
 
     // Delegate to the voice daemon if connected (speak/listen/converse/cancel).
+    // Config tools (set_voice/set_speed/list_voices) stay local.
     // The daemon queues requests and owns the audio hardware.
     if let Some(ref mut daemon) = session.daemon {
         let daemon_result = match name {
@@ -539,41 +540,23 @@ fn handle_tools_call(
                 Some(daemon.converse(&text, arguments.get("voice").and_then(|v| v.as_str())))
             }
             "cancel" => Some(daemon.cancel()),
-            "set_voice" => {
-                let voice = arguments
-                    .get("voice")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                Some(daemon.call("set_voice", serde_json::json!({"voice": voice})))
-            }
-            "set_speed" => {
-                let speed = arguments
-                    .get("speed")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(1.0);
-                Some(daemon.call("set_speed", serde_json::json!({"speed": speed})))
-            }
-            "list_voices" => Some(daemon.call("list_voices", serde_json::json!({}))),
             _ => None,
         };
 
         if let Some(result) = daemon_result {
             return match result {
                 Ok(resp) => {
-                    // For queued ops (speak/listen/converse), the daemon returns
-                    // {result: {queue_id, status, result: "<json string>"}}.
-                    // For config ops (set_voice/set_speed/list_voices), the daemon
-                    // returns the result directly in resp.result.
+                    // Daemon returns {result: {queue_id, status, result: "<json string>"}}
+                    // for queued ops (speak/listen/converse).
                     let text = if let Some(inner) = resp
                         .result
                         .as_ref()
                         .and_then(|r| r.get("result"))
                         .and_then(|v| v.as_str())
                     {
-                        // Queued op: extract the worker's JSON result string
+                        // Extract the worker's JSON result string
                         inner.to_string()
                     } else if let Some(r) = &resp.result {
-                        // Config op: serialize the whole result
                         serde_json::to_string(r).unwrap_or_else(|_| "{}".to_string())
                     } else if let Some(e) = &resp.error {
                         format!("daemon error: {}", e.message)

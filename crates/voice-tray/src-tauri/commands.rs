@@ -46,3 +46,16 @@ pub fn cancel_item(state: State<AppState>, queue_id: String) -> Result<bool, Str
 pub fn is_daemon_running() -> bool {
     DaemonClient::is_daemon_running()
 }
+
+/// Toggle window visibility (for debugging).
+#[tauri::command]
+pub fn toggle_window(window: tauri::Window) -> Result<(), String> {
+    let is_visible = window.is_visible().unwrap_or(false);
+    if is_visible {
+        window.hide().map_err(|e| e.to_string())?;
+    } else {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}

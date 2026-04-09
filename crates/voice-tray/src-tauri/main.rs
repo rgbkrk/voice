@@ -18,7 +18,7 @@ use types::VoiceState;
 fn update_tray_badge(app: &AppHandle, state: &VoiceState) {
     let pending_count = state.pending.len();
 
-    if let Some(tray) = app.tray_by_id("main") {
+    if let Some(tray) = app.tray_by_id("main-tray") {
         let badge_text = if pending_count > 0 {
             pending_count.to_string()
         } else {
@@ -66,19 +66,35 @@ fn main() {
             // Get tray handle for badge updates
             let tray_app_handle = app.handle().clone();
 
-            // Set up tray click handler to show/hide window
+            // Set up tray menu with show/hide option
             if let Some(tray) = app.tray_by_id("main-tray") {
-                info!("Tray icon found, setting up click handler");
+                info!("Tray icon found, setting up menu");
+
+                use tauri::menu::{Menu, MenuItem};
+                use tauri::tray::MouseButton;
+
+                // Create tray menu
+                let toggle_item = MenuItem::with_id(app, "toggle", "Show/Hide", true, None::<&str>)
+                    .expect("Failed to create menu item");
+                let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
+                    .expect("Failed to create menu item");
+
+                let menu = Menu::with_items(app, &[&toggle_item, &quit_item])
+                    .expect("Failed to create menu");
+
+                if let Err(e) = tray.set_menu(Some(menu)) {
+                    error!("Failed to set tray menu: {}", e);
+                }
+
+                // Set up menu event handler
                 let window_handle = app.handle().clone();
-                tray.on_tray_icon_event(move |_tray, event| {
-                    info!("Tray icon event: {:?}", event);
-                    if let tauri::tray::TrayIconEvent::Click { button, .. } = event {
-                        info!("Click detected, button: {:?}", button);
-                        if button == tauri::tray::MouseButton::Left {
+                tray.on_menu_event(move |_app_handle, event| {
+                    info!("Tray menu event: {:?}", event.id());
+                    match event.id().as_ref() {
+                        "toggle" => {
                             if let Some(window) = window_handle.get_webview_window("main") {
-                                info!("Window found");
                                 let is_visible = window.is_visible().unwrap_or(false);
-                                info!("Window visible: {}", is_visible);
+                                info!("Toggle clicked, window visible: {}", is_visible);
 
                                 if is_visible {
                                     info!("Hiding window");
@@ -91,9 +107,8 @@ fn main() {
                                         use tauri::LogicalPosition;
                                         if let Ok(Some(monitor)) = window.current_monitor() {
                                             let size = monitor.size();
-                                            // Position in top-right, below menu bar
-                                            let x = size.width as f64 - 400.0; // 380 width + 20 padding
-                                            let y = 25.0; // Below menu bar
+                                            let x = size.width as f64 - 400.0;
+                                            let y = 25.0;
                                             info!("Positioning window at ({}, {})", x, y);
                                             let _ = window.set_position(LogicalPosition::new(x, y));
                                         }
@@ -106,8 +121,40 @@ fn main() {
                                         error!("Error focusing window: {}", e);
                                     }
                                 }
-                            } else {
-                                error!("Window 'main' not found!");
+                            }
+                        }
+                        "quit" => {
+                            info!("Quit requested");
+                            std::process::exit(0);
+                        }
+                        _ => {}
+                    }
+                });
+
+                // Also handle direct tray click (left click to show/hide)
+                let window_handle2 = app.handle().clone();
+                tray.on_tray_icon_event(move |_tray, event| {
+                    info!("Tray icon event: {:?}", event);
+                    if let tauri::tray::TrayIconEvent::Click { button, .. } = event {
+                        if button == MouseButton::Left {
+                            if let Some(window) = window_handle2.get_webview_window("main") {
+                                let is_visible = window.is_visible().unwrap_or(false);
+                                if is_visible {
+                                    let _ = window.hide();
+                                } else {
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        use tauri::LogicalPosition;
+                                        if let Ok(Some(monitor)) = window.current_monitor() {
+                                            let size = monitor.size();
+                                            let x = size.width as f64 - 400.0;
+                                            let y = 25.0;
+                                            let _ = window.set_position(LogicalPosition::new(x, y));
+                                        }
+                                    }
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
                             }
                         }
                     }
@@ -172,6 +219,7 @@ fn main() {
             commands::play_answer,
             commands::cancel_item,
             commands::is_daemon_running,
+            commands::toggle_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -47,7 +47,23 @@ impl TtsState {
 
 // -- Worker entry point -------------------------------------------------------
 
-pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConfig>) {
+async fn sync_automerge(
+    queue: &RequestQueue,
+    automerge: &Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
+) {
+    let snapshot = queue.snapshot().await;
+    let mut am = automerge.lock().await;
+    am.update(&snapshot);
+    if let Err(e) = am.save() {
+        eprintln!("voiced: failed to save automerge doc: {}", e);
+    }
+}
+
+pub async fn run(
+    queue: Arc<RequestQueue>,
+    config: Arc<crate::config::DaemonConfig>,
+    automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
+) {
     eprintln!("voiced: loading TTS model...");
     let start = Instant::now();
 
@@ -56,7 +72,7 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
         Ok(Err(e)) => {
             eprintln!("voiced: failed to load TTS model: {}", e);
             eprintln!("voiced: running in simulation mode");
-            run_simulated(queue).await;
+            run_simulated(queue, automerge).await;
             return;
         }
         Err(e) => {
@@ -127,14 +143,19 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
                     .await;
 
                     match result {
-                        Ok(Ok(msg)) => queue.complete(Some(msg)).await,
+                        Ok(Ok(msg)) => {
+                            queue.complete(Some(msg)).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
                         Ok(Err(e)) => {
                             eprintln!("voiced: speak error: {}", e);
                             queue.fail(e).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voiced: speak panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
@@ -148,14 +169,19 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
                             .await;
 
                     match result {
-                        Ok(Ok(msg)) => queue.complete(Some(msg)).await,
+                        Ok(Ok(msg)) => {
+                            queue.complete(Some(msg)).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
                         Ok(Err(e)) => {
                             eprintln!("voiced: listen error: {}", e);
                             queue.fail(e).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voiced: listen panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
@@ -193,14 +219,20 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
                     .await;
 
                     match speak_result {
-                        Ok(Ok(msg)) => queue.complete(Some(msg)).await,
+                        Ok(Ok(msg)) => {
+                            queue.set_auto_clear(30).await; // Auto-clear after 30 seconds
+                            queue.complete(Some(msg)).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
                         Ok(Err(e)) => {
                             eprintln!("voiced: converse error: {}", e);
                             queue.fail(e).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voiced: converse panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
@@ -521,7 +553,10 @@ fn play_tone(freq: f32, duration_secs: f32) {
 
 // -- Simulation fallback ------------------------------------------------------
 
-async fn run_simulated(queue: Arc<RequestQueue>) {
+async fn run_simulated(
+    queue: Arc<RequestQueue>,
+    automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
+) {
     eprintln!("voiced: worker ready (simulation mode)");
     loop {
         queue.notify.notified().await;
@@ -540,10 +575,12 @@ async fn run_simulated(queue: Arc<RequestQueue>) {
                     queue
                         .complete(Some(format!("simulated {} words", words)))
                         .await;
+                    sync_automerge(&queue, &automerge).await;
                 }
                 VoiceRequest::Listen { .. } => {
                     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
                     queue.complete(Some("(simulated listen)".to_string())).await;
+                    sync_automerge(&queue, &automerge).await;
                 }
                 VoiceRequest::Converse { text, .. } => {
                     let words = text.split_whitespace().count();
@@ -552,6 +589,7 @@ async fn run_simulated(queue: Arc<RequestQueue>) {
                     queue
                         .complete(Some("(simulated converse)".to_string()))
                         .await;
+                    sync_automerge(&queue, &automerge).await;
                 }
             }
         }

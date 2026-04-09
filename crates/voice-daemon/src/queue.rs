@@ -51,6 +51,9 @@ pub struct QueueEntry {
     pub status: ItemStatus,
     pub created_at: u64,
     pub result: Option<String>,
+    pub completed_at: Option<u64>,
+    pub repo: Option<String>,
+    pub auto_clear_at: Option<u64>,
 }
 
 impl QueueEntry {
@@ -63,6 +66,9 @@ impl QueueEntry {
             created_at: self.created_at,
             text_preview: self.request.text_preview(),
             result: self.result.clone(),
+            repo: self.repo.clone(),
+            completed_at: self.completed_at,
+            auto_clear_at: self.auto_clear_at,
         }
     }
 }
@@ -129,6 +135,9 @@ impl RequestQueue {
             status: ItemStatus::Queued,
             created_at: now_secs(),
             result: None,
+            completed_at: None,
+            repo: None,
+            auto_clear_at: None,
         };
         self.items.lock().await.push_back(entry);
         self.notify.notify_one();
@@ -156,6 +165,9 @@ impl RequestQueue {
             status: ItemStatus::Queued,
             created_at: now_secs(),
             result: None,
+            completed_at: None,
+            repo: None,
+            auto_clear_at: None,
         };
         self.items.lock().await.push_back(entry);
         self.notify.notify_one();
@@ -247,6 +259,15 @@ impl RequestQueue {
             current,
             pending,
             recent,
+        }
+    }
+
+    /// Set completed_at and auto_clear_at on the current item.
+    pub async fn set_auto_clear(&self, clear_delay_secs: u64) {
+        if let Some(entry) = self.current.lock().await.as_mut() {
+            let now = now_secs();
+            entry.completed_at = Some(now);
+            entry.auto_clear_at = Some(now + clear_delay_secs);
         }
     }
 

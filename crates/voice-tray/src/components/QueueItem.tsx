@@ -4,9 +4,10 @@ import { useAppStore } from "../store";
 
 interface Props {
   item: QueueItemType;
+  delay?: number;
 }
 
-export default function QueueItem({ item }: Props) {
+export default function QueueItem({ item, delay = 0 }: Props) {
   const expandedItems = useAppStore((s) => s.expandedItems);
   const toggleExpanded = useAppStore((s) => s.toggleExpanded);
   const playQuestion = useAppStore((s) => s.playQuestion);
@@ -23,61 +24,88 @@ export default function QueueItem({ item }: Props) {
     const diff = now.getTime() - date.getTime();
     const minutes = Math.floor(diff / 60000);
 
-    if (minutes < 1) return "just now";
-    if (minutes < 60) return `${minutes}m ago`;
+    if (minutes < 1) return "< 1M";
+    if (minutes < 60) return `${minutes}M`;
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
+    if (hours < 24) return `${hours}H`;
     return date.toLocaleDateString();
   };
 
-  const getStatusColor = () => {
+  const getStatusStyle = () => {
     switch (item.status) {
-      case "Processing": return "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
-      case "Completed": return "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200";
-      case "Failed": return "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200";
-      default: return "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200";
+      case "Processing":
+        return { color: 'var(--status-processing)', borderColor: 'var(--status-processing)' };
+      case "Completed":
+        return { color: 'var(--status-completed)', borderColor: 'var(--status-completed)' };
+      case "Failed":
+        return { color: 'var(--status-failed)', borderColor: 'var(--status-failed)' };
+      default:
+        return { color: 'var(--status-queued)', borderColor: 'var(--status-queued)' };
     }
   };
 
   return (
-    <div className="queue-item">
+    <div
+      className="queue-item"
+      style={{
+        animationDelay: `${delay}ms`,
+        cursor: 'pointer'
+      }}
+      onClick={() => toggleExpanded(item.id)}
+    >
       {/* Header - always visible */}
-      <div
-        className="flex items-center justify-between cursor-pointer"
-        onClick={() => toggleExpanded(item.id)}
-      >
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className={`badge ${getStatusColor()}`}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {/* Status and metadata row */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
+            <span className="badge" style={getStatusStyle()}>
               {item.status}
             </span>
             {item.repo && (
-              <span className="badge bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">
+              <span className="badge" style={{ color: 'var(--purple)', borderColor: 'var(--purple)' }}>
                 {item.repo}
               </span>
             )}
-            <span className="text-xs text-gray-500 dark:text-gray-400">
+            <span className="metadata">
               {formatTimestamp(item.created_at)}
             </span>
           </div>
 
-          <p className="text-sm truncate text-gray-700 dark:text-gray-300">
+          {/* Preview text */}
+          <p style={{
+            fontSize: '12px',
+            color: 'var(--text-primary)',
+            lineHeight: '1.5',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: isExpanded ? 'normal' : 'nowrap'
+          }}>
             {item.text_preview || item.method}
           </p>
         </div>
 
-        <div className="ml-2 text-gray-400">
-          {isExpanded ? "▼" : "▶"}
+        <div className={`expand-indicator ${isExpanded ? 'expanded' : ''}`} style={{ marginLeft: '12px', flexShrink: 0 }}>
+          ▶
         </div>
       </div>
 
       {/* Expanded details */}
       {isExpanded && (
-        <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+        <div style={{
+          marginTop: '16px',
+          paddingTop: '16px',
+          borderTop: '1px solid var(--bg-tertiary)',
+          animation: 'slide-in 0.2s ease-out'
+        }}>
           {/* Full text */}
           {item.text_preview && (
-            <div className="mb-3">
-              <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+            <div style={{ marginBottom: '16px' }}>
+              <p style={{
+                fontSize: '12px',
+                color: 'var(--text-secondary)',
+                lineHeight: '1.6',
+                whiteSpace: 'pre-wrap'
+              }}>
                 {item.text_preview}
               </p>
             </div>
@@ -85,27 +113,49 @@ export default function QueueItem({ item }: Props) {
 
           {/* Result/transcript */}
           {item.result && (
-            <div className="mb-3 p-2 bg-gray-50 dark:bg-gray-750 rounded">
-              <p className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1">
-                Result:
+            <div style={{
+              marginBottom: '16px',
+              padding: '12px',
+              background: 'var(--bg-elevated)',
+              borderRadius: '4px',
+              border: '1px solid var(--cyan)',
+              boxShadow: '0 0 10px var(--cyan-glow)'
+            }}>
+              <p className="metadata" style={{ marginBottom: '8px', color: 'var(--cyan)' }}>
+                → RESULT
               </p>
-              <p className="text-sm text-gray-700 dark:text-gray-300">
+              <p style={{
+                fontSize: '12px',
+                color: 'var(--text-primary)',
+                lineHeight: '1.6'
+              }}>
                 {item.result}
               </p>
             </div>
           )}
 
           {/* Audio controls */}
-          <div className="flex gap-2">
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 playQuestion(item.id);
               }}
               disabled={isPlaying && playingAudio?.part === "question"}
-              className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 rounded transition-colors"
+              className={`btn btn-play ${isPlaying && playingAudio?.part === "question" ? 'vu-active' : ''}`}
             >
-              {isPlaying && playingAudio?.part === "question" ? "Playing..." : "▶ Question"}
+              {isPlaying && playingAudio?.part === "question" ? (
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>▶</span>
+                  <span className="audio-loader" style={{ height: '12px' }}>
+                    <span style={{ height: '4px' }}></span>
+                    <span style={{ height: '8px' }}></span>
+                    <span style={{ height: '6px' }}></span>
+                  </span>
+                </span>
+              ) : (
+                "▶ QUESTION"
+              )}
             </button>
 
             <button
@@ -114,22 +164,33 @@ export default function QueueItem({ item }: Props) {
                 playAnswer(item.id);
               }}
               disabled={isPlaying && playingAudio?.part === "answer"}
-              className="px-3 py-1.5 text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-400 rounded transition-colors"
+              className={`btn btn-stop ${isPlaying && playingAudio?.part === "answer" ? 'vu-active' : ''}`}
             >
-              {isPlaying && playingAudio?.part === "answer" ? "Playing..." : "▶ Answer"}
+              {isPlaying && playingAudio?.part === "answer" ? (
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>▶</span>
+                  <span className="audio-loader" style={{ height: '12px' }}>
+                    <span style={{ height: '4px' }}></span>
+                    <span style={{ height: '8px' }}></span>
+                    <span style={{ height: '6px' }}></span>
+                  </span>
+                </span>
+              ) : (
+                "▶ ANSWER"
+              )}
             </button>
 
             {item.status === "Queued" && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (confirm(`Cancel "${item.text_preview || item.method}"?`)) {
+                  if (confirm(`CANCEL "${item.text_preview || item.method}"?`)) {
                     cancelItem(item.id);
                   }
                 }}
-                className="px-3 py-1.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded transition-colors"
+                className="btn btn-cancel"
               >
-                Cancel
+                ✕ CANCEL
               </button>
             )}
           </div>

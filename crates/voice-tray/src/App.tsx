@@ -36,10 +36,16 @@ function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
-          <p className="text-gray-600 dark:text-gray-400">Loading...</p>
+      <div className="waveform-bg" style={{ minHeight: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ textAlign: 'center' }}>
+          <div className="audio-loader" style={{ justifyContent: 'center', marginBottom: '16px' }}>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <p className="metadata">INITIALIZING...</p>
         </div>
       </div>
     );
@@ -47,15 +53,42 @@ function App() {
 
   if (!daemonRunning) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-xl font-bold text-red-600 mb-2">
-            Daemon Not Running
+      <div className="waveform-bg" style={{ minHeight: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+        <div style={{ textAlign: 'center', maxWidth: '320px' }}>
+          <div style={{
+            width: '60px',
+            height: '60px',
+            margin: '0 auto 20px',
+            border: '2px solid var(--status-failed)',
+            borderRadius: '50%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '24px',
+            color: 'var(--status-failed)',
+            animation: 'pulse 2s ease-in-out infinite'
+          }}>
+            !
+          </div>
+          <h1 className="audio-header" style={{ fontSize: '14px', marginBottom: '12px', color: 'var(--status-failed)' }}>
+            DAEMON OFFLINE
           </h1>
-          <p className="text-gray-600 dark:text-gray-400 mb-4">
-            The voice daemon is not running. Please start it first:
+          <p className="metadata" style={{ color: 'var(--text-secondary)', marginBottom: '16px', lineHeight: '1.6' }}>
+            THE VOICE DAEMON IS NOT RUNNING
+            <br />
+            START IT WITH:
           </p>
-          <code className="px-3 py-1 bg-gray-100 dark:bg-gray-800 rounded text-sm block mb-4">
+          <code style={{
+            display: 'block',
+            padding: '12px',
+            background: 'var(--bg-elevated)',
+            borderRadius: '4px',
+            fontSize: '11px',
+            fontFamily: 'JetBrains Mono, monospace',
+            color: 'var(--cyan)',
+            marginBottom: '16px',
+            border: '1px solid var(--bg-tertiary)'
+          }}>
             voice mcp
           </code>
           <button
@@ -65,9 +98,10 @@ function App() {
                 await loadInitialState();
               }
             }}
-            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            className="btn btn-play"
+            style={{ width: '100%' }}
           >
-            Retry Connection
+            ↻ RETRY CONNECTION
           </button>
         </div>
       </div>
@@ -75,9 +109,7 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4">
-      <QueuePanel />
-    </div>
+    <QueuePanel />
   );
 }
 

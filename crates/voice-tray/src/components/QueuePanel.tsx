@@ -1,4 +1,5 @@
 import React from "react";
+import { X, Loader2 } from "lucide-react";
 import QueueItem from "./QueueItem";
 import { useAppStore } from "../store";
 import { invoke } from "@tauri-apps/api/core";
@@ -12,17 +13,8 @@ export default function QueuePanel() {
 
   if (!queueState) {
     return (
-      <div className="waveform-bg" style={{ padding: '40px 20px', textAlign: 'center' }}>
-        <div className="audio-loader">
-          <span></span>
-          <span></span>
-          <span></span>
-          <span></span>
-          <span></span>
-        </div>
-        <p className="metadata" style={{ marginTop: '16px' }}>
-          INITIALIZING QUEUE...
-        </p>
+      <div className="flex items-center justify-center p-8">
+        <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
       </div>
     );
   }
@@ -32,40 +24,29 @@ export default function QueuePanel() {
   const hasRecent = recent.length > 0;
 
   return (
-    <div className="queue-panel waveform-bg" style={{ minHeight: '400px', maxHeight: '600px', overflow: 'auto' }}>
+    <div className="queue-panel bg-white" style={{ minHeight: '400px', maxHeight: '600px', overflow: 'auto' }}>
       {/* Header */}
-      <div style={{ padding: '20px 16px', borderBottom: '2px solid var(--bg-tertiary)', position: 'relative' }}>
-        <h1 className="audio-header">VOICE QUEUE</h1>
-        <div className="metadata" style={{ marginTop: '8px' }}>
-          <span style={{ color: 'var(--status-queued)' }}>{pending.length} PENDING</span>
-          <span style={{ margin: '0 8px', color: 'var(--text-tertiary)' }}>•</span>
-          <span style={{ color: 'var(--status-completed)' }}>{recent.length} RECENT</span>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+        <div>
+          <h1 className="text-sm font-semibold text-gray-900">Voice Queue</h1>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {pending.length} pending · {recent.length} recent
+          </p>
         </div>
-
-        {/* Quit button */}
         <button
           onClick={handleQuit}
-          className="btn btn-cancel"
-          style={{
-            position: 'absolute',
-            top: '16px',
-            right: '16px',
-            padding: '6px 12px',
-            fontSize: '10px',
-            minWidth: 'auto'
-          }}
+          className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
           title="Quit Application"
         >
-          ✕
+          <X className="w-4 h-4" />
         </button>
       </div>
 
       {/* Current item */}
       {current && (
         <div>
-          <div className="section-header current">
-            <span>▶</span>
-            <span>CURRENT</span>
+          <div className="px-4 py-2 bg-blue-50 border-b border-blue-100">
+            <p className="text-xs font-medium text-blue-700">Current</p>
           </div>
           <QueueItem item={current} />
         </div>
@@ -74,12 +55,11 @@ export default function QueuePanel() {
       {/* Pending items */}
       {hasPending && (
         <div>
-          <div className="section-header pending">
-            <span>⏸</span>
-            <span>PENDING ({pending.length})</span>
+          <div className="px-4 py-2 bg-gray-50 border-b border-gray-100">
+            <p className="text-xs font-medium text-gray-600">Pending ({pending.length})</p>
           </div>
-          {pending.map((item, index) => (
-            <QueueItem key={item.id} item={item} delay={index * 50} />
+          {pending.map((item) => (
+            <QueueItem key={item.id} item={item} />
           ))}
         </div>
       )}
@@ -87,39 +67,24 @@ export default function QueuePanel() {
       {/* Recent items */}
       {hasRecent && (
         <div>
-          <div className="section-header recent">
-            <span>✓</span>
-            <span>RECENT ({recent.length})</span>
+          <div className="px-4 py-2 bg-gray-50 border-b border-gray-100">
+            <p className="text-xs font-medium text-gray-600">Recent ({recent.length})</p>
           </div>
-          {recent.map((item, index) => (
-            <QueueItem key={item.id} item={item} delay={index * 50} />
+          {recent.map((item) => (
+            <QueueItem key={item.id} item={item} />
           ))}
         </div>
       )}
 
       {/* Empty state */}
       {!current && !hasPending && !hasRecent && (
-        <div style={{ padding: '80px 20px', textAlign: 'center' }}>
-          <div style={{
-            width: '60px',
-            height: '60px',
-            margin: '0 auto 20px',
-            border: '2px solid var(--cyan)',
-            borderRadius: '50%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '24px',
-            color: 'var(--cyan)',
-            opacity: 0.3
-          }}>
-            ○
+        <div className="flex flex-col items-center justify-center p-12 text-center">
+          <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mb-3">
+            <span className="text-xl text-gray-400">○</span>
           </div>
-          <p className="metadata" style={{ color: 'var(--text-secondary)', marginBottom: '8px' }}>
-            NO QUEUE ITEMS
-          </p>
-          <p className="metadata" style={{ color: 'var(--text-tertiary)' }}>
-            WAITING FOR AGENT REQUESTS...
+          <p className="text-sm font-medium text-gray-600">No queue items</p>
+          <p className="text-xs text-gray-400 mt-1">
+            Items will appear when agents make requests
           </p>
         </div>
       )}

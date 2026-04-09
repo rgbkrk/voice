@@ -300,10 +300,12 @@ fn listen(
 
     let max_ms = max_duration_ms.unwrap_or(60000);
 
-    // Play a ding to signal recording start
-    play_tone(880.0, 0.1);
-
     eprintln!("voiced: listening (max {}ms)...", max_ms);
+
+    // Play a ding to signal recording start
+    play_tone(880.0, 0.15);
+    // Brief pause so the ding finishes before mic opens
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     // Open mic
     let mic = MicrophoneBuilder::new()
@@ -322,50 +324,63 @@ fn listen(
     let recent_peak = Arc::new(AtomicU32::new(0));
     let stop = Arc::new(AtomicBool::new(false));
 
-    // Mic drain thread
+    // Mic drain thread — matches the CLI's start_mic_drain pattern:
+    // track local chunk_peak, publish + reset every 100 samples.
     let buf_clone = buffer.clone();
     let peak_clone = recent_peak.clone();
     let stop_clone = stop.clone();
     let mic_thread = std::thread::spawn(move || {
+        let ch = channels.max(1) as usize;
+        let mut chunk_peak: f32 = 0.0;
+        let mut sample_count = 0usize;
+
         for sample in mic.into_iter() {
             if stop_clone.load(Ordering::Relaxed) {
                 break;
             }
-            // Mix to mono
-            let mono = if channels > 1 {
-                sample / channels as f32
-            } else {
-                sample
-            };
-            let abs = mono.abs();
-            // Update peak (atomic float via u32 bits)
-            let current = f32::from_bits(peak_clone.load(Ordering::Relaxed));
-            if abs > current {
-                peak_clone.store(abs.to_bits(), Ordering::Relaxed);
+
+            let abs = sample.abs();
+            chunk_peak = chunk_peak.max(abs);
+            sample_count += 1;
+
+            // Multi-channel: take every ch-th sample (mono mix)
+            if ch == 1 {
+                buf_clone.lock().unwrap().push(sample);
+            } else if sample_count % ch == 0 {
+                buf_clone.lock().unwrap().push(sample);
             }
-            buf_clone.lock().unwrap().push(mono);
+
+            // Publish peak every ~100 samples, then reset
+            if sample_count % 100 == 0 {
+                peak_clone.store(chunk_peak.to_bits(), Ordering::Relaxed);
+                chunk_peak = 0.0;
+            }
         }
     });
 
-    // Calibrate noise floor (500ms)
+    // Calibrate noise floor — sample peak amplitude over 500ms.
+    // The mic may take a moment to warm up (especially Bluetooth).
     std::thread::sleep(std::time::Duration::from_millis(500));
-    let noise_floor = f32::from_bits(recent_peak.load(Ordering::Relaxed));
+    let noise_floor = f32::from_bits(recent_peak.swap(0f32.to_bits(), Ordering::Relaxed));
+    // Threshold must be well above noise to avoid false positives.
+    // Use the same heuristic as the CLI: max(noise * 3, 0.01)
     let threshold = (noise_floor * 3.0).max(0.01);
-    recent_peak.store(0f32.to_bits(), Ordering::Relaxed);
     eprintln!(
         "voiced: noise floor: {:.4}, threshold: {:.4}",
         noise_floor, threshold
     );
 
-    // Wait for speech, then silence
+    // VAD state machine: wait for speech, then stop after 2s of silence.
     let started = Instant::now();
     let max_dur = std::time::Duration::from_millis(max_ms);
     let silence_timeout = std::time::Duration::from_millis(2000);
     let mut speech_detected = false;
     let mut last_speech = Instant::now();
+    let mut consecutive_silent = 0u32;
 
     loop {
         if started.elapsed() > max_dur {
+            eprintln!("voiced: max duration reached");
             break;
         }
 
@@ -373,14 +388,21 @@ fn listen(
         let peak = f32::from_bits(recent_peak.swap(0f32.to_bits(), Ordering::Relaxed));
 
         if peak > threshold {
+            consecutive_silent = 0;
             if !speech_detected {
-                eprintln!("voiced: speech detected");
+                eprintln!("voiced: speech detected (peak: {:.4})", peak);
                 speech_detected = true;
             }
             last_speech = Instant::now();
-        } else if speech_detected && last_speech.elapsed() > silence_timeout {
-            eprintln!("voiced: silence detected, stopping");
-            break;
+        } else {
+            consecutive_silent += 1;
+            if speech_detected && last_speech.elapsed() > silence_timeout {
+                eprintln!(
+                    "voiced: silence for {:.1}s, stopping",
+                    last_speech.elapsed().as_secs_f32()
+                );
+                break;
+            }
         }
     }
 

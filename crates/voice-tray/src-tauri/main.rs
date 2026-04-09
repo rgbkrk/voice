@@ -66,74 +66,92 @@ fn main() {
             // Get tray handle for badge updates
             let tray_app_handle = app.handle().clone();
 
+            // Track last show time to prevent blur from immediately hiding
+            use std::sync::{Arc, Mutex};
+            use std::time::Instant;
+            let last_show = Arc::new(Mutex::new(Instant::now()));
+            let blur_last_show = last_show.clone();
+
             // Set up tray (no menu, just click to show/hide)
             if let Some(tray) = app.tray_by_id("main-tray") {
                 info!("Tray icon found, setting up click handler");
 
                 use tauri::tray::MouseButton;
 
-                // Handle direct tray click to show/hide window
+                // Handle direct tray click to show window (always show, never toggle)
                 let window_handle = app.handle().clone();
                 tray.on_tray_icon_event(move |_tray, event| {
                     info!("Tray icon event: {:?}", event);
                     if let tauri::tray::TrayIconEvent::Click { button, rect, .. } = event {
                         if button == MouseButton::Left {
                             if let Some(window) = window_handle.get_webview_window("main") {
-                                let is_visible = window.is_visible().unwrap_or(false);
-                                info!("Left click on tray, window visible: {}", is_visible);
+                                info!("Left click on tray, showing window");
 
-                                if is_visible {
-                                    info!("Hiding window");
-                                    let _ = window.hide();
-                                } else {
-                                    info!("Showing window");
-                                    #[cfg(target_os = "macos")]
+                                #[cfg(target_os = "macos")]
+                                {
+                                    use tauri::{PhysicalPosition, Position, Size};
+
+                                    // Extract physical position and size from the rect
+                                    if let (Position::Physical(pos), Size::Physical(size)) =
+                                        (&rect.position, &rect.size)
                                     {
-                                        use tauri::{PhysicalPosition, Position, Size};
+                                        let tray_x = pos.x;
+                                        let tray_y = pos.y;
+                                        let tray_width = size.width;
+                                        let tray_height = size.height;
 
-                                        // Extract physical position and size from the rect
-                                        if let (Position::Physical(pos), Size::Physical(size)) = (&rect.position, &rect.size) {
-                                            let tray_x = pos.x;
-                                            let tray_y = pos.y;
-                                            let tray_width = size.width;
-                                            let tray_height = size.height;
+                                        info!(
+                                            "Tray icon rect: x={}, y={}, width={}, height={}",
+                                            tray_x, tray_y, tray_width, tray_height
+                                        );
 
-                                            info!("Tray icon rect: x={}, y={}, width={}, height={}", tray_x, tray_y, tray_width, tray_height);
+                                        // Position window below the tray icon
+                                        // Window width is 400px, so center it under the tray icon
+                                        let window_x =
+                                            (tray_x + tray_width as i32 / 2 - 200).max(0);
+                                        let window_y = tray_y + tray_height as i32 + 5; // 5px gap
 
-                                            // Position window below the tray icon
-                                            // Window width is 400px, so center it under the tray icon
-                                            let window_x = (tray_x + tray_width as i32 / 2 - 200).max(0);
-                                            let window_y = tray_y + tray_height as i32 + 5; // 5px gap
+                                        info!(
+                                            "Positioning window at physical: x={}, y={}",
+                                            window_x, window_y
+                                        );
 
-                                            info!("Positioning window at physical: x={}, y={}", window_x, window_y);
-
-                                            if let Err(e) = window.set_position(PhysicalPosition::new(window_x, window_y)) {
-                                                error!("Failed to set window position: {}", e);
-                                            }
-                                        } else {
-                                            warn!("Tray rect not in physical coordinates, using fallback");
-                                            // Fallback positioning
-                                            let _ = window.set_position(PhysicalPosition::new(100, 40));
+                                        if let Err(e) = window
+                                            .set_position(PhysicalPosition::new(window_x, window_y))
+                                        {
+                                            error!("Failed to set window position: {}", e);
                                         }
-
-                                        // Show and focus the window
-                                        if let Err(e) = window.show() {
-                                            error!("Error showing window: {}", e);
-                                        }
-                                        if let Err(e) = window.set_focus() {
-                                            error!("Error focusing window: {}", e);
-                                        }
+                                    } else {
+                                        warn!(
+                                            "Tray rect not in physical coordinates, using fallback"
+                                        );
+                                        // Fallback positioning
+                                        let _ = window.set_position(PhysicalPosition::new(100, 40));
                                     }
 
-                                    #[cfg(not(target_os = "macos"))]
-                                    {
-                                        if let Err(e) = window.show() {
-                                            error!("Error showing window: {}", e);
-                                        }
-                                        if let Err(e) = window.set_focus() {
-                                            error!("Error focusing window: {}", e);
-                                        }
+                                    // Show and focus the window
+                                    if let Err(e) = window.show() {
+                                        error!("Error showing window: {}", e);
                                     }
+                                    if let Err(e) = window.set_focus() {
+                                        error!("Error focusing window: {}", e);
+                                    }
+
+                                    // Track show time
+                                    *last_show.lock().unwrap() = Instant::now();
+                                }
+
+                                #[cfg(not(target_os = "macos"))]
+                                {
+                                    if let Err(e) = window.show() {
+                                        error!("Error showing window: {}", e);
+                                    }
+                                    if let Err(e) = window.set_focus() {
+                                        error!("Error focusing window: {}", e);
+                                    }
+
+                                    // Track show time
+                                    *last_show.lock().unwrap() = Instant::now();
                                 }
                             }
                         }
@@ -143,8 +161,30 @@ fn main() {
                 error!("Tray icon 'main-tray' not found!");
             }
 
-            // Window visibility is controlled by tray icon toggle
-            // No auto-hide on blur - user clicks tray again to close
+            // Set up window blur event to hide when clicking outside
+            // Uses blur_last_show to prevent immediate hide after tray click
+            if let Some(window) = app.get_webview_window("main") {
+                let window_clone = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(false) = event {
+                        // Only hide if window has been shown for more than 300ms
+                        // This prevents blur from immediately hiding after tray click
+                        let elapsed = blur_last_show.lock().unwrap().elapsed();
+                        if elapsed > Duration::from_millis(300) {
+                            info!(
+                                "Window lost focus (after {}ms), hiding",
+                                elapsed.as_millis()
+                            );
+                            let _ = window_clone.hide();
+                        } else {
+                            info!(
+                                "Window lost focus too soon ({}ms), ignoring",
+                                elapsed.as_millis()
+                            );
+                        }
+                    }
+                });
+            }
 
             // Spawn file watcher task on Tauri's async runtime
             tauri::async_runtime::spawn(async move {

@@ -101,24 +101,55 @@ fn main() {
                                     let _ = window.hide();
                                 } else {
                                     info!("Showing window");
-                                    // Position window near tray icon (top-right of screen)
+                                    // Position window at fixed location (top-right area)
                                     #[cfg(target_os = "macos")]
                                     {
                                         use tauri::LogicalPosition;
-                                        if let Ok(Some(monitor)) = window.current_monitor() {
-                                            let size = monitor.size();
-                                            let x = size.width as f64 - 400.0;
-                                            let y = 25.0;
-                                            info!("Positioning window at ({}, {})", x, y);
-                                            let _ = window.set_position(LogicalPosition::new(x, y));
+                                        match window.current_monitor() {
+                                            Ok(Some(monitor)) => {
+                                                let size = monitor.size();
+                                                info!(
+                                                    "Monitor size: {}x{}",
+                                                    size.width, size.height
+                                                );
+                                                // Position in top-right with padding
+                                                let x = (size.width as f64 - 400.0).max(20.0);
+                                                let y = 40.0; // Below menu bar
+                                                info!("Positioning window at ({}, {})", x, y);
+                                                if let Err(e) =
+                                                    window.set_position(LogicalPosition::new(x, y))
+                                                {
+                                                    error!("Failed to position window: {}", e);
+                                                }
+                                            }
+                                            Ok(None) => {
+                                                info!("No monitor found, using default position");
+                                                // Fallback to fixed position
+                                                let _ = window.set_position(LogicalPosition::new(
+                                                    100.0, 40.0,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                error!("Error getting monitor: {}", e);
+                                                // Fallback to fixed position
+                                                let _ = window.set_position(LogicalPosition::new(
+                                                    100.0, 40.0,
+                                                ));
+                                            }
                                         }
                                     }
 
+                                    info!("About to show window");
                                     if let Err(e) = window.show() {
                                         error!("Error showing window: {}", e);
+                                    } else {
+                                        info!("Window shown successfully");
                                     }
+
                                     if let Err(e) = window.set_focus() {
                                         error!("Error focusing window: {}", e);
+                                    } else {
+                                        info!("Window focused successfully");
                                     }
                                 }
                             }

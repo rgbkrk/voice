@@ -55,9 +55,20 @@ function App() {
           <p className="text-gray-600 dark:text-gray-400 mb-4">
             The voice daemon is not running. Please start it first:
           </p>
-          <code className="px-3 py-1 bg-gray-100 dark:bg-gray-800 rounded text-sm">
-            voiced
+          <code className="px-3 py-1 bg-gray-100 dark:bg-gray-800 rounded text-sm block mb-4">
+            voice mcp
           </code>
+          <button
+            onClick={async () => {
+              await checkDaemon();
+              if (daemonRunning) {
+                await loadInitialState();
+              }
+            }}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            Retry Connection
+          </button>
         </div>
       </div>
     );

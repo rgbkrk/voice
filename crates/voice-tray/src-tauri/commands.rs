@@ -44,7 +44,9 @@ pub fn cancel_item(state: State<AppState>, queue_id: String) -> Result<bool, Str
 /// Check if daemon is running.
 #[tauri::command]
 pub fn is_daemon_running() -> bool {
-    DaemonClient::is_daemon_running()
+    let result = DaemonClient::is_daemon_running();
+    log::info!("Daemon running check: {}", result);
+    result
 }
 
 /// Toggle window visibility (for debugging).

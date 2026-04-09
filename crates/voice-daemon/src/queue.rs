@@ -8,9 +8,9 @@ use std::collections::VecDeque;
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
-/// A voice request from a client.
+/// A voice request — what the worker will execute.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "method")]
 pub enum VoiceRequest {
     #[serde(rename = "speak")]
     Speak {
@@ -22,10 +22,6 @@ pub enum VoiceRequest {
     Listen { max_duration_ms: Option<u64> },
     #[serde(rename = "converse")]
     Converse { text: String, voice: Option<String> },
-    #[serde(rename = "cancel")]
-    Cancel,
-    #[serde(rename = "status")]
-    Status,
 }
 
 /// Status of a queued item.
@@ -35,7 +31,6 @@ pub enum ItemStatus {
     Queued,
     Processing,
     Completed,
-    Cancelled,
     Failed,
 }
 
@@ -50,7 +45,7 @@ pub struct QueueItem {
     pub result: Option<String>,
 }
 
-/// Snapshot of daemon state, serializable for any viewer.
+/// Snapshot of daemon state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonState {
     pub status: String,
@@ -59,11 +54,10 @@ pub struct DaemonState {
     pub recent: Vec<QueueItem>,
 }
 
-/// Manages the request queue and notifies the worker when items arrive.
 pub struct RequestQueue {
-    pub items: Mutex<VecDeque<QueueItem>>,
-    pub current: Mutex<Option<QueueItem>>,
-    pub recent: Mutex<VecDeque<QueueItem>>,
+    items: Mutex<VecDeque<QueueItem>>,
+    current: Mutex<Option<QueueItem>>,
+    recent: Mutex<VecDeque<QueueItem>>,
     pub notify: Notify,
 }
 
@@ -77,8 +71,37 @@ impl RequestQueue {
         }
     }
 
-    /// Add a request to the queue. Returns the queue item ID.
-    pub async fn enqueue(&self, client_id: String, request: VoiceRequest) -> String {
+    // -- Typed enqueue methods ------------------------------------------------
+
+    pub async fn enqueue_speak(
+        &self,
+        client_id: String,
+        text: String,
+        voice: Option<String>,
+        speed: Option<f64>,
+    ) -> String {
+        self.enqueue(client_id, VoiceRequest::Speak { text, voice, speed })
+            .await
+    }
+
+    pub async fn enqueue_listen(&self, client_id: String, max_duration_ms: Option<u64>) -> String {
+        self.enqueue(client_id, VoiceRequest::Listen { max_duration_ms })
+            .await
+    }
+
+    pub async fn enqueue_converse(
+        &self,
+        client_id: String,
+        text: String,
+        voice: Option<String>,
+    ) -> String {
+        self.enqueue(client_id, VoiceRequest::Converse { text, voice })
+            .await
+    }
+
+    // -- Core queue operations ------------------------------------------------
+
+    async fn enqueue(&self, client_id: String, request: VoiceRequest) -> String {
         let id = Uuid::new_v4().to_string()[..8].to_string();
         let item = QueueItem {
             id: id.clone(),
@@ -93,7 +116,6 @@ impl RequestQueue {
         id
     }
 
-    /// Take the next pending item for processing.
     pub async fn dequeue(&self) -> Option<QueueItem> {
         let mut items = self.items.lock().await;
         if let Some(mut item) = items.pop_front() {
@@ -105,7 +127,6 @@ impl RequestQueue {
         }
     }
 
-    /// Mark the current item as completed.
     pub async fn complete(&self, result: Option<String>) {
         if let Some(mut item) = self.current.lock().await.take() {
             item.status = ItemStatus::Completed;
@@ -114,7 +135,6 @@ impl RequestQueue {
         }
     }
 
-    /// Mark the current item as failed.
     #[allow(dead_code)]
     pub async fn fail(&self, error: String) {
         if let Some(mut item) = self.current.lock().await.take() {
@@ -124,7 +144,6 @@ impl RequestQueue {
         }
     }
 
-    /// Cancel all pending items from a client. Returns count cancelled.
     pub async fn cancel_client(&self, client_id: &str) -> usize {
         let mut items = self.items.lock().await;
         let before = items.len();
@@ -132,7 +151,6 @@ impl RequestQueue {
         before - items.len()
     }
 
-    /// Get a snapshot of the full daemon state.
     pub async fn snapshot(&self) -> DaemonState {
         let current = self.current.lock().await.clone();
         let pending: Vec<QueueItem> = self.items.lock().await.iter().cloned().collect();
@@ -143,7 +161,6 @@ impl RequestQueue {
                 VoiceRequest::Speak { .. } => "speaking",
                 VoiceRequest::Listen { .. } => "listening",
                 VoiceRequest::Converse { .. } => "conversing",
-                _ => "idle",
             },
             None if !pending.is_empty() => "queued",
             None => "idle",

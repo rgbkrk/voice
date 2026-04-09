@@ -14,10 +14,10 @@ pub async fn run(queue: Arc<RequestQueue>) {
 
         while let Some(item) = queue.dequeue().await {
             eprintln!(
-                "voiced: [{}/{}] {:?}",
+                "voiced: [{}/{}] {}",
                 item.id,
                 item.client_id,
-                short_desc(&item.request)
+                short(&item.request)
             );
 
             match &item.request {
@@ -45,15 +45,12 @@ pub async fn run(queue: Arc<RequestQueue>) {
                         .complete(Some("(simulated converse)".to_string()))
                         .await;
                 }
-                VoiceRequest::Cancel | VoiceRequest::Status => {
-                    queue.complete(None).await;
-                }
             }
         }
     }
 }
 
-fn short_desc(req: &VoiceRequest) -> String {
+fn short(req: &VoiceRequest) -> String {
     match req {
         VoiceRequest::Speak { text, .. } => {
             let preview: String = text.chars().take(50).collect();
@@ -66,7 +63,5 @@ fn short_desc(req: &VoiceRequest) -> String {
             let preview: String = text.chars().take(50).collect();
             format!("converse: {}", preview)
         }
-        VoiceRequest::Cancel => "cancel".to_string(),
-        VoiceRequest::Status => "status".to_string(),
     }
 }

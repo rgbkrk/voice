@@ -504,6 +504,14 @@ fn handle_tools_call(
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
 
+    // Try to reconnect to daemon if we lost connection
+    if session.daemon.is_none() {
+        session.daemon = voice_protocol::client::DaemonClient::connect();
+        if session.daemon.is_some() && !QUIET.load(Ordering::Relaxed) {
+            eprintln!("voice mcp: reconnected to voiced daemon");
+        }
+    }
+
     // Delegate to the voice daemon if connected (speak/listen/converse).
     // Config tools (set_voice/set_speed/list_voices) stay local.
     // The daemon queues requests and owns the audio hardware.

@@ -7,6 +7,7 @@
 //!   voiced              # start the daemon
 //!   voiced --status     # print daemon state and exit
 
+mod audio_recorder;
 mod automerge_state;
 mod config;
 mod queue;

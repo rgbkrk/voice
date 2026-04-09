@@ -175,7 +175,7 @@ impl FileWatcher {
                     match load_state(&self.path) {
                         Ok(state) => Some(state),
                         Err(e) => {
-                            eprintln!("Error loading state after file change: {}", e);
+                            log::error!("Error loading state after file change: {}", e);
                             None
                         }
                     }
@@ -184,11 +184,11 @@ impl FileWatcher {
                 }
             }
             Ok(Some(Err(e))) => {
-                eprintln!("File watcher error: {}", e);
+                log::error!("File watcher error: {}", e);
                 None
             }
             Ok(None) => {
-                eprintln!("File watcher disconnected");
+                log::error!("File watcher disconnected");
                 None
             }
             Err(_) => None, // Timeout

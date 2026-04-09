@@ -8,6 +8,7 @@ mod daemon_client;
 mod state;
 mod types;
 
+use log::{error, info, warn};
 use state::AppState;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
@@ -27,12 +28,12 @@ fn update_tray_badge(app: &AppHandle, state: &VoiceState) {
         #[cfg(target_os = "macos")]
         {
             if let Err(e) = tray.set_icon_as_template(true) {
-                eprintln!("Failed to set tray icon as template: {}", e);
+                warn!("Failed to set tray icon as template: {}", e);
             }
         }
 
         if let Err(e) = tray.set_title(Some(&badge_text)) {
-            eprintln!("Failed to set tray badge: {}", e);
+            warn!("Failed to set tray badge: {}", e);
         }
     }
 }
@@ -45,9 +46,19 @@ fn main() {
     let watcher_state = app_state.clone();
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("voice-tray".to_string()),
+                    },
+                ))
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .manage(app_state)
         .setup(move |app| {
-            eprintln!("Voice Queue starting...");
+            info!("Voice Queue starting...");
 
             // Clone app handle for file watcher thread
             let app_handle = app.handle().clone();
@@ -57,16 +68,23 @@ fn main() {
 
             // Set up tray click handler to show/hide window
             if let Some(tray) = app.tray_by_id("main-tray") {
+                info!("Tray icon found, setting up click handler");
                 let window_handle = app.handle().clone();
                 tray.on_tray_icon_event(move |_tray, event| {
+                    info!("Tray icon event: {:?}", event);
                     if let tauri::tray::TrayIconEvent::Click { button, .. } = event {
+                        info!("Click detected, button: {:?}", button);
                         if button == tauri::tray::MouseButton::Left {
                             if let Some(window) = window_handle.get_webview_window("main") {
+                                info!("Window found");
                                 let is_visible = window.is_visible().unwrap_or(false);
+                                info!("Window visible: {}", is_visible);
 
                                 if is_visible {
+                                    info!("Hiding window");
                                     let _ = window.hide();
                                 } else {
+                                    info!("Showing window");
                                     // Position window near tray icon (top-right of screen)
                                     #[cfg(target_os = "macos")]
                                     {
@@ -76,28 +94,37 @@ fn main() {
                                             // Position in top-right, below menu bar
                                             let x = size.width as f64 - 400.0; // 380 width + 20 padding
                                             let y = 25.0; // Below menu bar
+                                            info!("Positioning window at ({}, {})", x, y);
                                             let _ = window.set_position(LogicalPosition::new(x, y));
                                         }
                                     }
 
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
+                                    if let Err(e) = window.show() {
+                                        error!("Error showing window: {}", e);
+                                    }
+                                    if let Err(e) = window.set_focus() {
+                                        error!("Error focusing window: {}", e);
+                                    }
                                 }
+                            } else {
+                                error!("Window 'main' not found!");
                             }
                         }
                     }
                 });
+            } else {
+                error!("Tray icon 'main-tray' not found!");
             }
 
             // Spawn file watcher task on Tauri's async runtime
             tauri::async_runtime::spawn(async move {
-                eprintln!("Starting file watcher task...");
+                info!("Starting file watcher task...");
 
                 // Create file watcher
                 let mut watcher = match automerge_sync::FileWatcher::new() {
                     Ok(w) => w,
                     Err(e) => {
-                        eprintln!("Failed to create file watcher: {}", e);
+                        error!("Failed to create file watcher: {}", e);
                         return;
                     }
                 };
@@ -112,18 +139,18 @@ fn main() {
 
                         // Emit initial state to frontend
                         if let Err(e) = app_handle.emit("queue-updated", initial_state) {
-                            eprintln!("Failed to emit initial state: {}", e);
+                            error!("Failed to emit initial state: {}", e);
                         }
                     }
                     Err(e) => {
-                        eprintln!("Failed to load initial state: {}", e);
+                        error!("Failed to load initial state: {}", e);
                     }
                 }
 
                 // Watch for changes in a loop
                 loop {
                     if let Some(new_state) = watcher.wait_for_change(Duration::from_secs(1)).await {
-                        eprintln!("State file changed, updating...");
+                        info!("State file changed, updating...");
                         watcher_state.update_voice_state(new_state.clone());
 
                         // Update tray badge
@@ -131,7 +158,7 @@ fn main() {
 
                         // Emit event to frontend
                         if let Err(e) = app_handle.emit("queue-updated", new_state) {
-                            eprintln!("Failed to emit queue-updated event: {}", e);
+                            error!("Failed to emit queue-updated event: {}", e);
                         }
                     }
                 }

@@ -1,0 +1,317 @@
+@import url('https://fonts.googleapis.com/css2?family=Audiowide&family=JetBrains+Mono:wght@400;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Audio Software Dark Theme */
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #141420;
+  --bg-tertiary: #1a1a28;
+  --bg-elevated: #20203a;
+
+  /* Neon Accents */
+  --cyan: #00f5ff;
+  --cyan-glow: rgba(0, 245, 255, 0.3);
+  --magenta: #ff00e5;
+  --magenta-glow: rgba(255, 0, 229, 0.3);
+  --purple: #a855f7;
+  --purple-glow: rgba(168, 85, 247, 0.3);
+
+  /* Status Colors */
+  --status-processing: #3b82f6;
+  --status-completed: #10b981;
+  --status-failed: #ef4444;
+  --status-queued: #f59e0b;
+
+  /* Text */
+  --text-primary: #ffffff;
+  --text-secondary: #a8a8b8;
+  --text-tertiary: #6b6b7b;
+
+  /* Audio Visualizer */
+  --waveform-color: var(--cyan);
+  --meter-active: var(--magenta);
+  --meter-inactive: #2a2a3a;
+}
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    font-family: 'JetBrains Mono', monospace;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--bg-elevated);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--cyan);
+    box-shadow: 0 0 8px var(--cyan-glow);
+  }
+}
+
+@layer components {
+  /* Audio waveform background pattern */
+  .waveform-bg {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .waveform-bg::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      repeating-linear-gradient(
+        90deg,
+        transparent,
+        transparent 3px,
+        rgba(0, 245, 255, 0.03) 3px,
+        rgba(0, 245, 255, 0.03) 4px
+      );
+    pointer-events: none;
+  }
+
+  /* Glow effects for interactive elements */
+  .glow-cyan {
+    box-shadow: 0 0 20px var(--cyan-glow);
+  }
+
+  .glow-magenta {
+    box-shadow: 0 0 20px var(--magenta-glow);
+  }
+
+  /* VU Meter animation */
+  @keyframes vu-pulse {
+    0%, 100% { opacity: 1; transform: scaleX(1); }
+    50% { opacity: 0.7; transform: scaleX(0.95); }
+  }
+
+  .vu-active {
+    animation: vu-pulse 1.2s ease-in-out infinite;
+  }
+
+  /* Slide in animation for queue items */
+  @keyframes slide-in {
+    from {
+      opacity: 0;
+      transform: translateX(-20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  .queue-item {
+    animation: slide-in 0.3s ease-out;
+    padding: 16px;
+    border-bottom: 1px solid var(--bg-tertiary);
+    transition: background-color 0.2s ease;
+  }
+
+  .queue-item:hover {
+    background-color: var(--bg-secondary);
+  }
+
+  /* Badge styles with audio-inspired design */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-radius: 3px;
+    border: 1px solid currentColor;
+    position: relative;
+  }
+
+  .badge::before {
+    content: '';
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: currentColor;
+    margin-right: 6px;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  /* Button styles with neon glow */
+  .btn {
+    position: relative;
+    padding: 8px 16px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border: 2px solid;
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .btn:hover {
+    transform: translateY(-1px);
+  }
+
+  .btn:active {
+    transform: translateY(0);
+  }
+
+  .btn-play {
+    border-color: var(--cyan);
+    color: var(--cyan);
+  }
+
+  .btn-play:hover {
+    background: var(--cyan);
+    color: var(--bg-primary);
+    box-shadow: 0 0 20px var(--cyan-glow);
+  }
+
+  .btn-stop {
+    border-color: var(--magenta);
+    color: var(--magenta);
+  }
+
+  .btn-stop:hover {
+    background: var(--magenta);
+    color: var(--bg-primary);
+    box-shadow: 0 0 20px var(--magenta-glow);
+  }
+
+  .btn-cancel {
+    border-color: var(--status-failed);
+    color: var(--status-failed);
+  }
+
+  .btn-cancel:hover {
+    background: var(--status-failed);
+    color: var(--bg-primary);
+  }
+
+  .btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    transform: none !important;
+  }
+
+  /* Loading spinner with audio waveform style */
+  @keyframes wave-bounce {
+    0%, 100% { height: 8px; }
+    50% { height: 20px; }
+  }
+
+  .audio-loader {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+  }
+
+  .audio-loader span {
+    width: 3px;
+    background: var(--cyan);
+    border-radius: 2px;
+    animation: wave-bounce 1s ease-in-out infinite;
+  }
+
+  .audio-loader span:nth-child(2) { animation-delay: 0.1s; }
+  .audio-loader span:nth-child(3) { animation-delay: 0.2s; }
+  .audio-loader span:nth-child(4) { animation-delay: 0.3s; }
+  .audio-loader span:nth-child(5) { animation-delay: 0.4s; }
+
+  /* Header with audio software styling */
+  .audio-header {
+    font-family: 'Audiowide', sans-serif;
+    font-size: 20px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    background: linear-gradient(135deg, var(--cyan) 0%, var(--magenta) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Timestamp and metadata */
+  .metadata {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+
+  /* Expand/collapse indicator */
+  .expand-indicator {
+    color: var(--cyan);
+    font-size: 10px;
+    transition: transform 0.2s ease;
+  }
+
+  .expand-indicator.expanded {
+    transform: rotate(90deg);
+  }
+
+  /* Section headers */
+  .section-header {
+    padding: 12px 16px;
+    background: var(--bg-tertiary);
+    border-left: 3px solid;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-header.current {
+    border-left-color: var(--status-processing);
+    background: linear-gradient(90deg, rgba(59, 130, 246, 0.1) 0%, transparent 100%);
+  }
+
+  .section-header.pending {
+    border-left-color: var(--status-queued);
+    background: linear-gradient(90deg, rgba(245, 158, 11, 0.1) 0%, transparent 100%);
+  }
+
+  .section-header.recent {
+    border-left-color: var(--status-completed);
+    background: linear-gradient(90deg, rgba(16, 185, 129, 0.1) 0%, transparent 100%);
+  }
+}

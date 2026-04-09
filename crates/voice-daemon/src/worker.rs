@@ -344,9 +344,7 @@ fn listen(
             sample_count += 1;
 
             // Multi-channel: take every ch-th sample (mono mix)
-            if ch == 1 {
-                buf_clone.lock().unwrap().push(sample);
-            } else if sample_count % ch == 0 {
+            if ch == 1 || sample_count % ch == 0 {
                 buf_clone.lock().unwrap().push(sample);
             }
 
@@ -376,7 +374,6 @@ fn listen(
     let silence_timeout = std::time::Duration::from_millis(2000);
     let mut speech_detected = false;
     let mut last_speech = Instant::now();
-    let mut consecutive_silent = 0u32;
 
     loop {
         if started.elapsed() > max_dur {
@@ -388,21 +385,17 @@ fn listen(
         let peak = f32::from_bits(recent_peak.swap(0f32.to_bits(), Ordering::Relaxed));
 
         if peak > threshold {
-            consecutive_silent = 0;
             if !speech_detected {
                 eprintln!("voiced: speech detected (peak: {:.4})", peak);
                 speech_detected = true;
             }
             last_speech = Instant::now();
-        } else {
-            consecutive_silent += 1;
-            if speech_detected && last_speech.elapsed() > silence_timeout {
-                eprintln!(
-                    "voiced: silence for {:.1}s, stopping",
-                    last_speech.elapsed().as_secs_f32()
-                );
-                break;
-            }
+        } else if speech_detected && last_speech.elapsed() > silence_timeout {
+            eprintln!(
+                "voiced: silence for {:.1}s, stopping",
+                last_speech.elapsed().as_secs_f32()
+            );
+            break;
         }
     }
 

@@ -197,10 +197,8 @@ pub fn run(config: ServerConfig) {
 
     // Try to connect to the voice daemon for shared model access
     let daemon = voice_protocol::client::DaemonClient::connect();
-    if daemon.is_some() {
-        if !QUIET.load(Ordering::Relaxed) {
-            eprintln!("voice mcp: connected to voiced daemon");
-        }
+    if daemon.is_some() && !QUIET.load(Ordering::Relaxed) {
+        eprintln!("voice mcp: connected to voiced daemon");
     }
 
     let mut voice_cache = HashMap::new();

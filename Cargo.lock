@@ -4023,6 +4023,7 @@ version = "0.1.0"
 dependencies = [
  "candle-core",
  "dirs",
+ "hound",
  "rodio",
  "serde",
  "serde_json",
@@ -4030,6 +4031,7 @@ dependencies = [
  "uuid",
  "voice-g2p",
  "voice-protocol",
+ "voice-stt",
  "voice-tts",
 ]
 

@@ -579,6 +579,20 @@ fn run_say(say_args: SayArgs) {
                     std::process::exit(1);
                 }
             };
+            // Apply the same preprocessing the local path uses
+            let text = if say_args.markdown {
+                strip_markdown(&text)
+            } else {
+                text
+            };
+            let text = apply_tech_subs(&text);
+            let sub_file = say_args.sub_file.clone().or_else(find_sub_file);
+            let (subs, _phoneme_overrides) = collect_subs(&say_args.subs, sub_file.as_deref());
+            let text = if subs.is_empty() {
+                text
+            } else {
+                apply_substitutions(&text, &subs)
+            };
             match daemon.speak(&text, Some(&say_args.voice), Some(say_args.speed as f64)) {
                 Ok(_resp) => return,
                 Err(e) => {

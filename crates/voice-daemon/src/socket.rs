@@ -96,14 +96,16 @@ async fn handle_client(
 }
 
 async fn dispatch(req: rpc::Request, queue: &Arc<RequestQueue>, client_id: &str) -> Response {
+    use crate::queue::VoiceRequest;
+
     let wait = req
         .params
         .get("wait")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Enqueue the request
-    let queue_id = match req.method.as_str() {
+    // Build the voice request from params
+    let voice_req = match req.method.as_str() {
         "speak" => {
             let text = req.params.get("text").and_then(|v| v.as_str());
             let Some(text) = text else {
@@ -115,22 +117,16 @@ async fn dispatch(req: rpc::Request, queue: &Arc<RequestQueue>, client_id: &str)
                 .and_then(|v| v.as_str())
                 .map(String::from);
             let speed = req.params.get("speed").and_then(|v| v.as_f64());
-            Some(
-                queue
-                    .enqueue_speak(client_id.to_string(), text.to_string(), voice, speed)
-                    .await,
-            )
+            VoiceRequest::Speak {
+                text: text.to_string(),
+                voice,
+                speed,
+            }
         }
-
         "listen" => {
             let max_duration_ms = req.params.get("max_duration_ms").and_then(|v| v.as_u64());
-            Some(
-                queue
-                    .enqueue_listen(client_id.to_string(), max_duration_ms)
-                    .await,
-            )
+            VoiceRequest::Listen { max_duration_ms }
         }
-
         "converse" => {
             let text = req.params.get("text").and_then(|v| v.as_str());
             let Some(text) = text else {
@@ -141,23 +137,19 @@ async fn dispatch(req: rpc::Request, queue: &Arc<RequestQueue>, client_id: &str)
                 .get("voice")
                 .and_then(|v| v.as_str())
                 .map(String::from);
-            Some(
-                queue
-                    .enqueue_converse(client_id.to_string(), text.to_string(), voice)
-                    .await,
-            )
+            VoiceRequest::Converse {
+                text: text.to_string(),
+                voice,
+            }
         }
-
         "cancel" => {
             let count = queue.cancel_client(client_id).await;
             return Response::success(req.id, serde_json::json!({ "cancelled_count": count }));
         }
-
         "status" => {
             let state = queue.snapshot().await;
             return Response::success(req.id, serde_json::to_value(&state).unwrap());
         }
-
         _ => {
             return Response::error(
                 req.id,
@@ -167,20 +159,36 @@ async fn dispatch(req: rpc::Request, queue: &Arc<RequestQueue>, client_id: &str)
         }
     };
 
-    let Some(queue_id) = queue_id else {
-        return Response::error(req.id, rpc::INVALID_PARAMS, "Failed to enqueue");
-    };
-
     if !wait {
-        // Fire-and-forget: return immediately with queue ID
+        // Fire-and-forget: enqueue and return immediately
+        let queue_id = match voice_req {
+            VoiceRequest::Speak { text, voice, speed } => {
+                queue
+                    .enqueue_speak(client_id.to_string(), text, voice, speed)
+                    .await
+            }
+            VoiceRequest::Listen { max_duration_ms } => {
+                queue
+                    .enqueue_listen(client_id.to_string(), max_duration_ms)
+                    .await
+            }
+            VoiceRequest::Converse { text, voice } => {
+                queue
+                    .enqueue_converse(client_id.to_string(), text, voice)
+                    .await
+            }
+        };
         return Response::success(
             req.id,
             serde_json::json!({ "queue_id": queue_id, "status": "queued" }),
         );
     }
 
-    // Wait for completion: register a waiter and block until the item finishes
-    let rx = queue.wait_for(&queue_id).await;
+    // Wait mode: register waiter atomically with enqueue to prevent race
+    let (queue_id, rx) = queue
+        .enqueue_and_wait(client_id.to_string(), voice_req)
+        .await;
+
     match rx.await {
         Ok(result) => Response::success(
             req.id,

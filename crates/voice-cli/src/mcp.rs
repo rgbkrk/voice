@@ -513,18 +513,31 @@ fn handle_tools_call(
     // The daemon queues requests and owns the audio hardware.
     if let Some(ref mut daemon) = session.daemon {
         let daemon_result = match name {
-            "speak" => Some(daemon.speak(
-                arguments.get("text").and_then(|v| v.as_str()).unwrap_or(""),
-                arguments.get("voice").and_then(|v| v.as_str()),
-                arguments.get("speed").and_then(|v| v.as_f64()),
-            )),
+            "speak" => {
+                let raw = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                let markdown = arguments
+                    .get("markdown")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let text = preprocess_for_daemon(raw, markdown, &session.subs);
+                Some(daemon.speak(
+                    &text,
+                    arguments.get("voice").and_then(|v| v.as_str()),
+                    arguments.get("speed").and_then(|v| v.as_f64()),
+                ))
+            }
             "listen" => {
                 Some(daemon.listen(arguments.get("max_duration_ms").and_then(|v| v.as_u64())))
             }
-            "converse" => Some(daemon.converse(
-                arguments.get("text").and_then(|v| v.as_str()).unwrap_or(""),
-                arguments.get("voice").and_then(|v| v.as_str()),
-            )),
+            "converse" => {
+                let raw = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                let markdown = arguments
+                    .get("markdown")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let text = preprocess_for_daemon(raw, markdown, &session.subs);
+                Some(daemon.converse(&text, arguments.get("voice").and_then(|v| v.as_str())))
+            }
             "cancel" => Some(daemon.cancel()),
             _ => None,
         };
@@ -1069,6 +1082,22 @@ fn voice_play_sound(params: Value) -> Result<Value, RpcErr> {
 }
 
 // ── Audio playback ────────────────────────────────────────────────────
+
+/// Apply the same text preprocessing the local TTS path uses, so the daemon
+/// gets clean text even though it doesn't know about our subs config.
+fn preprocess_for_daemon(raw: &str, markdown: bool, subs: &[(String, String)]) -> String {
+    let text = if markdown {
+        strip_markdown(raw)
+    } else {
+        raw.to_string()
+    };
+    let text = apply_tech_subs(&text);
+    if subs.is_empty() {
+        text
+    } else {
+        apply_substitutions(&text, subs)
+    }
+}
 
 fn stream_chunks(
     session: &mut Session,

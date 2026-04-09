@@ -135,12 +135,31 @@ impl RequestQueue {
         id
     }
 
-    /// Register a waiter for a queue item. Returns a receiver that fires
-    /// when the item completes (or fails).
-    pub async fn wait_for(&self, queue_id: &str) -> oneshot::Receiver<CompletionResult> {
+    /// Enqueue and atomically register a waiter. The waiter is registered
+    /// *before* the item is pushed so the worker can never complete it
+    /// before we start listening. Returns (queue_id, receiver).
+    pub async fn enqueue_and_wait(
+        &self,
+        client_id: String,
+        request: VoiceRequest,
+    ) -> (String, oneshot::Receiver<CompletionResult>) {
+        let id = Uuid::new_v4().to_string()[..8].to_string();
         let (tx, rx) = oneshot::channel();
-        self.waiters.lock().await.insert(queue_id.to_string(), tx);
-        rx
+
+        // Register waiter first, then push
+        self.waiters.lock().await.insert(id.clone(), tx);
+
+        let entry = QueueEntry {
+            id: id.clone(),
+            client_id,
+            request,
+            status: ItemStatus::Queued,
+            created_at: now_secs(),
+            result: None,
+        };
+        self.items.lock().await.push_back(entry);
+        self.notify.notify_one();
+        (id, rx)
     }
 
     pub async fn dequeue(&self) -> Option<QueueEntry> {

@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod automerge_sync;
+mod daemon_client;
 mod types;
 
 fn main() {

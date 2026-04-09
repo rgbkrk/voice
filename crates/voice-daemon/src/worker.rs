@@ -12,15 +12,15 @@ pub async fn run(queue: Arc<RequestQueue>) {
     loop {
         queue.notify.notified().await;
 
-        while let Some(item) = queue.dequeue().await {
+        while let Some(entry) = queue.dequeue().await {
             eprintln!(
                 "voiced: [{}/{}] {}",
-                item.id,
-                item.client_id,
-                short(&item.request)
+                entry.id,
+                entry.client_id,
+                short(&entry.request)
             );
 
-            match &item.request {
+            match &entry.request {
                 VoiceRequest::Speak { text, .. } => {
                     // TODO: voice-tts generate + rodio playback
                     let words = text.split_whitespace().count();

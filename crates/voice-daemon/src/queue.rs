@@ -1,42 +1,50 @@
 //! Request queue for serializing voice operations.
-//!
-//! All TTS/STT requests go through this queue so only one operation
-//! runs at a time, preventing audio overlap between multiple clients.
 
-use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
+use voice_protocol::rpc::{DaemonState, ItemStatus, QueueItem};
 
-/// A voice request — what the worker will execute.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "method")]
+/// What the worker will execute.
+#[derive(Debug, Clone)]
 pub enum VoiceRequest {
-    #[serde(rename = "speak")]
     Speak {
         text: String,
         voice: Option<String>,
         speed: Option<f64>,
     },
-    #[serde(rename = "listen")]
-    Listen { max_duration_ms: Option<u64> },
-    #[serde(rename = "converse")]
-    Converse { text: String, voice: Option<String> },
+    Listen {
+        max_duration_ms: Option<u64>,
+    },
+    Converse {
+        text: String,
+        voice: Option<String>,
+    },
 }
 
-/// Status of a queued item.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum ItemStatus {
-    Queued,
-    Processing,
-    Completed,
-    Failed,
+impl VoiceRequest {
+    pub fn method(&self) -> &str {
+        match self {
+            Self::Speak { .. } => "speak",
+            Self::Listen { .. } => "listen",
+            Self::Converse { .. } => "converse",
+        }
+    }
+
+    pub fn text_preview(&self) -> Option<String> {
+        match self {
+            Self::Speak { text, .. } | Self::Converse { text, .. } => {
+                let preview: String = text.chars().take(80).collect();
+                Some(preview)
+            }
+            Self::Listen { .. } => None,
+        }
+    }
 }
 
-/// A single item in the queue with metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueueItem {
+/// Internal queue entry (richer than the protocol QueueItem).
+#[derive(Debug, Clone)]
+pub struct QueueEntry {
     pub id: String,
     pub client_id: String,
     pub request: VoiceRequest,
@@ -45,19 +53,25 @@ pub struct QueueItem {
     pub result: Option<String>,
 }
 
-/// Snapshot of daemon state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DaemonState {
-    pub status: String,
-    pub current: Option<QueueItem>,
-    pub pending: Vec<QueueItem>,
-    pub recent: Vec<QueueItem>,
+impl QueueEntry {
+    /// Convert to the protocol's QueueItem for serialization.
+    fn to_protocol(&self) -> QueueItem {
+        QueueItem {
+            id: self.id.clone(),
+            client_id: self.client_id.clone(),
+            method: self.request.method().to_string(),
+            status: self.status.clone(),
+            created_at: self.created_at,
+            text_preview: self.request.text_preview(),
+            result: self.result.clone(),
+        }
+    }
 }
 
 pub struct RequestQueue {
-    items: Mutex<VecDeque<QueueItem>>,
-    current: Mutex<Option<QueueItem>>,
-    recent: Mutex<VecDeque<QueueItem>>,
+    items: Mutex<VecDeque<QueueEntry>>,
+    current: Mutex<Option<QueueEntry>>,
+    recent: Mutex<VecDeque<QueueEntry>>,
     pub notify: Notify,
 }
 
@@ -70,8 +84,6 @@ impl RequestQueue {
             notify: Notify::new(),
         }
     }
-
-    // -- Typed enqueue methods ------------------------------------------------
 
     pub async fn enqueue_speak(
         &self,
@@ -99,11 +111,9 @@ impl RequestQueue {
             .await
     }
 
-    // -- Core queue operations ------------------------------------------------
-
     async fn enqueue(&self, client_id: String, request: VoiceRequest) -> String {
         let id = Uuid::new_v4().to_string()[..8].to_string();
-        let item = QueueItem {
+        let entry = QueueEntry {
             id: id.clone(),
             client_id,
             request,
@@ -111,56 +121,70 @@ impl RequestQueue {
             created_at: now_secs(),
             result: None,
         };
-        self.items.lock().await.push_back(item);
+        self.items.lock().await.push_back(entry);
         self.notify.notify_one();
         id
     }
 
-    pub async fn dequeue(&self) -> Option<QueueItem> {
+    pub async fn dequeue(&self) -> Option<QueueEntry> {
         let mut items = self.items.lock().await;
-        if let Some(mut item) = items.pop_front() {
-            item.status = ItemStatus::Processing;
-            *self.current.lock().await = Some(item.clone());
-            Some(item)
+        if let Some(mut entry) = items.pop_front() {
+            entry.status = ItemStatus::Processing;
+            *self.current.lock().await = Some(entry.clone());
+            Some(entry)
         } else {
             None
         }
     }
 
     pub async fn complete(&self, result: Option<String>) {
-        if let Some(mut item) = self.current.lock().await.take() {
-            item.status = ItemStatus::Completed;
-            item.result = result;
-            self.push_recent(item).await;
+        if let Some(mut entry) = self.current.lock().await.take() {
+            entry.status = ItemStatus::Completed;
+            entry.result = result;
+            self.push_recent(entry).await;
         }
     }
 
     #[allow(dead_code)]
     pub async fn fail(&self, error: String) {
-        if let Some(mut item) = self.current.lock().await.take() {
-            item.status = ItemStatus::Failed;
-            item.result = Some(error);
-            self.push_recent(item).await;
+        if let Some(mut entry) = self.current.lock().await.take() {
+            entry.status = ItemStatus::Failed;
+            entry.result = Some(error);
+            self.push_recent(entry).await;
         }
     }
 
     pub async fn cancel_client(&self, client_id: &str) -> usize {
         let mut items = self.items.lock().await;
         let before = items.len();
-        items.retain(|item| item.client_id != client_id);
+        items.retain(|e| e.client_id != client_id);
         before - items.len()
     }
 
+    /// Snapshot using the shared protocol types.
     pub async fn snapshot(&self) -> DaemonState {
-        let current = self.current.lock().await.clone();
-        let pending: Vec<QueueItem> = self.items.lock().await.iter().cloned().collect();
-        let recent: Vec<QueueItem> = self.recent.lock().await.iter().cloned().collect();
+        let current = self.current.lock().await.as_ref().map(|e| e.to_protocol());
+        let pending: Vec<QueueItem> = self
+            .items
+            .lock()
+            .await
+            .iter()
+            .map(|e| e.to_protocol())
+            .collect();
+        let recent: Vec<QueueItem> = self
+            .recent
+            .lock()
+            .await
+            .iter()
+            .map(|e| e.to_protocol())
+            .collect();
 
         let status = match &current {
-            Some(item) => match &item.request {
-                VoiceRequest::Speak { .. } => "speaking",
-                VoiceRequest::Listen { .. } => "listening",
-                VoiceRequest::Converse { .. } => "conversing",
+            Some(item) => match item.method.as_str() {
+                "speak" => "speaking",
+                "listen" => "listening",
+                "converse" => "conversing",
+                _ => "idle",
             },
             None if !pending.is_empty() => "queued",
             None => "idle",
@@ -174,9 +198,9 @@ impl RequestQueue {
         }
     }
 
-    async fn push_recent(&self, item: QueueItem) {
+    async fn push_recent(&self, entry: QueueEntry) {
         let mut recent = self.recent.lock().await;
-        recent.push_front(item);
+        recent.push_front(entry);
         if recent.len() > 20 {
             recent.pop_back();
         }

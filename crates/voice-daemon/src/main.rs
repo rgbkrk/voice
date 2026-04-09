@@ -13,6 +13,8 @@ mod worker;
 
 use queue::RequestQueue;
 use std::sync::Arc;
+use voice_protocol::frames::{read_frame, write_frame, Frame, FrameType};
+use voice_protocol::rpc;
 
 #[tokio::main]
 async fn main() {
@@ -28,7 +30,6 @@ async fn main() {
     // Check if another instance is already running
     let sock_path = socket::socket_path();
     if sock_path.exists() {
-        // Try connecting — if it works, another daemon is running
         if tokio::net::UnixStream::connect(&sock_path).await.is_ok() {
             eprintln!(
                 "voiced: another instance is already running at {}",
@@ -37,7 +38,6 @@ async fn main() {
             eprintln!("voiced: use `voiced --status` to check state");
             std::process::exit(1);
         }
-        // Stale socket, remove it
         eprintln!("voiced: removing stale socket");
         std::fs::remove_file(&sock_path).ok();
     }
@@ -45,13 +45,13 @@ async fn main() {
     let queue = Arc::new(RequestQueue::new());
 
     // Handle ctrl-c
-    let cleanup_queue = queue.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        eprintln!("\nvoiced: shutting down");
-        let _ = cleanup_queue; // keep alive
-        socket::cleanup();
-        std::process::exit(0);
+    tokio::spawn({
+        async move {
+            tokio::signal::ctrl_c().await.ok();
+            eprintln!("\nvoiced: shutting down");
+            socket::cleanup();
+            std::process::exit(0);
+        }
     });
 
     // Start worker and socket server concurrently
@@ -72,18 +72,29 @@ async fn print_status() {
 
     match tokio::net::UnixStream::connect(&path).await {
         Ok(stream) => {
-            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-            let (reader, mut writer) = stream.into_split();
-            let req = r#"{"type":"status"}"#;
-            writer.write_all(format!("{}\n", req).as_bytes()).await.ok();
-            let mut lines = BufReader::new(reader).lines();
-            if let Ok(Some(line)) = lines.next_line().await {
-                // Pretty-print the JSON
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                    println!("{}", serde_json::to_string_pretty(&val).unwrap());
-                } else {
-                    println!("{}", line);
+            let (mut reader, mut writer) = stream.into_split();
+
+            // Send a status request using the frame protocol
+            let req = rpc::Request::new("status", serde_json::json!({})).with_id(1);
+            let json = serde_json::to_vec(&req).unwrap();
+            let frame = Frame::request(&json);
+            if write_frame(&mut writer, &frame).await.is_err() {
+                println!("voiced: failed to send status request");
+                return;
+            }
+
+            // Read the response frame
+            match read_frame(&mut reader).await {
+                Ok(Some(frame)) if frame.frame_type == FrameType::Response => {
+                    if let Ok(resp) = frame.json::<rpc::Response>() {
+                        if let Some(result) = resp.result {
+                            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                        } else if let Some(err) = resp.error {
+                            println!("Error: {}", err.message);
+                        }
+                    }
                 }
+                _ => println!("voiced: unexpected response"),
             }
         }
         Err(_) => {

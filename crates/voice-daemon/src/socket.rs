@@ -1,70 +1,15 @@
 //! Unix socket server for the voice daemon.
 //!
-//! Listens on ~/.voice/daemon.sock. Speaks JSON-RPC 2.0 over
-//! newline-delimited streams, consistent with the MCP server protocol.
+//! Uses the voice-protocol frame codec (length-prefixed typed frames)
+//! instead of newline-delimited JSON.
 
 use crate::queue::RequestQueue;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use uuid::Uuid;
-
-// ---------------------------------------------------------------------------
-// JSON-RPC types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct JsonRpcRequest {
-    jsonrpc: Option<String>,
-    method: String,
-    #[serde(default)]
-    params: Value,
-    id: Option<Value>,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonRpcResponse {
-    jsonrpc: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<JsonRpcError>,
-    id: Option<Value>,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonRpcError {
-    code: i32,
-    message: String,
-}
-
-impl JsonRpcResponse {
-    fn success(id: Option<Value>, result: Value) -> Self {
-        Self {
-            jsonrpc: "2.0",
-            result: Some(result),
-            error: None,
-            id,
-        }
-    }
-
-    fn error(id: Option<Value>, code: i32, message: String) -> Self {
-        Self {
-            jsonrpc: "2.0",
-            result: None,
-            error: Some(JsonRpcError { code, message }),
-            id,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Socket path
-// ---------------------------------------------------------------------------
+use voice_protocol::frames::{read_frame, write_frame, Frame, FrameType};
+use voice_protocol::rpc::{self, Response};
 
 pub fn socket_path() -> PathBuf {
     let dir = dirs::home_dir()
@@ -73,10 +18,6 @@ pub fn socket_path() -> PathBuf {
     std::fs::create_dir_all(&dir).ok();
     dir.join("daemon.sock")
 }
-
-// ---------------------------------------------------------------------------
-// Server
-// ---------------------------------------------------------------------------
 
 pub async fn serve(queue: Arc<RequestQueue>) {
     let path = socket_path();
@@ -113,51 +54,53 @@ async fn handle_client(
     queue: Arc<RequestQueue>,
     client_id: String,
 ) {
-    let (reader, mut writer) = stream.into_split();
-    let mut lines = BufReader::new(reader).lines();
+    let (mut reader, mut writer) = stream.into_split();
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = line.trim().to_string();
-        if line.is_empty() {
-            continue;
-        }
-
-        let response = match serde_json::from_str::<JsonRpcRequest>(&line) {
-            Ok(req) => dispatch(req, &queue, &client_id).await,
-            Err(e) => JsonRpcResponse::error(None, -32700, format!("Parse error: {}", e)),
+    loop {
+        let frame = match read_frame(&mut reader).await {
+            Ok(Some(f)) => f,
+            Ok(None) => break, // EOF
+            Err(e) => {
+                eprintln!("voiced: read error ({}): {}", client_id, e);
+                break;
+            }
         };
 
-        let json = serde_json::to_string(&response).unwrap();
-        if writer
-            .write_all(format!("{}\n", json).as_bytes())
-            .await
-            .is_err()
-        {
-            break;
+        match frame.frame_type {
+            FrameType::Request => {
+                let response = match frame.json::<rpc::Request>() {
+                    Ok(req) => dispatch(req, &queue, &client_id).await,
+                    Err(e) => Response::error(
+                        None,
+                        rpc::PARSE_ERROR,
+                        format!("Invalid request JSON: {}", e),
+                    ),
+                };
+
+                let json = serde_json::to_vec(&response).unwrap();
+                let resp_frame = Frame::response(&json);
+                if write_frame(&mut writer, &resp_frame).await.is_err() {
+                    break;
+                }
+            }
+            other => {
+                eprintln!(
+                    "voiced: unexpected frame type {:?} from {}",
+                    other, client_id
+                );
+            }
         }
     }
 
     eprintln!("voiced: client disconnected ({})", client_id);
 }
 
-// ---------------------------------------------------------------------------
-// Method dispatch
-// ---------------------------------------------------------------------------
-
-async fn dispatch(
-    req: JsonRpcRequest,
-    queue: &Arc<RequestQueue>,
-    client_id: &str,
-) -> JsonRpcResponse {
+async fn dispatch(req: rpc::Request, queue: &Arc<RequestQueue>, client_id: &str) -> Response {
     match req.method.as_str() {
         "speak" => {
             let text = req.params.get("text").and_then(|v| v.as_str());
             let Some(text) = text else {
-                return JsonRpcResponse::error(
-                    req.id,
-                    -32602,
-                    "Missing required param: text".to_string(),
-                );
+                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: text");
             };
             let voice = req
                 .params
@@ -170,7 +113,7 @@ async fn dispatch(
                 .enqueue_speak(client_id.to_string(), text.to_string(), voice, speed)
                 .await;
 
-            JsonRpcResponse::success(
+            Response::success(
                 req.id,
                 serde_json::json!({ "queue_id": queue_id, "status": "queued" }),
             )
@@ -178,12 +121,11 @@ async fn dispatch(
 
         "listen" => {
             let max_duration_ms = req.params.get("max_duration_ms").and_then(|v| v.as_u64());
-
             let queue_id = queue
                 .enqueue_listen(client_id.to_string(), max_duration_ms)
                 .await;
 
-            JsonRpcResponse::success(
+            Response::success(
                 req.id,
                 serde_json::json!({ "queue_id": queue_id, "status": "queued" }),
             )
@@ -192,11 +134,7 @@ async fn dispatch(
         "converse" => {
             let text = req.params.get("text").and_then(|v| v.as_str());
             let Some(text) = text else {
-                return JsonRpcResponse::error(
-                    req.id,
-                    -32602,
-                    "Missing required param: text".to_string(),
-                );
+                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: text");
             };
             let voice = req
                 .params
@@ -208,7 +146,7 @@ async fn dispatch(
                 .enqueue_converse(client_id.to_string(), text.to_string(), voice)
                 .await;
 
-            JsonRpcResponse::success(
+            Response::success(
                 req.id,
                 serde_json::json!({ "queue_id": queue_id, "status": "queued" }),
             )
@@ -216,15 +154,19 @@ async fn dispatch(
 
         "cancel" => {
             let count = queue.cancel_client(client_id).await;
-            JsonRpcResponse::success(req.id, serde_json::json!({ "cancelled_count": count }))
+            Response::success(req.id, serde_json::json!({ "cancelled_count": count }))
         }
 
         "status" => {
             let state = queue.snapshot().await;
-            JsonRpcResponse::success(req.id, serde_json::to_value(&state).unwrap())
+            Response::success(req.id, serde_json::to_value(&state).unwrap())
         }
 
-        _ => JsonRpcResponse::error(req.id, -32601, format!("Method not found: {}", req.method)),
+        _ => Response::error(
+            req.id,
+            rpc::METHOD_NOT_FOUND,
+            format!("Method not found: {}", req.method),
+        ),
     }
 }
 

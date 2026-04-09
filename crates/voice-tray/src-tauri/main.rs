@@ -10,7 +10,32 @@ mod types;
 
 use state::AppState;
 use std::time::Duration;
-use tauri::Emitter;
+use tauri::{AppHandle, Emitter};
+use types::VoiceState;
+
+/// Update the tray icon badge with the number of pending items
+fn update_tray_badge(app: &AppHandle, state: &VoiceState) {
+    let pending_count = state.pending.len();
+
+    if let Some(tray) = app.tray_by_id("main") {
+        let badge_text = if pending_count > 0 {
+            pending_count.to_string()
+        } else {
+            String::new()
+        };
+
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(e) = tray.set_icon_as_template(true) {
+                eprintln!("Failed to set tray icon as template: {}", e);
+            }
+        }
+
+        if let Err(e) = tray.set_title(Some(&badge_text)) {
+            eprintln!("Failed to set tray badge: {}", e);
+        }
+    }
+}
 
 fn main() {
     // Initialize shared app state
@@ -26,6 +51,9 @@ fn main() {
 
             // Clone app handle for file watcher thread
             let app_handle = app.handle().clone();
+
+            // Get tray handle for badge updates
+            let tray_app_handle = app.handle().clone();
 
             // Spawn file watcher in background thread
             std::thread::spawn(move || {
@@ -44,6 +72,10 @@ fn main() {
                 match watcher.load_current() {
                     Ok(initial_state) => {
                         watcher_state.update_voice_state(initial_state.clone());
+
+                        // Update tray badge
+                        update_tray_badge(&tray_app_handle, &initial_state);
+
                         // Emit initial state to frontend
                         if let Err(e) = app_handle.emit("queue-updated", initial_state) {
                             eprintln!("Failed to emit initial state: {}", e);
@@ -59,6 +91,9 @@ fn main() {
                     if let Some(new_state) = watcher.wait_for_change(Duration::from_secs(1)) {
                         eprintln!("State file changed, updating...");
                         watcher_state.update_voice_state(new_state.clone());
+
+                        // Update tray badge
+                        update_tray_badge(&tray_app_handle, &new_state);
 
                         // Emit event to frontend
                         if let Err(e) = app_handle.emit("queue-updated", new_state) {

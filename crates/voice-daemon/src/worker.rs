@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use voice_tts::KokoroModel;
 
+use crate::audio_recorder;
+
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
 const STT_REPO: &str = "distil-whisper/distil-large-v3";
 
@@ -117,9 +119,10 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
                     let voice = voice.clone().or_else(|| Some(config.get_voice_name()));
                     let speed = speed.or_else(|| Some(config.get_speed() as f64));
                     let tts = tts.clone();
+                    let queue_id = entry.id.clone();
 
                     let result = tokio::task::spawn_blocking(move || {
-                        speak(&tts, &text, voice.as_deref(), speed)
+                        speak(&tts, &text, voice.as_deref(), speed, Some(&queue_id))
                     })
                     .await;
 
@@ -159,12 +162,19 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
                     let default_speed = Some(config.get_speed() as f64);
                     let tts = tts.clone();
                     let stt = stt.clone();
+                    let queue_id = entry.id.clone(); // Capture for audio recording
 
                     // Speak then listen, return combined JSON
                     let speak_result = tokio::task::spawn_blocking(move || {
-                        let spoke_json = speak(&tts, &text, voice.as_deref(), default_speed)?;
-                        let heard_json = listen(&stt, None)?;
-                        // Parse both results and combine into the converse format
+                        let spoke_json = speak(
+                            &tts,
+                            &text,
+                            voice.as_deref(),
+                            default_speed,
+                            Some(&queue_id),
+                        )?;
+                        let heard_json = listen(&stt, None, Some(&queue_id))?; // Pass queue_id for answer recording
+                                                                               // Parse both results and combine into the converse format
                         let spoke: serde_json::Value =
                             serde_json::from_str(&spoke_json).unwrap_or_default();
                         let heard: serde_json::Value =
@@ -226,6 +236,7 @@ fn speak(
     text: &str,
     voice_name: Option<&str>,
     speed: Option<f64>,
+    queue_id: Option<&str>,
 ) -> Result<String, String> {
     let chunks =
         voice_g2p::text_to_phoneme_chunks(text).map_err(|e| format!("G2P error: {}", e))?;
@@ -239,11 +250,13 @@ fn speak(
     let player = Player::connect_new(stream.mixer());
 
     let started = Instant::now();
+    let mut accumulated_audio: Vec<f32> = Vec::new();
+    let sample_rate: u32;
 
     {
         let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
         let speed = speed.map(|s| s as f32).unwrap_or(state.speed);
-        let sample_rate = state.sample_rate;
+        sample_rate = state.sample_rate;
         let channels = NonZero::new(1u16).unwrap();
         let rate = NonZero::new(sample_rate).unwrap();
 
@@ -260,6 +273,11 @@ fn speak(
 
             match voice_tts::generate(&mut state.model, phonemes, &voice, speed) {
                 Ok(audio) => {
+                    // Accumulate for WAV recording
+                    if queue_id.is_some() {
+                        accumulated_audio.extend_from_slice(&audio);
+                    }
+
                     let source = SamplesBuffer::new(channels, rate, audio);
                     player.append(source);
                     if chunks.len() > 1 {
@@ -273,6 +291,14 @@ fn speak(
 
     while !player.empty() {
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Save question audio if queue_id provided
+    if let Some(qid) = queue_id {
+        if !accumulated_audio.is_empty() {
+            let path = audio_recorder::question_path(qid);
+            audio_recorder::save_wav(&path, &accumulated_audio, sample_rate)?;
+        }
     }
 
     let duration_ms = started.elapsed().as_millis() as u64;

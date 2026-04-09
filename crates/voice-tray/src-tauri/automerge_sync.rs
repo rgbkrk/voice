@@ -3,8 +3,11 @@
 use crate::types::{AudioInfo, QueueItem, VoiceState};
 use automerge::{AutoCommit, ROOT};
 use automorph::{Automorph, ChangeReport};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// Temporary struct to read state from Automerge document.
 #[derive(Automorph)]
@@ -122,6 +125,85 @@ fn extract_voice_state(doc: &AutoCommit) -> Result<VoiceState, String> {
             .map(|(k, v)| (k, v.into()))
             .collect(),
     })
+}
+
+/// File system watcher for Automerge state file.
+pub struct FileWatcher {
+    _watcher: RecommendedWatcher,
+    rx: mpsc::Receiver<Result<Event, notify::Error>>,
+    path: PathBuf,
+}
+
+impl FileWatcher {
+    /// Create new file watcher for daemon state file.
+    pub fn new() -> Result<Self, String> {
+        let path = state_path();
+
+        // Ensure parent directory exists for watching
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create .voice dir: {}", e))?;
+        }
+
+        let (tx, rx) = mpsc::channel();
+
+        let mut watcher = notify::recommended_watcher(tx)
+            .map_err(|e| format!("Failed to create file watcher: {}", e))?;
+
+        // Watch the parent directory (more reliable than watching file directly)
+        let watch_dir = path.parent().unwrap();
+        watcher
+            .watch(watch_dir, RecursiveMode::NonRecursive)
+            .map_err(|e| format!("Failed to watch directory: {}", e))?;
+
+        Ok(Self {
+            _watcher: watcher,
+            rx,
+            path,
+        })
+    }
+
+    /// Wait for next file change (blocking). Returns new state if file changed.
+    pub fn wait_for_change(&self, timeout: Duration) -> Option<VoiceState> {
+        match self.rx.recv_timeout(timeout) {
+            Ok(Ok(event)) => {
+                // Check if event is for our state file
+                if self.is_state_file_event(&event) {
+                    // File changed, reload state
+                    match load_state(&self.path) {
+                        Ok(state) => Some(state),
+                        Err(e) => {
+                            eprintln!("Error loading state after file change: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+            Ok(Err(e)) => {
+                eprintln!("File watcher error: {}", e);
+                None
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                eprintln!("File watcher disconnected");
+                None
+            }
+        }
+    }
+
+    fn is_state_file_event(&self, event: &Event) -> bool {
+        event.paths.iter().any(|p| {
+            p.file_name() == self.path.file_name()
+                && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+        })
+    }
+
+    /// Load current state immediately (non-blocking).
+    pub fn load_current(&self) -> Result<VoiceState, String> {
+        load_state(&self.path)
+    }
 }
 
 #[cfg(test)]

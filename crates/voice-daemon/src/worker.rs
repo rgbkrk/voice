@@ -45,7 +45,7 @@ impl TtsState {
 
 // -- Worker entry point -------------------------------------------------------
 
-pub async fn run(queue: Arc<RequestQueue>) {
+pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConfig>) {
     eprintln!("voiced: loading TTS model...");
     let start = Instant::now();
 
@@ -113,8 +113,9 @@ pub async fn run(queue: Arc<RequestQueue>) {
             match &entry.request {
                 VoiceRequest::Speak { text, voice, speed } => {
                     let text = text.clone();
-                    let voice = voice.clone();
-                    let speed = *speed;
+                    // Use daemon config defaults when request doesn't specify
+                    let voice = voice.clone().or_else(|| Some(config.get_voice_name()));
+                    let speed = speed.or_else(|| Some(config.get_speed() as f64));
                     let tts = tts.clone();
 
                     let result = tokio::task::spawn_blocking(move || {
@@ -154,13 +155,14 @@ pub async fn run(queue: Arc<RequestQueue>) {
                 }
                 VoiceRequest::Converse { text, voice } => {
                     let text = text.clone();
-                    let voice = voice.clone();
+                    let voice = voice.clone().or_else(|| Some(config.get_voice_name()));
+                    let default_speed = Some(config.get_speed() as f64);
                     let tts = tts.clone();
                     let stt = stt.clone();
 
                     // Speak then listen, return combined JSON
                     let speak_result = tokio::task::spawn_blocking(move || {
-                        let spoke_json = speak(&tts, &text, voice.as_deref(), None)?;
+                        let spoke_json = speak(&tts, &text, voice.as_deref(), default_speed)?;
                         let heard_json = listen(&stt, None)?;
                         // Parse both results and combine into the converse format
                         let spoke: serde_json::Value =

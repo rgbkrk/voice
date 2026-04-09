@@ -545,17 +545,18 @@ fn handle_tools_call(
         if let Some(result) = daemon_result {
             return match result {
                 Ok(resp) => {
-                    let text = if let Some(r) = resp.result {
-                        serde_json::to_string(&r).unwrap_or_default()
-                    } else if let Some(e) = resp.error {
-                        format!("daemon error: {}", e.message)
-                    } else {
-                        "{}".to_string()
-                    };
+                    // The daemon returns {result: {queue_id, status, result: "<json string>"}}
+                    // Extract the inner result JSON string and use it as the MCP content.
+                    let inner = resp
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.get("result"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("{}");
                     Response::success(
                         id,
                         serde_json::json!({
-                            "content": [{ "type": "text", "text": text }]
+                            "content": [{ "type": "text", "text": inner }]
                         }),
                     )
                 }

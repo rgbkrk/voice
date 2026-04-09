@@ -4013,6 +4013,7 @@ dependencies = [
  "serde",
  "serde_json",
  "voice-g2p",
+ "voice-protocol",
  "voice-stt",
  "voice-tts",
 ]
@@ -4069,6 +4070,7 @@ dependencies = [
 name = "voice-protocol"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "serde",
  "serde_json",
  "tokio",

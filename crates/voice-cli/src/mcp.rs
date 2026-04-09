@@ -153,6 +153,9 @@ struct Session {
     /// Persistent mic — kept open across calls to avoid Bluetooth HFP switches.
     warm_mic: Option<listen::WarmMic>,
     mem_stats: bool,
+    /// Connection to the voice daemon. When present, speak/listen/converse
+    /// are delegated to the daemon instead of running locally.
+    daemon: Option<voice_protocol::client::DaemonClient>,
 }
 
 impl Session {
@@ -192,6 +195,14 @@ enum StdinMsg {
 pub fn run(config: ServerConfig) {
     let (subs, phoneme_overrides) = collect_subs(&config.cli_subs, config.sub_file_path.as_deref());
 
+    // Try to connect to the voice daemon for shared model access
+    let daemon = voice_protocol::client::DaemonClient::connect();
+    if daemon.is_some() {
+        if !QUIET.load(Ordering::Relaxed) {
+            eprintln!("voice mcp: connected to voiced daemon");
+        }
+    }
+
     let mut voice_cache = HashMap::new();
     voice_cache.insert(config.voice_name.clone(), config.voice.clone());
 
@@ -208,6 +219,7 @@ pub fn run(config: ServerConfig) {
         stt_model: None,
         warm_mic: None,
         mem_stats: config.mem_stats,
+        daemon,
     };
 
     // Note: Metal memory management is handled by candle's Metal backend.
@@ -498,6 +510,54 @@ fn handle_tools_call(
 ) -> Response {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
+
+    // Delegate to the voice daemon if connected (speak/listen/converse/cancel).
+    // The daemon queues requests and owns the audio hardware.
+    if let Some(ref mut daemon) = session.daemon {
+        let daemon_result = match name {
+            "speak" => Some(daemon.speak(
+                arguments.get("text").and_then(|v| v.as_str()).unwrap_or(""),
+                arguments.get("voice").and_then(|v| v.as_str()),
+                arguments.get("speed").and_then(|v| v.as_f64()),
+            )),
+            "listen" => {
+                Some(daemon.listen(arguments.get("max_duration_ms").and_then(|v| v.as_u64())))
+            }
+            "converse" => Some(daemon.converse(
+                arguments.get("text").and_then(|v| v.as_str()).unwrap_or(""),
+                arguments.get("voice").and_then(|v| v.as_str()),
+            )),
+            "cancel" => Some(daemon.cancel()),
+            _ => None,
+        };
+
+        if let Some(result) = daemon_result {
+            return match result {
+                Ok(resp) => {
+                    let text = if let Some(r) = resp.result {
+                        serde_json::to_string(&r).unwrap_or_default()
+                    } else if let Some(e) = resp.error {
+                        format!("daemon error: {}", e.message)
+                    } else {
+                        "{}".to_string()
+                    };
+                    Response::success(
+                        id,
+                        serde_json::json!({
+                            "content": [{ "type": "text", "text": text }]
+                        }),
+                    )
+                }
+                Err(e) => {
+                    // Daemon connection failed — drop it and fall through to local
+                    eprintln!("voice mcp: daemon error: {}, falling back to local", e);
+                    session.daemon = None;
+                    // Re-dispatch locally below
+                    handle_tools_call(session, stdout, params, id)
+                }
+            };
+        }
+    }
 
     let mut result = match name {
         "speak" => voice_speak(session, stdout, arguments),

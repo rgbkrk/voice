@@ -17,5 +17,6 @@
 //! - `0x03` Event    — daemon-initiated notification (state changes, progress)
 //! - `0x04` Sync     — reserved for automerge state sync (future)
 
+pub mod client;
 pub mod frames;
 pub mod rpc;

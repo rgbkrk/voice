@@ -68,10 +68,36 @@ pub async fn run(queue: Arc<RequestQueue>) {
         start.elapsed().as_secs_f32()
     );
 
-    // Lazily load STT model on first listen request
-    let stt: Arc<Mutex<Option<voice_stt::WhisperModel>>> = Arc::new(Mutex::new(None));
+    // Eagerly load STT model — daemon is long-lived, pay the cost once
+    eprintln!("voiced: loading STT model...");
+    let stt_start = Instant::now();
+    let stt: Arc<Mutex<Option<voice_stt::WhisperModel>>> = match tokio::task::spawn_blocking(|| {
+        voice_stt::load_model(STT_REPO).map_err(|e| format!("stt: {}", e))
+    })
+    .await
+    {
+        Ok(Ok(model)) => {
+            eprintln!(
+                "voiced: STT model loaded in {:.1}s",
+                stt_start.elapsed().as_secs_f32()
+            );
+            Arc::new(Mutex::new(Some(model)))
+        }
+        Ok(Err(e)) => {
+            eprintln!("voiced: STT model failed to load: {}", e);
+            eprintln!("voiced: listen/converse will be unavailable");
+            Arc::new(Mutex::new(None))
+        }
+        Err(e) => {
+            eprintln!("voiced: STT init panicked: {}", e);
+            Arc::new(Mutex::new(None))
+        }
+    };
 
-    eprintln!("voiced: worker ready");
+    eprintln!(
+        "voiced: all models ready ({:.1}s total)",
+        start.elapsed().as_secs_f32()
+    );
 
     loop {
         queue.notify.notified().await;

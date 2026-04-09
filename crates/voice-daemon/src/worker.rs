@@ -158,11 +158,22 @@ pub async fn run(queue: Arc<RequestQueue>) {
                     let tts = tts.clone();
                     let stt = stt.clone();
 
-                    // Speak
+                    // Speak then listen, return combined JSON
                     let speak_result = tokio::task::spawn_blocking(move || {
-                        let spoke = speak(&tts, &text, voice.as_deref(), None)?;
-                        let heard = listen(&stt, None)?;
-                        Ok::<String, String>(format!("{}, {}", spoke, heard))
+                        let spoke_json = speak(&tts, &text, voice.as_deref(), None)?;
+                        let heard_json = listen(&stt, None)?;
+                        // Parse both results and combine into the converse format
+                        let spoke: serde_json::Value =
+                            serde_json::from_str(&spoke_json).unwrap_or_default();
+                        let heard: serde_json::Value =
+                            serde_json::from_str(&heard_json).unwrap_or_default();
+                        Ok::<String, String>(
+                            serde_json::json!({
+                                "spoke": spoke,
+                                "heard": heard,
+                            })
+                            .to_string(),
+                        )
                     })
                     .await;
 
@@ -218,7 +229,7 @@ fn speak(
         voice_g2p::text_to_phoneme_chunks(text).map_err(|e| format!("G2P error: {}", e))?;
 
     if chunks.is_empty() {
-        return Ok("(empty text)".to_string());
+        return Ok(serde_json::json!({"duration_ms": 0, "chunks": 0}).to_string());
     }
 
     let mut stream = DeviceSinkBuilder::open_default_sink().map_err(|e| format!("audio: {}", e))?;
@@ -226,7 +237,6 @@ fn speak(
     let player = Player::connect_new(stream.mixer());
 
     let started = Instant::now();
-    let mut total_samples = 0usize;
 
     {
         let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
@@ -248,7 +258,6 @@ fn speak(
 
             match voice_tts::generate(&mut state.model, phonemes, &voice, speed) {
                 Ok(audio) => {
-                    total_samples += audio.len();
                     let source = SamplesBuffer::new(channels, rate, audio);
                     player.append(source);
                     if chunks.len() > 1 {
@@ -264,14 +273,12 @@ fn speak(
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    let duration_ms = started.elapsed().as_millis();
-    let audio_ms = total_samples as u64 * 1000 / 24000;
-    Ok(format!(
-        "spoke {} chunks, {}ms audio in {}ms",
-        chunks.len(),
-        audio_ms,
-        duration_ms
-    ))
+    let duration_ms = started.elapsed().as_millis() as u64;
+    Ok(serde_json::json!({
+        "duration_ms": duration_ms,
+        "chunks": chunks.len(),
+    })
+    .to_string())
 }
 
 // -- STT listen ---------------------------------------------------------------
@@ -411,7 +418,12 @@ fn listen(
     };
 
     if samples.is_empty() || !speech_detected {
-        return Ok("(no speech detected)".to_string());
+        return Ok(serde_json::json!({
+            "text": "",
+            "tokens": 0,
+            "duration_ms": started.elapsed().as_millis() as u64,
+        })
+        .to_string());
     }
 
     let duration_s = samples.len() as f32 / sample_rate as f32;
@@ -425,9 +437,15 @@ fn listen(
         .map_err(|e| format!("transcribe: {}", e))?;
 
     let text = result.text.trim().to_string();
+    let duration_ms = started.elapsed().as_millis() as u64;
     eprintln!("voiced: heard: {}", text);
 
-    Ok(format!("heard: {}", text))
+    Ok(serde_json::json!({
+        "text": text,
+        "tokens": result.tokens.len(),
+        "duration_ms": duration_ms,
+    })
+    .to_string())
 }
 
 /// Play a simple sine tone (for ding/dong feedback).

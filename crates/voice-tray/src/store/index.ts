@@ -1,7 +1,33 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { Observable, from, fromEvent, Subscription } from "rxjs";
+import { map, catchError, tap } from "rxjs/operators";
 import type { VoiceState, QueueItem } from "../types";
+
+// Create observable from Tauri event listener
+function createTauriEventObservable<T>(eventName: string): Observable<T> {
+  return new Observable<T>((subscriber) => {
+    let unlisten: UnlistenFn | null = null;
+
+    listen<T>(eventName, (event) => {
+      subscriber.next(event.payload);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        subscriber.error(err);
+      });
+
+    // Cleanup
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  });
+}
 
 interface AppStore {
   // State
@@ -18,7 +44,7 @@ interface AppStore {
   cancelItem: (queueId: string) => Promise<void>;
   checkDaemon: () => Promise<void>;
   loadInitialState: () => Promise<void>;
-  subscribeToUpdates: () => Promise<() => void>;
+  subscribeToUpdates: () => Subscription;
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -106,11 +132,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  // Subscribe to queue-updated events
-  subscribeToUpdates: async () => {
-    const unlisten = await listen<VoiceState>("queue-updated", (event) => {
-      get().setQueueState(event.payload);
-    });
-    return unlisten;
+  // Subscribe to queue-updated events using RxJS
+  subscribeToUpdates: () => {
+    const queueUpdates$ = createTauriEventObservable<VoiceState>("queue-updated");
+
+    const subscription = queueUpdates$
+      .pipe(
+        tap((state) => {
+          console.log("Queue updated:", state.status, "pending:", state.pending.length);
+        })
+      )
+      .subscribe({
+        next: (state) => get().setQueueState(state),
+        error: (err) => console.error("Queue update stream error:", err),
+      });
+
+    return subscription;
   },
 }));

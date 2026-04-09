@@ -10,7 +10,7 @@ function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
+    let subscription: { unsubscribe: () => void } | null = null;
 
     // Initialize app
     (async () => {
@@ -20,16 +20,16 @@ function App() {
       // Load initial state
       await loadInitialState();
 
-      // Subscribe to updates
-      unlisten = await subscribeToUpdates();
+      // Subscribe to updates (now returns RxJS Subscription)
+      subscription = subscribeToUpdates();
 
       setLoading(false);
     })();
 
     // Cleanup function
     return () => {
-      if (unlisten) {
-        unlisten();
+      if (subscription) {
+        subscription.unsubscribe();
       }
     };
   }, []);

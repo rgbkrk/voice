@@ -121,6 +121,7 @@ pub async fn run(
         queue.notify.notified().await;
 
         while let Some(entry) = queue.dequeue().await {
+            sync_automerge(&queue, &automerge).await;
             eprintln!(
                 "voiced: [{}/{}] {}",
                 entry.id,
@@ -144,7 +145,7 @@ pub async fn run(
 
                     match result {
                         Ok(Ok(msg)) => {
-                            queue.complete(Some(msg)).await;
+                            queue.complete(Some(msg), None).await;
                             sync_automerge(&queue, &automerge).await;
                         }
                         Ok(Err(e)) => {
@@ -170,7 +171,7 @@ pub async fn run(
 
                     match result {
                         Ok(Ok(msg)) => {
-                            queue.complete(Some(msg)).await;
+                            queue.complete(Some(msg), None).await;
                             sync_automerge(&queue, &automerge).await;
                         }
                         Ok(Err(e)) => {
@@ -220,8 +221,7 @@ pub async fn run(
 
                     match speak_result {
                         Ok(Ok(msg)) => {
-                            queue.set_auto_clear(30).await; // Auto-clear after 30 seconds
-                            queue.complete(Some(msg)).await;
+                            queue.complete(Some(msg), Some(30)).await; // Auto-clear after 30 seconds
                             sync_automerge(&queue, &automerge).await;
                         }
                         Ok(Err(e)) => {
@@ -561,6 +561,7 @@ async fn run_simulated(
     loop {
         queue.notify.notified().await;
         while let Some(entry) = queue.dequeue().await {
+            sync_automerge(&queue, &automerge).await;
             eprintln!(
                 "voiced: [{}/{}] {} (simulated)",
                 entry.id,
@@ -573,13 +574,15 @@ async fn run_simulated(
                     let ms = (words as u64 * 200).max(500);
                     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                     queue
-                        .complete(Some(format!("simulated {} words", words)))
+                        .complete(Some(format!("simulated {} words", words)), None)
                         .await;
                     sync_automerge(&queue, &automerge).await;
                 }
                 VoiceRequest::Listen { .. } => {
                     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-                    queue.complete(Some("(simulated listen)".to_string())).await;
+                    queue
+                        .complete(Some("(simulated listen)".to_string()), None)
+                        .await;
                     sync_automerge(&queue, &automerge).await;
                 }
                 VoiceRequest::Converse { text, .. } => {
@@ -587,7 +590,7 @@ async fn run_simulated(
                     let ms = (words as u64 * 200).max(500);
                     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                     queue
-                        .complete(Some("(simulated converse)".to_string()))
+                        .complete(Some("(simulated converse)".to_string()), None)
                         .await;
                     sync_automerge(&queue, &automerge).await;
                 }

@@ -185,11 +185,19 @@ impl RequestQueue {
         }
     }
 
-    pub async fn complete(&self, result: Option<String>) {
+    pub async fn complete(&self, result: Option<String>, auto_clear_secs: Option<u64>) {
         if let Some(mut entry) = self.current.lock().await.take() {
             let id = entry.id.clone();
             entry.status = ItemStatus::Completed;
             entry.result = result.clone();
+
+            // Set auto-clear timestamps if requested
+            if let Some(delay) = auto_clear_secs {
+                let now = now_secs();
+                entry.completed_at = Some(now);
+                entry.auto_clear_at = Some(now + delay);
+            }
+
             self.push_recent(entry).await;
             self.signal_waiter(
                 &id,
@@ -262,14 +270,6 @@ impl RequestQueue {
         }
     }
 
-    /// Set completed_at and auto_clear_at on the current item.
-    pub async fn set_auto_clear(&self, clear_delay_secs: u64) {
-        if let Some(entry) = self.current.lock().await.as_mut() {
-            let now = now_secs();
-            entry.completed_at = Some(now);
-            entry.auto_clear_at = Some(now + clear_delay_secs);
-        }
-    }
 
     async fn push_recent(&self, entry: QueueEntry) {
         let mut recent = self.recent.lock().await;

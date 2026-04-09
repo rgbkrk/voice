@@ -115,15 +115,6 @@ impl AutomergeState {
         let _ = voice_state.save(&mut self.doc, &ROOT, "state");
     }
 
-    /// Set audio metadata for a queue item.
-    pub fn set_audio(&mut self, queue_id: &str, info: AudioInfo) {
-        // Read current state, update audio map, write back
-        if let Ok(mut state) = VoiceState::load(&self.doc, &ROOT, "state") {
-            state.audio.insert(queue_id.to_string(), info);
-            let _ = state.save(&mut self.doc, &ROOT, "state");
-        }
-    }
-
     /// Remove an item from recent (for cleanup task).
     pub fn remove_from_recent(&mut self, queue_id: &str) {
         if let Ok(mut state) = VoiceState::load(&self.doc, &ROOT, "state") {

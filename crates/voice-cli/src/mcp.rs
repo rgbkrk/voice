@@ -1,7 +1,7 @@
 //! MCP (Model Context Protocol) stdio server for voice TTS/STT.
 //!
 //! Implements the MCP protocol on top of JSON-RPC 2.0, exposing voice tools
-//! (speak, converse, set_voice, set_speed, list_voices, set_start_sound, set_stop_sound, play_sound, cancel) to
+//! (speak, converse, set_voice, set_speed, list_voices, set_start_sound, set_stop_sound, play_sound) to
 //! MCP-compatible clients like Claude Code.
 //!
 //! ## Usage
@@ -426,11 +426,6 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
                 }
             },
             {
-                "name": "cancel",
-                "description": "Cancel the current speak or listen operation.",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
-            {
                 "name": "set_voice",
                 "description": "Change the default voice for subsequent speak calls.",
                 "inputSchema": {
@@ -509,7 +504,8 @@ fn handle_tools_call(
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
 
-    // Delegate to the voice daemon if connected (speak/listen/converse/cancel).
+    // Delegate to the voice daemon if connected (speak/listen/converse).
+    // Config tools (set_voice/set_speed/list_voices) stay local.
     // The daemon queues requests and owns the audio hardware.
     if let Some(ref mut daemon) = session.daemon {
         let daemon_result = match name {
@@ -538,42 +534,23 @@ fn handle_tools_call(
                 let text = preprocess_for_daemon(raw, markdown, &session.subs);
                 Some(daemon.converse(&text, arguments.get("voice").and_then(|v| v.as_str())))
             }
-            "cancel" => Some(daemon.cancel()),
-            "set_voice" => {
-                let voice = arguments
-                    .get("voice")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                Some(daemon.call("set_voice", serde_json::json!({"voice": voice})))
-            }
-            "set_speed" => {
-                let speed = arguments
-                    .get("speed")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(1.0);
-                Some(daemon.call("set_speed", serde_json::json!({"speed": speed})))
-            }
-            "list_voices" => Some(daemon.call("list_voices", serde_json::json!({}))),
             _ => None,
         };
 
         if let Some(result) = daemon_result {
             return match result {
                 Ok(resp) => {
-                    // For queued ops (speak/listen/converse), the daemon returns
-                    // {result: {queue_id, status, result: "<json string>"}}.
-                    // For config ops (set_voice/set_speed/list_voices), the daemon
-                    // returns the result directly in resp.result.
+                    // Daemon returns {result: {queue_id, status, result: "<json string>"}}
+                    // for queued ops (speak/listen/converse).
                     let text = if let Some(inner) = resp
                         .result
                         .as_ref()
                         .and_then(|r| r.get("result"))
                         .and_then(|v| v.as_str())
                     {
-                        // Queued op: extract the worker's JSON result string
+                        // Extract the worker's JSON result string
                         inner.to_string()
                     } else if let Some(r) = &resp.result {
-                        // Config op: serialize the whole result
                         serde_json::to_string(r).unwrap_or_else(|_| "{}".to_string())
                     } else if let Some(e) = &resp.error {
                         format!("daemon error: {}", e.message)
@@ -602,7 +579,6 @@ fn handle_tools_call(
         "speak" => voice_speak(session, stdout, arguments),
         "listen" => voice_listen(session, arguments),
         "converse" => voice_converse(session, stdout, arguments),
-        "cancel" => voice_cancel(),
         "set_voice" => voice_set_voice(session, arguments),
         "set_speed" => voice_set_speed(session, arguments),
         "list_voices" => voice_list_voices(session, arguments),
@@ -772,11 +748,6 @@ impl RpcErr {
 }
 
 // ── Voice tool handlers ───────────────────────────────────────────────
-
-fn voice_cancel() -> Result<Value, RpcErr> {
-    INTERRUPTED.store(true, Ordering::SeqCst);
-    Ok(serde_json::json!({"cancelled": true}))
-}
 
 fn voice_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
     let p: ListenParams = if params.is_null() {

@@ -87,14 +87,14 @@ impl DaemonClient {
         serde_json::from_slice::<Response>(payload).map_err(|e| format!("parse response: {}", e))
     }
 
-    /// Convenience: send a speak request. Blocks until playback completes.
+    /// Convenience: send a speak request. Returns immediately with queue_id (fire-and-forget).
     pub fn speak(
         &mut self,
         text: &str,
         voice: Option<&str>,
         speed: Option<f64>,
     ) -> Result<Response, String> {
-        let mut params = serde_json::json!({"text": text, "wait": true});
+        let mut params = serde_json::json!({"text": text, "wait": false});
         if let Some(v) = voice {
             params["voice"] = Value::String(v.to_string());
         }

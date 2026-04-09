@@ -86,7 +86,7 @@ async fn main() {
         cleanup::run(cleanup_queue, cleanup_automerge).await;
     });
 
-    socket::serve(queue, config).await;
+    socket::serve(queue, config, automerge).await;
 }
 
 async fn print_status() {

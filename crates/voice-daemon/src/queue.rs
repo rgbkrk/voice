@@ -234,6 +234,56 @@ impl RequestQueue {
         before - items.len()
     }
 
+    /// Cancel a specific queue item by ID.
+    pub async fn cancel_item(&self, queue_id: &str) -> bool {
+        // Check if it's the current item
+        {
+            let mut current = self.current.lock().await;
+            if let Some(entry) = current.as_ref() {
+                if entry.id == queue_id {
+                    // Mark as failed and move to recent
+                    let mut entry = current.take().unwrap();
+                    entry.status = ItemStatus::Failed;
+                    entry.result = Some("Cancelled by user".to_string());
+                    self.push_recent(entry).await;
+                    // Signal any waiting client
+                    self.signal_waiter(
+                        queue_id,
+                        CompletionResult {
+                            status: ItemStatus::Failed,
+                            result: Some("Cancelled by user".to_string()),
+                        },
+                    )
+                    .await;
+                    return true;
+                }
+            }
+        }
+
+        // Check pending queue
+        let mut items = self.items.lock().await;
+        if let Some(pos) = items.iter().position(|e| e.id == queue_id) {
+            let mut entry = items.remove(pos).unwrap();
+            let entry_id = entry.id.clone(); // Capture ID before moving entry
+            entry.status = ItemStatus::Failed;
+            entry.result = Some("Cancelled by user".to_string());
+            drop(items); // Release lock before calling push_recent
+            self.push_recent(entry).await;
+            // Signal any waiting client
+            self.signal_waiter(
+                &entry_id,
+                CompletionResult {
+                    status: ItemStatus::Failed,
+                    result: Some("Cancelled by user".to_string()),
+                },
+            )
+            .await;
+            return true;
+        }
+
+        false
+    }
+
     pub async fn snapshot(&self) -> DaemonState {
         let current = self.current.lock().await.as_ref().map(|e| e.to_protocol());
         let pending: Vec<QueueItem> = self

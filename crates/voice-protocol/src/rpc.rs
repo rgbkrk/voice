@@ -135,6 +135,12 @@ pub struct QueueItem {
     pub text_preview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_clear_at: Option<u64>,
 }
 
 /// Snapshot of daemon state — returned by the `status` method.

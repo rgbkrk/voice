@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use voice_tts::KokoroModel;
 
+use crate::audio_recorder;
+
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
 const STT_REPO: &str = "distil-whisper/distil-large-v3";
 
@@ -45,7 +47,23 @@ impl TtsState {
 
 // -- Worker entry point -------------------------------------------------------
 
-pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConfig>) {
+async fn sync_automerge(
+    queue: &RequestQueue,
+    automerge: &Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
+) {
+    let snapshot = queue.snapshot().await;
+    let mut am = automerge.lock().await;
+    am.update(&snapshot);
+    if let Err(e) = am.save() {
+        eprintln!("voiced: failed to save automerge doc: {}", e);
+    }
+}
+
+pub async fn run(
+    queue: Arc<RequestQueue>,
+    config: Arc<crate::config::DaemonConfig>,
+    automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
+) {
     eprintln!("voiced: loading TTS model...");
     let start = Instant::now();
 
@@ -54,7 +72,7 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
         Ok(Err(e)) => {
             eprintln!("voiced: failed to load TTS model: {}", e);
             eprintln!("voiced: running in simulation mode");
-            run_simulated(queue).await;
+            run_simulated(queue, automerge).await;
             return;
         }
         Err(e) => {
@@ -103,6 +121,7 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
         queue.notify.notified().await;
 
         while let Some(entry) = queue.dequeue().await {
+            sync_automerge(&queue, &automerge).await;
             eprintln!(
                 "voiced: [{}/{}] {}",
                 entry.id,
@@ -117,39 +136,53 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
                     let voice = voice.clone().or_else(|| Some(config.get_voice_name()));
                     let speed = speed.or_else(|| Some(config.get_speed() as f64));
                     let tts = tts.clone();
+                    let queue_id = entry.id.clone();
 
                     let result = tokio::task::spawn_blocking(move || {
-                        speak(&tts, &text, voice.as_deref(), speed)
+                        speak(&tts, &text, voice.as_deref(), speed, Some(&queue_id))
                     })
                     .await;
 
                     match result {
-                        Ok(Ok(msg)) => queue.complete(Some(msg)).await,
+                        Ok(Ok(msg)) => {
+                            queue.complete(Some(msg), None).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
                         Ok(Err(e)) => {
                             eprintln!("voiced: speak error: {}", e);
                             queue.fail(e).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voiced: speak panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
                 VoiceRequest::Listen { max_duration_ms } => {
                     let max_ms = *max_duration_ms;
                     let stt = stt.clone();
+                    let queue_id = entry.id.clone();
 
-                    let result = tokio::task::spawn_blocking(move || listen(&stt, max_ms)).await;
+                    let result =
+                        tokio::task::spawn_blocking(move || listen(&stt, max_ms, Some(&queue_id)))
+                            .await;
 
                     match result {
-                        Ok(Ok(msg)) => queue.complete(Some(msg)).await,
+                        Ok(Ok(msg)) => {
+                            queue.complete(Some(msg), None).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
                         Ok(Err(e)) => {
                             eprintln!("voiced: listen error: {}", e);
                             queue.fail(e).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voiced: listen panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
@@ -159,12 +192,19 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
                     let default_speed = Some(config.get_speed() as f64);
                     let tts = tts.clone();
                     let stt = stt.clone();
+                    let queue_id = entry.id.clone(); // Capture for audio recording
 
                     // Speak then listen, return combined JSON
                     let speak_result = tokio::task::spawn_blocking(move || {
-                        let spoke_json = speak(&tts, &text, voice.as_deref(), default_speed)?;
-                        let heard_json = listen(&stt, None)?;
-                        // Parse both results and combine into the converse format
+                        let spoke_json = speak(
+                            &tts,
+                            &text,
+                            voice.as_deref(),
+                            default_speed,
+                            Some(&queue_id),
+                        )?;
+                        let heard_json = listen(&stt, None, Some(&queue_id))?; // Pass queue_id for answer recording
+                                                                               // Parse both results and combine into the converse format
                         let spoke: serde_json::Value =
                             serde_json::from_str(&spoke_json).unwrap_or_default();
                         let heard: serde_json::Value =
@@ -180,14 +220,19 @@ pub async fn run(queue: Arc<RequestQueue>, config: Arc<crate::config::DaemonConf
                     .await;
 
                     match speak_result {
-                        Ok(Ok(msg)) => queue.complete(Some(msg)).await,
+                        Ok(Ok(msg)) => {
+                            queue.complete(Some(msg), Some(30)).await; // Auto-clear after 30 seconds
+                            sync_automerge(&queue, &automerge).await;
+                        }
                         Ok(Err(e)) => {
                             eprintln!("voiced: converse error: {}", e);
                             queue.fail(e).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voiced: converse panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
+                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
@@ -226,6 +271,7 @@ fn speak(
     text: &str,
     voice_name: Option<&str>,
     speed: Option<f64>,
+    queue_id: Option<&str>,
 ) -> Result<String, String> {
     let chunks =
         voice_g2p::text_to_phoneme_chunks(text).map_err(|e| format!("G2P error: {}", e))?;
@@ -239,11 +285,13 @@ fn speak(
     let player = Player::connect_new(stream.mixer());
 
     let started = Instant::now();
+    let mut accumulated_audio: Vec<f32> = Vec::new();
+    let sample_rate: u32;
 
     {
         let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
         let speed = speed.map(|s| s as f32).unwrap_or(state.speed);
-        let sample_rate = state.sample_rate;
+        sample_rate = state.sample_rate;
         let channels = NonZero::new(1u16).unwrap();
         let rate = NonZero::new(sample_rate).unwrap();
 
@@ -260,6 +308,11 @@ fn speak(
 
             match voice_tts::generate(&mut state.model, phonemes, &voice, speed) {
                 Ok(audio) => {
+                    // Accumulate for WAV recording
+                    if queue_id.is_some() {
+                        accumulated_audio.extend_from_slice(&audio);
+                    }
+
                     let source = SamplesBuffer::new(channels, rate, audio);
                     player.append(source);
                     if chunks.len() > 1 {
@@ -273,6 +326,14 @@ fn speak(
 
     while !player.empty() {
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Save question audio if queue_id provided
+    if let Some(qid) = queue_id {
+        if !accumulated_audio.is_empty() {
+            let path = audio_recorder::question_path(qid);
+            audio_recorder::save_wav(&path, &accumulated_audio, sample_rate)?;
+        }
     }
 
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -304,6 +365,7 @@ fn ensure_stt(stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>) -> Result<(), S
 fn listen(
     stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
     max_duration_ms: Option<u64>,
+    queue_id: Option<&str>,
 ) -> Result<String, String> {
     ensure_stt(stt)?;
 
@@ -419,6 +481,17 @@ fn listen(
         Err(arc) => arc.lock().unwrap().clone(),
     };
 
+    // Save answer audio if queue_id provided
+    if let Some(qid) = queue_id {
+        if !samples.is_empty() && speech_detected {
+            let path = audio_recorder::answer_path(qid);
+            // Save with original sample rate before transcription
+            if let Err(e) = audio_recorder::save_wav(&path, &samples, sample_rate) {
+                eprintln!("voiced: failed to save answer audio: {}", e);
+            }
+        }
+    }
+
     if samples.is_empty() || !speech_detected {
         return Ok(serde_json::json!({
             "text": "",
@@ -480,11 +553,15 @@ fn play_tone(freq: f32, duration_secs: f32) {
 
 // -- Simulation fallback ------------------------------------------------------
 
-async fn run_simulated(queue: Arc<RequestQueue>) {
+async fn run_simulated(
+    queue: Arc<RequestQueue>,
+    automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
+) {
     eprintln!("voiced: worker ready (simulation mode)");
     loop {
         queue.notify.notified().await;
         while let Some(entry) = queue.dequeue().await {
+            sync_automerge(&queue, &automerge).await;
             eprintln!(
                 "voiced: [{}/{}] {} (simulated)",
                 entry.id,
@@ -497,20 +574,25 @@ async fn run_simulated(queue: Arc<RequestQueue>) {
                     let ms = (words as u64 * 200).max(500);
                     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                     queue
-                        .complete(Some(format!("simulated {} words", words)))
+                        .complete(Some(format!("simulated {} words", words)), None)
                         .await;
+                    sync_automerge(&queue, &automerge).await;
                 }
                 VoiceRequest::Listen { .. } => {
                     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-                    queue.complete(Some("(simulated listen)".to_string())).await;
+                    queue
+                        .complete(Some("(simulated listen)".to_string()), None)
+                        .await;
+                    sync_automerge(&queue, &automerge).await;
                 }
                 VoiceRequest::Converse { text, .. } => {
                     let words = text.split_whitespace().count();
                     let ms = (words as u64 * 200).max(500);
                     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                     queue
-                        .complete(Some("(simulated converse)".to_string()))
+                        .complete(Some("(simulated converse)".to_string()), None)
                         .await;
+                    sync_automerge(&queue, &automerge).await;
                 }
             }
         }

@@ -7,14 +7,19 @@
 //!   voiced              # start the daemon
 //!   voiced --status     # print daemon state and exit
 
+mod audio_recorder;
+mod automerge_state;
+mod cleanup;
 mod config;
 mod queue;
 mod socket;
 mod worker;
 
+use automerge_state::AutomergeState;
 use config::DaemonConfig;
 use queue::RequestQueue;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use voice_protocol::frames::{read_frame, write_frame, Frame, FrameType};
 use voice_protocol::rpc;
 
@@ -47,6 +52,15 @@ async fn main() {
     let queue = Arc::new(RequestQueue::new());
     let config = Arc::new(DaemonConfig::new());
 
+    // Load or create Automerge state
+    let automerge = match AutomergeState::load_or_create() {
+        Ok(state) => Arc::new(Mutex::new(state)),
+        Err(e) => {
+            eprintln!("voiced: failed to load automerge state: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     // Handle ctrl-c
     tokio::spawn({
         async move {
@@ -60,11 +74,19 @@ async fn main() {
     // Start worker and socket server concurrently
     let worker_queue = queue.clone();
     let worker_config = config.clone();
+    let worker_automerge = automerge.clone();
     tokio::spawn(async move {
-        worker::run(worker_queue, worker_config).await;
+        worker::run(worker_queue, worker_config, worker_automerge).await;
     });
 
-    socket::serve(queue, config).await;
+    // Start cleanup task
+    let cleanup_queue = queue.clone();
+    let cleanup_automerge = automerge.clone();
+    tokio::spawn(async move {
+        cleanup::run(cleanup_queue, cleanup_automerge).await;
+    });
+
+    socket::serve(queue, config, automerge).await;
 }
 
 async fn print_status() {

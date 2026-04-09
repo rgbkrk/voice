@@ -20,7 +20,11 @@ pub fn socket_path() -> PathBuf {
     dir.join("daemon.sock")
 }
 
-pub async fn serve(queue: Arc<RequestQueue>, config: Arc<DaemonConfig>) {
+pub async fn serve(
+    queue: Arc<RequestQueue>,
+    config: Arc<DaemonConfig>,
+    automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
+) {
     let path = socket_path();
 
     if path.exists() {
@@ -44,7 +48,14 @@ pub async fn serve(queue: Arc<RequestQueue>, config: Arc<DaemonConfig>) {
                 let config = config.clone();
                 let client_id = Uuid::new_v4().to_string()[..8].to_string();
                 eprintln!("voiced: client connected ({})", client_id);
-                tokio::spawn(handle_client(stream, queue, config, client_id));
+                let automerge_clone = automerge.clone();
+                tokio::spawn(handle_client(
+                    stream,
+                    queue,
+                    config,
+                    client_id,
+                    automerge_clone,
+                ));
             }
             Err(e) => eprintln!("voiced: accept error: {}", e),
         }
@@ -56,6 +67,7 @@ async fn handle_client(
     queue: Arc<RequestQueue>,
     config: Arc<DaemonConfig>,
     client_id: String,
+    automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
 ) {
     let (mut reader, mut writer) = stream.into_split();
 
@@ -72,7 +84,7 @@ async fn handle_client(
         match frame.frame_type {
             FrameType::Request => {
                 let response = match frame.json::<rpc::Request>() {
-                    Ok(req) => dispatch(req, &queue, &config, &client_id).await,
+                    Ok(req) => dispatch(req, &queue, &config, &client_id, &automerge).await,
                     Err(e) => Response::error(
                         None,
                         rpc::PARSE_ERROR,
@@ -103,6 +115,7 @@ async fn dispatch(
     queue: &Arc<RequestQueue>,
     config: &Arc<DaemonConfig>,
     client_id: &str,
+    automerge: &Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
 ) -> Response {
     use crate::queue::VoiceRequest;
 
@@ -150,9 +163,100 @@ async fn dispatch(
                 voice,
             }
         }
+        "replay_audio" => {
+            let queue_id = req.params.get("queue_id").and_then(|v| v.as_str());
+            let Some(queue_id) = queue_id else {
+                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: queue_id");
+            };
+            let part = req.params.get("part").and_then(|v| v.as_str());
+            let Some(part) = part else {
+                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: part");
+            };
+
+            let path = match part {
+                "question" => crate::audio_recorder::question_path(queue_id),
+                "answer" => crate::audio_recorder::answer_path(queue_id),
+                _ => {
+                    return Response::error(
+                        req.id,
+                        rpc::INVALID_PARAMS,
+                        "param 'part' must be 'question' or 'answer'",
+                    );
+                }
+            };
+
+            // Read WAV file
+            let (samples, sample_rate) = match crate::audio_recorder::read_wav(&path) {
+                Ok(result) => result,
+                Err(e) => {
+                    return Response::error(req.id, -32000, format!("Audio file not found: {}", e));
+                }
+            };
+
+            // Play through rodio
+            let duration_ms = tokio::task::spawn_blocking(move || {
+                use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
+                use std::num::NonZero;
+                use std::time::Instant;
+
+                let mut stream = match DeviceSinkBuilder::open_default_sink() {
+                    Ok(s) => s,
+                    Err(e) => return Err(format!("audio device: {}", e)),
+                };
+                stream.log_on_drop(false);
+                let player = Player::connect_new(stream.mixer());
+
+                let channels = NonZero::new(1u16).unwrap();
+                let rate = NonZero::new(sample_rate).unwrap();
+                let source = SamplesBuffer::new(channels, rate, samples);
+                player.append(source);
+
+                let started = Instant::now();
+                while !player.empty() {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Ok(started.elapsed().as_millis() as u64)
+            })
+            .await;
+
+            match duration_ms {
+                Ok(Ok(ms)) => {
+                    return Response::success(req.id, serde_json::json!({ "duration_ms": ms }));
+                }
+                Ok(Err(e)) => {
+                    return Response::error(req.id, -32000, format!("Playback error: {}", e));
+                }
+                Err(e) => {
+                    return Response::error(req.id, -32000, format!("Task panicked: {}", e));
+                }
+            }
+        }
         "cancel" => {
             let count = queue.cancel_client(client_id).await;
             return Response::success(req.id, serde_json::json!({ "cancelled_count": count }));
+        }
+        "cancel_item" => {
+            let queue_id = req.params.get("queue_id").and_then(|v| v.as_str());
+            let Some(queue_id) = queue_id else {
+                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: queue_id");
+            };
+
+            // Remove from queue (both pending and current)
+            let removed = queue.cancel_item(queue_id).await;
+
+            if removed {
+                // Update Automerge state
+                let snapshot = queue.snapshot().await;
+                let mut am = automerge.lock().await;
+                am.update(&snapshot);
+                if let Err(e) = am.save() {
+                    eprintln!("voiced: failed to save automerge after cancel: {}", e);
+                }
+
+                return Response::success(req.id, serde_json::json!({ "cancelled": true }));
+            } else {
+                return Response::success(req.id, serde_json::json!({ "cancelled": false }));
+            }
         }
         "status" => {
             let state = queue.snapshot().await;

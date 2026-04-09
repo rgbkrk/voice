@@ -51,6 +51,9 @@ pub struct QueueEntry {
     pub status: ItemStatus,
     pub created_at: u64,
     pub result: Option<String>,
+    pub completed_at: Option<u64>,
+    pub repo: Option<String>,
+    pub auto_clear_at: Option<u64>,
 }
 
 impl QueueEntry {
@@ -63,6 +66,9 @@ impl QueueEntry {
             created_at: self.created_at,
             text_preview: self.request.text_preview(),
             result: self.result.clone(),
+            repo: self.repo.clone(),
+            completed_at: self.completed_at,
+            auto_clear_at: self.auto_clear_at,
         }
     }
 }
@@ -129,6 +135,9 @@ impl RequestQueue {
             status: ItemStatus::Queued,
             created_at: now_secs(),
             result: None,
+            completed_at: None,
+            repo: None,
+            auto_clear_at: None,
         };
         self.items.lock().await.push_back(entry);
         self.notify.notify_one();
@@ -156,6 +165,9 @@ impl RequestQueue {
             status: ItemStatus::Queued,
             created_at: now_secs(),
             result: None,
+            completed_at: None,
+            repo: None,
+            auto_clear_at: None,
         };
         self.items.lock().await.push_back(entry);
         self.notify.notify_one();
@@ -173,11 +185,19 @@ impl RequestQueue {
         }
     }
 
-    pub async fn complete(&self, result: Option<String>) {
+    pub async fn complete(&self, result: Option<String>, auto_clear_secs: Option<u64>) {
         if let Some(mut entry) = self.current.lock().await.take() {
             let id = entry.id.clone();
             entry.status = ItemStatus::Completed;
             entry.result = result.clone();
+
+            // Set auto-clear timestamps if requested
+            if let Some(delay) = auto_clear_secs {
+                let now = now_secs();
+                entry.completed_at = Some(now);
+                entry.auto_clear_at = Some(now + delay);
+            }
+
             self.push_recent(entry).await;
             self.signal_waiter(
                 &id,
@@ -212,6 +232,56 @@ impl RequestQueue {
         let before = items.len();
         items.retain(|e| e.client_id != client_id);
         before - items.len()
+    }
+
+    /// Cancel a specific queue item by ID.
+    pub async fn cancel_item(&self, queue_id: &str) -> bool {
+        // Check if it's the current item
+        {
+            let mut current = self.current.lock().await;
+            if let Some(entry) = current.as_ref() {
+                if entry.id == queue_id {
+                    // Mark as failed and move to recent
+                    let mut entry = current.take().unwrap();
+                    entry.status = ItemStatus::Failed;
+                    entry.result = Some("Cancelled by user".to_string());
+                    self.push_recent(entry).await;
+                    // Signal any waiting client
+                    self.signal_waiter(
+                        queue_id,
+                        CompletionResult {
+                            status: ItemStatus::Failed,
+                            result: Some("Cancelled by user".to_string()),
+                        },
+                    )
+                    .await;
+                    return true;
+                }
+            }
+        }
+
+        // Check pending queue
+        let mut items = self.items.lock().await;
+        if let Some(pos) = items.iter().position(|e| e.id == queue_id) {
+            let mut entry = items.remove(pos).unwrap();
+            let entry_id = entry.id.clone(); // Capture ID before moving entry
+            entry.status = ItemStatus::Failed;
+            entry.result = Some("Cancelled by user".to_string());
+            drop(items); // Release lock before calling push_recent
+            self.push_recent(entry).await;
+            // Signal any waiting client
+            self.signal_waiter(
+                &entry_id,
+                CompletionResult {
+                    status: ItemStatus::Failed,
+                    result: Some("Cancelled by user".to_string()),
+                },
+            )
+            .await;
+            return true;
+        }
+
+        false
     }
 
     pub async fn snapshot(&self) -> DaemonState {
@@ -262,6 +332,11 @@ impl RequestQueue {
         if let Some(tx) = self.waiters.lock().await.remove(id) {
             let _ = tx.send(result);
         }
+    }
+
+    /// Remove a completed item from the recent list by ID.
+    pub async fn remove_recent(&self, id: &str) {
+        self.recent.lock().await.retain(|item| item.id != id);
     }
 }
 

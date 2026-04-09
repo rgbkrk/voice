@@ -20,6 +20,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 automerge = "0.7"
+automorph = "0.2"
 notify = "6"
 dirs = "5"
 

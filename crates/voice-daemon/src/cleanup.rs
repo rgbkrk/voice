@@ -33,7 +33,9 @@ pub async fn run(queue: Arc<RequestQueue>, automerge: Arc<Mutex<AutomergeState>>
                     // Remove from Automerge doc
                     {
                         let mut am = automerge.lock().await;
-                        am.remove_from_recent(&item.id);
+                        if let Err(e) = am.remove_from_recent(&item.id) {
+                            eprintln!("voiced: failed to remove item from automerge: {}", e);
+                        }
                         if let Err(e) = am.save() {
                             eprintln!("voiced: failed to save automerge after cleanup: {}", e);
                         }

@@ -25,3 +25,4 @@ candle-core = { workspace = true }
 rodio = { version = "0.22", features = ["experimental"] }
 hound = { workspace = true }
 automerge = "0.7"
+automorph = "0.2"

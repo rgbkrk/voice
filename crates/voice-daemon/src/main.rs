@@ -7,10 +7,12 @@
 //!   voiced              # start the daemon
 //!   voiced --status     # print daemon state and exit
 
+mod config;
 mod queue;
 mod socket;
 mod worker;
 
+use config::DaemonConfig;
 use queue::RequestQueue;
 use std::sync::Arc;
 use voice_protocol::frames::{read_frame, write_frame, Frame, FrameType};
@@ -43,6 +45,7 @@ async fn main() {
     }
 
     let queue = Arc::new(RequestQueue::new());
+    let config = Arc::new(DaemonConfig::new());
 
     // Handle ctrl-c
     tokio::spawn({
@@ -56,11 +59,12 @@ async fn main() {
 
     // Start worker and socket server concurrently
     let worker_queue = queue.clone();
+    let worker_config = config.clone();
     tokio::spawn(async move {
-        worker::run(worker_queue).await;
+        worker::run(worker_queue, worker_config).await;
     });
 
-    socket::serve(queue).await;
+    socket::serve(queue, config).await;
 }
 
 async fn print_status() {

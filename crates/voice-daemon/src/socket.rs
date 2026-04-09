@@ -3,6 +3,7 @@
 //! Uses the voice-protocol frame codec (length-prefixed typed frames)
 //! instead of newline-delimited JSON.
 
+use crate::config::DaemonConfig;
 use crate::queue::RequestQueue;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,7 +20,7 @@ pub fn socket_path() -> PathBuf {
     dir.join("daemon.sock")
 }
 
-pub async fn serve(queue: Arc<RequestQueue>) {
+pub async fn serve(queue: Arc<RequestQueue>, config: Arc<DaemonConfig>) {
     let path = socket_path();
 
     if path.exists() {
@@ -40,9 +41,10 @@ pub async fn serve(queue: Arc<RequestQueue>) {
         match listener.accept().await {
             Ok((stream, _)) => {
                 let queue = queue.clone();
+                let config = config.clone();
                 let client_id = Uuid::new_v4().to_string()[..8].to_string();
                 eprintln!("voiced: client connected ({})", client_id);
-                tokio::spawn(handle_client(stream, queue, client_id));
+                tokio::spawn(handle_client(stream, queue, config, client_id));
             }
             Err(e) => eprintln!("voiced: accept error: {}", e),
         }
@@ -52,6 +54,7 @@ pub async fn serve(queue: Arc<RequestQueue>) {
 async fn handle_client(
     stream: tokio::net::UnixStream,
     queue: Arc<RequestQueue>,
+    config: Arc<DaemonConfig>,
     client_id: String,
 ) {
     let (mut reader, mut writer) = stream.into_split();
@@ -69,7 +72,7 @@ async fn handle_client(
         match frame.frame_type {
             FrameType::Request => {
                 let response = match frame.json::<rpc::Request>() {
-                    Ok(req) => dispatch(req, &queue, &client_id).await,
+                    Ok(req) => dispatch(req, &queue, &config, &client_id).await,
                     Err(e) => Response::error(
                         None,
                         rpc::PARSE_ERROR,
@@ -95,7 +98,12 @@ async fn handle_client(
     eprintln!("voiced: client disconnected ({})", client_id);
 }
 
-async fn dispatch(req: rpc::Request, queue: &Arc<RequestQueue>, client_id: &str) -> Response {
+async fn dispatch(
+    req: rpc::Request,
+    queue: &Arc<RequestQueue>,
+    config: &Arc<DaemonConfig>,
+    client_id: &str,
+) -> Response {
     use crate::queue::VoiceRequest;
 
     let wait = req
@@ -149,6 +157,50 @@ async fn dispatch(req: rpc::Request, queue: &Arc<RequestQueue>, client_id: &str)
         "status" => {
             let state = queue.snapshot().await;
             return Response::success(req.id, serde_json::to_value(&state).unwrap());
+        }
+        "set_voice" => {
+            let voice = req.params.get("voice").and_then(|v| v.as_str());
+            let Some(voice) = voice else {
+                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: voice");
+            };
+            config.set_voice_name(voice.to_string());
+            return Response::success(req.id, serde_json::json!({ "voice": voice }));
+        }
+        "set_speed" => {
+            let speed = req.params.get("speed").and_then(|v| v.as_f64());
+            let Some(speed) = speed else {
+                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: speed");
+            };
+            if speed <= 0.0 || speed > 5.0 {
+                return Response::error(
+                    req.id,
+                    rpc::INVALID_PARAMS,
+                    "Speed must be between 0 (exclusive) and 5 (inclusive)",
+                );
+            }
+            config.set_speed(speed as f32);
+            return Response::success(req.id, serde_json::json!({ "speed": speed }));
+        }
+        "list_voices" => {
+            let voices: Vec<serde_json::Value> = voice_tts::catalog::ALL_VOICES
+                .iter()
+                .map(|v| {
+                    let builtin = voice_tts::catalog::is_builtin(v.id);
+                    serde_json::json!({
+                        "id": v.id,
+                        "name": v.name,
+                        "language": v.language,
+                        "gender": v.gender,
+                        "traits": v.traits,
+                        "builtin": builtin,
+                    })
+                })
+                .collect();
+            let current = config.get_voice_name();
+            return Response::success(
+                req.id,
+                serde_json::json!({ "voices": voices, "current": current }),
+            );
         }
         _ => {
             return Response::error(

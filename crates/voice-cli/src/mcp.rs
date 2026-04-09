@@ -539,24 +539,51 @@ fn handle_tools_call(
                 Some(daemon.converse(&text, arguments.get("voice").and_then(|v| v.as_str())))
             }
             "cancel" => Some(daemon.cancel()),
+            "set_voice" => {
+                let voice = arguments
+                    .get("voice")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                Some(daemon.call("set_voice", serde_json::json!({"voice": voice})))
+            }
+            "set_speed" => {
+                let speed = arguments
+                    .get("speed")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0);
+                Some(daemon.call("set_speed", serde_json::json!({"speed": speed})))
+            }
+            "list_voices" => Some(daemon.call("list_voices", serde_json::json!({}))),
             _ => None,
         };
 
         if let Some(result) = daemon_result {
             return match result {
                 Ok(resp) => {
-                    // The daemon returns {result: {queue_id, status, result: "<json string>"}}
-                    // Extract the inner result JSON string and use it as the MCP content.
-                    let inner = resp
+                    // For queued ops (speak/listen/converse), the daemon returns
+                    // {result: {queue_id, status, result: "<json string>"}}.
+                    // For config ops (set_voice/set_speed/list_voices), the daemon
+                    // returns the result directly in resp.result.
+                    let text = if let Some(inner) = resp
                         .result
                         .as_ref()
                         .and_then(|r| r.get("result"))
                         .and_then(|v| v.as_str())
-                        .unwrap_or("{}");
+                    {
+                        // Queued op: extract the worker's JSON result string
+                        inner.to_string()
+                    } else if let Some(r) = &resp.result {
+                        // Config op: serialize the whole result
+                        serde_json::to_string(r).unwrap_or_else(|_| "{}".to_string())
+                    } else if let Some(e) = &resp.error {
+                        format!("daemon error: {}", e.message)
+                    } else {
+                        "{}".to_string()
+                    };
                     Response::success(
                         id,
                         serde_json::json!({
-                            "content": [{ "type": "text", "text": inner }]
+                            "content": [{ "type": "text", "text": text }]
                         }),
                     )
                 }

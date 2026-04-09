@@ -270,7 +270,6 @@ impl RequestQueue {
         }
     }
 
-
     async fn push_recent(&self, entry: QueueEntry) {
         let mut recent = self.recent.lock().await;
         recent.push_front(entry);
@@ -283,6 +282,11 @@ impl RequestQueue {
         if let Some(tx) = self.waiters.lock().await.remove(id) {
             let _ = tx.send(result);
         }
+    }
+
+    /// Remove a completed item from the recent list by ID.
+    pub async fn remove_recent(&self, id: &str) {
+        self.recent.lock().await.retain(|item| item.id != id);
     }
 }
 

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.1",
+  "productName": "Voice Queue",
+  "version": "0.1.0",
+  "identifier": "com.rgbkrk.voice-tray",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "csp": null
+    },
+    "windows": [],
+    "trayIcon": {
+      "id": "main-tray",
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": false,
+      "title": "Voice Queue"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "macOS": {
+      "frameworks": []
+    }
+  }
+}

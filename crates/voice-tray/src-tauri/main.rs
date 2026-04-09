@@ -143,6 +143,17 @@ fn main() {
                 error!("Tray icon 'main-tray' not found!");
             }
 
+            // Set up window blur event to hide when clicking outside
+            if let Some(window) = app.get_webview_window("main") {
+                let window_clone = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(false) = event {
+                        info!("Window lost focus, hiding");
+                        let _ = window_clone.hide();
+                    }
+                });
+            }
+
             // Spawn file watcher task on Tauri's async runtime
             tauri::async_runtime::spawn(async move {
                 info!("Starting file watcher task...");

@@ -1,0 +1,28 @@
+# rust-analyzer configuration for voice project
+# Optimized for tokio + async development
+
+[check]
+# Use clippy for additional async-aware lints
+command = "clippy"
+
+[cargo]
+# Load all workspace members
+allTargets = true
+
+[diagnostics]
+# Enable additional diagnostics helpful for async code
+experimental = { enable = true }
+
+[inlayHints]
+# Show type hints for async return types
+typeHints = { enable = true }
+parameterHints = { enable = true }
+chainingHints = { enable = true }
+
+[procMacro]
+# Enable for tokio macros (#[tokio::main], #[tokio::test])
+enable = true
+
+[completion]
+# Auto-complete async traits and methods
+autoimport = { enable = true }

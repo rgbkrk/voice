@@ -61,3 +61,10 @@ pub fn toggle_window(window: tauri::Window) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Quit the application.
+#[tauri::command]
+pub fn quit_app() {
+    log::info!("Quit requested from UI");
+    std::process::exit(0);
+}

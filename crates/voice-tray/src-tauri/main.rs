@@ -66,35 +66,11 @@ fn main() {
             // Get tray handle for badge updates
             let tray_app_handle = app.handle().clone();
 
-            // Set up tray with quit menu only
+            // Set up tray (no menu, just click to show/hide)
             if let Some(tray) = app.tray_by_id("main-tray") {
-                info!("Tray icon found, setting up menu");
+                info!("Tray icon found, setting up click handler");
 
-                use tauri::menu::{Menu, MenuItem};
                 use tauri::tray::MouseButton;
-
-                // Create minimal tray menu with just quit
-                let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
-                    .expect("Failed to create menu item");
-
-                let menu = Menu::with_items(app, &[&quit_item])
-                    .expect("Failed to create menu");
-
-                if let Err(e) = tray.set_menu(Some(menu)) {
-                    error!("Failed to set tray menu: {}", e);
-                }
-
-                // Set up menu event handler (just for quit)
-                tray.on_menu_event(move |_app_handle, event| {
-                    info!("Tray menu event: {:?}", event.id());
-                    match event.id().as_ref() {
-                        "quit" => {
-                            info!("Quit requested");
-                            std::process::exit(0);
-                        }
-                        _ => {}
-                    }
-                });
 
                 // Handle direct tray click to show/hide window
                 let window_handle = app.handle().clone();
@@ -224,6 +200,7 @@ fn main() {
             commands::cancel_item,
             commands::is_daemon_running,
             commands::toggle_window,
+            commands::quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

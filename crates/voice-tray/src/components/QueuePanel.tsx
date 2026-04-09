@@ -1,9 +1,14 @@
 import React from "react";
 import QueueItem from "./QueueItem";
 import { useAppStore } from "../store";
+import { invoke } from "@tauri-apps/api/core";
 
 export default function QueuePanel() {
   const queueState = useAppStore((s) => s.queueState);
+
+  const handleQuit = async () => {
+    await invoke("quit_app");
+  };
 
   if (!queueState) {
     return (
@@ -29,13 +34,30 @@ export default function QueuePanel() {
   return (
     <div className="queue-panel waveform-bg" style={{ minHeight: '400px', maxHeight: '600px', overflow: 'auto' }}>
       {/* Header */}
-      <div style={{ padding: '20px 16px', borderBottom: '2px solid var(--bg-tertiary)' }}>
+      <div style={{ padding: '20px 16px', borderBottom: '2px solid var(--bg-tertiary)', position: 'relative' }}>
         <h1 className="audio-header">VOICE QUEUE</h1>
         <div className="metadata" style={{ marginTop: '8px' }}>
           <span style={{ color: 'var(--status-queued)' }}>{pending.length} PENDING</span>
           <span style={{ margin: '0 8px', color: 'var(--text-tertiary)' }}>•</span>
           <span style={{ color: 'var(--status-completed)' }}>{recent.length} RECENT</span>
         </div>
+
+        {/* Quit button */}
+        <button
+          onClick={handleQuit}
+          className="btn btn-cancel"
+          style={{
+            position: 'absolute',
+            top: '16px',
+            right: '16px',
+            padding: '6px 12px',
+            fontSize: '10px',
+            minWidth: 'auto'
+          }}
+          title="Quit Application"
+        >
+          ✕
+        </button>
       </div>
 
       {/* Current item */}

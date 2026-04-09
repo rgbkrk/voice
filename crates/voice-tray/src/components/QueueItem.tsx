@@ -1,13 +1,14 @@
 import React from "react";
+import { ChevronRight, Play, X, Loader2 } from "lucide-react";
 import type { QueueItem as QueueItemType } from "../types";
 import { useAppStore } from "../store";
+import { cn } from "../lib/utils";
 
 interface Props {
   item: QueueItemType;
-  delay?: number;
 }
 
-export default function QueueItem({ item, delay = 0 }: Props) {
+export default function QueueItem({ item }: Props) {
   const expandedItems = useAppStore((s) => s.expandedItems);
   const toggleExpanded = useAppStore((s) => s.toggleExpanded);
   const playQuestion = useAppStore((s) => s.playQuestion);
@@ -24,137 +25,94 @@ export default function QueueItem({ item, delay = 0 }: Props) {
     const diff = now.getTime() - date.getTime();
     const minutes = Math.floor(diff / 60000);
 
-    if (minutes < 1) return "< 1M";
-    if (minutes < 60) return `${minutes}M`;
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes}m ago`;
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}H`;
+    if (hours < 24) return `${hours}h ago`;
     return date.toLocaleDateString();
   };
 
-  const getStatusStyle = () => {
+  const getStatusColor = () => {
     switch (item.status) {
-      case "Processing":
-        return { color: 'var(--status-processing)', borderColor: 'var(--status-processing)' };
-      case "Completed":
-        return { color: 'var(--status-completed)', borderColor: 'var(--status-completed)' };
-      case "Failed":
-        return { color: 'var(--status-failed)', borderColor: 'var(--status-failed)' };
-      default:
-        return { color: 'var(--status-queued)', borderColor: 'var(--status-queued)' };
+      case "Processing": return "bg-blue-100 text-blue-700 border-blue-200";
+      case "Completed": return "bg-green-100 text-green-700 border-green-200";
+      case "Failed": return "bg-red-100 text-red-700 border-red-200";
+      default: return "bg-gray-100 text-gray-700 border-gray-200";
     }
   };
 
   return (
-    <div
-      className="queue-item"
-      style={{
-        animationDelay: `${delay}ms`,
-        cursor: 'pointer'
-      }}
-      onClick={() => toggleExpanded(item.id)}
-    >
-      {/* Header - always visible */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {/* Status and metadata row */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
-            <span className="badge" style={getStatusStyle()}>
+    <div className="queue-item px-4 py-3" onClick={() => toggleExpanded(item.id)}>
+      {/* Header */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+            <span className={cn("inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border", getStatusColor())}>
               {item.status}
             </span>
             {item.repo && (
-              <span className="badge" style={{ color: 'var(--purple)', borderColor: 'var(--purple)' }}>
+              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 border border-purple-200">
                 {item.repo}
               </span>
             )}
-            <span className="metadata">
+            <span className="text-xs text-gray-500">
               {formatTimestamp(item.created_at)}
             </span>
           </div>
 
-          {/* Preview text */}
-          <p style={{
-            fontSize: '12px',
-            color: 'var(--text-primary)',
-            lineHeight: '1.5',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: isExpanded ? 'normal' : 'nowrap'
-          }}>
+          <p className={cn(
+            "text-sm text-gray-700 leading-relaxed",
+            !isExpanded && "truncate"
+          )}>
             {item.text_preview || item.method}
           </p>
         </div>
 
-        <div className={`expand-indicator ${isExpanded ? 'expanded' : ''}`} style={{ marginLeft: '12px', flexShrink: 0 }}>
-          ▶
-        </div>
+        <ChevronRight className={cn(
+          "w-4 h-4 text-gray-400 transition-transform flex-shrink-0 mt-0.5",
+          isExpanded && "rotate-90"
+        )} />
       </div>
 
       {/* Expanded details */}
       {isExpanded && (
-        <div style={{
-          marginTop: '16px',
-          paddingTop: '16px',
-          borderTop: '1px solid var(--bg-tertiary)',
-          animation: 'slide-in 0.2s ease-out'
-        }}>
-          {/* Full text */}
-          {item.text_preview && (
-            <div style={{ marginBottom: '16px' }}>
-              <p style={{
-                fontSize: '12px',
-                color: 'var(--text-secondary)',
-                lineHeight: '1.6',
-                whiteSpace: 'pre-wrap'
-              }}>
-                {item.text_preview}
-              </p>
-            </div>
-          )}
-
-          {/* Result/transcript */}
+        <div className="mt-3 pt-3 border-t border-gray-100">
+          {/* Result */}
           {item.result && (
-            <div style={{
-              marginBottom: '16px',
-              padding: '12px',
-              background: 'var(--bg-elevated)',
-              borderRadius: '4px',
-              border: '1px solid var(--cyan)',
-              boxShadow: '0 0 10px var(--cyan-glow)'
-            }}>
-              <p className="metadata" style={{ marginBottom: '8px', color: 'var(--cyan)' }}>
-                → RESULT
-              </p>
-              <p style={{
-                fontSize: '12px',
-                color: 'var(--text-primary)',
-                lineHeight: '1.6'
-              }}>
+            <div className="mb-3 p-3 bg-gray-50 rounded-md border border-gray-200">
+              <p className="text-xs font-medium text-gray-600 mb-1">Result</p>
+              <p className="text-sm text-gray-700 leading-relaxed">
                 {item.result}
               </p>
             </div>
           )}
 
           {/* Audio controls */}
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <div className="flex gap-2 flex-wrap">
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 playQuestion(item.id);
               }}
               disabled={isPlaying && playingAudio?.part === "question"}
-              className={`btn btn-play ${isPlaying && playingAudio?.part === "question" ? 'vu-active' : ''}`}
+              className={cn(
+                "inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
+                isPlaying && playingAudio?.part === "question"
+                  ? "bg-blue-100 text-blue-700"
+                  : "bg-blue-600 text-white hover:bg-blue-700",
+                "disabled:opacity-50 disabled:cursor-not-allowed"
+              )}
             >
               {isPlaying && playingAudio?.part === "question" ? (
-                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span>▶</span>
-                  <span className="audio-loader" style={{ height: '12px' }}>
-                    <span style={{ height: '4px' }}></span>
-                    <span style={{ height: '8px' }}></span>
-                    <span style={{ height: '6px' }}></span>
-                  </span>
-                </span>
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Playing...</span>
+                </>
               ) : (
-                "▶ QUESTION"
+                <>
+                  <Play className="w-3.5 h-3.5" />
+                  <span>Question</span>
+                </>
               )}
             </button>
 
@@ -164,19 +122,24 @@ export default function QueueItem({ item, delay = 0 }: Props) {
                 playAnswer(item.id);
               }}
               disabled={isPlaying && playingAudio?.part === "answer"}
-              className={`btn btn-stop ${isPlaying && playingAudio?.part === "answer" ? 'vu-active' : ''}`}
+              className={cn(
+                "inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
+                isPlaying && playingAudio?.part === "answer"
+                  ? "bg-green-100 text-green-700"
+                  : "bg-green-600 text-white hover:bg-green-700",
+                "disabled:opacity-50 disabled:cursor-not-allowed"
+              )}
             >
               {isPlaying && playingAudio?.part === "answer" ? (
-                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span>▶</span>
-                  <span className="audio-loader" style={{ height: '12px' }}>
-                    <span style={{ height: '4px' }}></span>
-                    <span style={{ height: '8px' }}></span>
-                    <span style={{ height: '6px' }}></span>
-                  </span>
-                </span>
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Playing...</span>
+                </>
               ) : (
-                "▶ ANSWER"
+                <>
+                  <Play className="w-3.5 h-3.5" />
+                  <span>Answer</span>
+                </>
               )}
             </button>
 
@@ -184,13 +147,14 @@ export default function QueueItem({ item, delay = 0 }: Props) {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (confirm(`CANCEL "${item.text_preview || item.method}"?`)) {
+                  if (confirm(`Cancel "${item.text_preview || item.method}"?`)) {
                     cancelItem(item.id);
                   }
                 }}
-                className="btn btn-cancel"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-red-600 text-white hover:bg-red-700 rounded-md transition-colors"
               >
-                ✕ CANCEL
+                <X className="w-3.5 h-3.5" />
+                <span>Cancel</span>
               </button>
             )}
           </div>

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Loader2, AlertCircle, RotateCw } from "lucide-react";
 import QueuePanel from "./components/QueuePanel";
 import { useAppStore } from "./store";
 
@@ -12,21 +13,13 @@ function App() {
   useEffect(() => {
     let subscription: { unsubscribe: () => void } | null = null;
 
-    // Initialize app
     (async () => {
-      // Check if daemon is running
       await checkDaemon();
-
-      // Load initial state
       await loadInitialState();
-
-      // Subscribe to updates (now returns RxJS Subscription)
       subscription = subscribeToUpdates();
-
       setLoading(false);
     })();
 
-    // Cleanup function
     return () => {
       if (subscription) {
         subscription.unsubscribe();
@@ -36,59 +29,26 @@ function App() {
 
   if (loading) {
     return (
-      <div className="waveform-bg" style={{ minHeight: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ textAlign: 'center' }}>
-          <div className="audio-loader" style={{ justifyContent: 'center', marginBottom: '16px' }}>
-            <span></span>
-            <span></span>
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-          <p className="metadata">INITIALIZING...</p>
-        </div>
+      <div className="flex items-center justify-center p-8">
+        <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
       </div>
     );
   }
 
   if (!daemonRunning) {
     return (
-      <div className="waveform-bg" style={{ minHeight: '400px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
-        <div style={{ textAlign: 'center', maxWidth: '320px' }}>
-          <div style={{
-            width: '60px',
-            height: '60px',
-            margin: '0 auto 20px',
-            border: '2px solid var(--status-failed)',
-            borderRadius: '50%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '24px',
-            color: 'var(--status-failed)',
-            animation: 'pulse 2s ease-in-out infinite'
-          }}>
-            !
+      <div className="flex items-center justify-center p-8">
+        <div className="text-center max-w-sm">
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-red-100 mb-4">
+            <AlertCircle className="w-6 h-6 text-red-600" />
           </div>
-          <h1 className="audio-header" style={{ fontSize: '14px', marginBottom: '12px', color: 'var(--status-failed)' }}>
-            DAEMON OFFLINE
-          </h1>
-          <p className="metadata" style={{ color: 'var(--text-secondary)', marginBottom: '16px', lineHeight: '1.6' }}>
-            THE VOICE DAEMON IS NOT RUNNING
-            <br />
-            START IT WITH:
+          <h2 className="text-sm font-semibold text-gray-900 mb-2">
+            Daemon not running
+          </h2>
+          <p className="text-xs text-gray-500 mb-4">
+            The voice daemon is not running. Start it with:
           </p>
-          <code style={{
-            display: 'block',
-            padding: '12px',
-            background: 'var(--bg-elevated)',
-            borderRadius: '4px',
-            fontSize: '11px',
-            fontFamily: 'JetBrains Mono, monospace',
-            color: 'var(--cyan)',
-            marginBottom: '16px',
-            border: '1px solid var(--bg-tertiary)'
-          }}>
+          <code className="block px-3 py-2 bg-gray-100 rounded text-xs text-gray-700 font-mono mb-4">
             voice mcp
           </code>
           <button
@@ -98,19 +58,17 @@ function App() {
                 await loadInitialState();
               }
             }}
-            className="btn btn-play"
-            style={{ width: '100%' }}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 rounded-md transition-colors"
           >
-            ↻ RETRY CONNECTION
+            <RotateCw className="w-4 h-4" />
+            Retry Connection
           </button>
         </div>
       </div>
     );
   }
 
-  return (
-    <QueuePanel />
-  );
+  return <QueuePanel />;
 }
 
 export default App;

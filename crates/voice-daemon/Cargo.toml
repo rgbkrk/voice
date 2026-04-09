@@ -18,3 +18,7 @@ serde_json = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 voice-protocol = { path = "../voice-protocol" }
+voice-tts = { path = "../voice-tts" }
+voice-g2p = { path = "../voice-g2p" }
+candle-core = { workspace = true }
+rodio = { version = "0.22", features = ["experimental"] }

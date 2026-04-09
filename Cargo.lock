@@ -4021,12 +4021,16 @@ dependencies = [
 name = "voice-daemon"
 version = "0.1.0"
 dependencies = [
+ "candle-core",
  "dirs",
+ "rodio",
  "serde",
  "serde_json",
  "tokio",
  "uuid",
+ "voice-g2p",
  "voice-protocol",
+ "voice-tts",
 ]
 
 [[package]]

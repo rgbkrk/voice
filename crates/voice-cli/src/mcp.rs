@@ -749,11 +749,6 @@ impl RpcErr {
 
 // ── Voice tool handlers ───────────────────────────────────────────────
 
-fn voice_cancel() -> Result<Value, RpcErr> {
-    INTERRUPTED.store(true, Ordering::SeqCst);
-    Ok(serde_json::json!({"cancelled": true}))
-}
-
 fn voice_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
     let p: ListenParams = if params.is_null() {
         ListenParams {

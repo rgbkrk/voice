@@ -10,6 +10,8 @@ function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
     // Initialize app
     (async () => {
       // Check if daemon is running
@@ -19,15 +21,17 @@ function App() {
       await loadInitialState();
 
       // Subscribe to updates
-      const unlisten = await subscribeToUpdates();
+      unlisten = await subscribeToUpdates();
 
       setLoading(false);
-
-      // Cleanup
-      return () => {
-        unlisten();
-      };
     })();
+
+    // Cleanup function
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
   }, []);
 
   if (loading) {

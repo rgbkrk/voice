@@ -10,7 +10,7 @@ mod types;
 
 use state::AppState;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use types::VoiceState;
 
 /// Update the tray icon badge with the number of pending items
@@ -54,6 +54,40 @@ fn main() {
 
             // Get tray handle for badge updates
             let tray_app_handle = app.handle().clone();
+
+            // Set up tray click handler to show/hide window
+            if let Some(tray) = app.tray_by_id("main-tray") {
+                let window_handle = app.handle().clone();
+                tray.on_tray_icon_event(move |_tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click { button, .. } = event {
+                        if button == tauri::tray::MouseButton::Left {
+                            if let Some(window) = window_handle.get_webview_window("main") {
+                                let is_visible = window.is_visible().unwrap_or(false);
+
+                                if is_visible {
+                                    let _ = window.hide();
+                                } else {
+                                    // Position window near tray icon (top-right of screen)
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        use tauri::LogicalPosition;
+                                        if let Ok(Some(monitor)) = window.current_monitor() {
+                                            let size = monitor.size();
+                                            // Position in top-right, below menu bar
+                                            let x = size.width as f64 - 400.0;  // 380 width + 20 padding
+                                            let y = 25.0;  // Below menu bar
+                                            let _ = window.set_position(LogicalPosition::new(x, y));
+                                        }
+                                    }
+
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
+                        }
+                    }
+                });
+            }
 
             // Spawn file watcher in background thread
             std::thread::spawn(move || {

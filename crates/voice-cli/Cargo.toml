@@ -35,3 +35,4 @@ ctrlc = "3.5.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 voice-protocol = { path = "../voice-protocol" }
+dirs = "5"

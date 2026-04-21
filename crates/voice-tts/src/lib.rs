@@ -72,13 +72,35 @@ impl KokoroModel {
 }
 
 /// Load a voice embedding by name, using the model's device.
+///
+/// Resolution order:
+///   1. If `voice_name` points to an existing file, load that safetensors.
+///   2. If `~/.cache/voice/voices/{voice_name}.safetensors` exists, load it.
+///   3. If `voice_name` matches a builtin embedded voice, use that.
+///   4. Fall back to downloading from HuggingFace.
 pub fn load_voice(voice_name: &str, repo_id: Option<&str>, device: &Device) -> Result<Tensor> {
-    // Try builtin first
+    // (1) Direct file path
+    let as_path = Path::new(voice_name);
+    if as_path.is_file() {
+        let data = std::fs::read(as_path)?;
+        return load_voice_from_bytes(&data, device);
+    }
+
+    // (2) User-local voice cache
+    if let Some(home) = dirs::home_dir() {
+        let local = home.join(".cache/voice/voices").join(format!("{voice_name}.safetensors"));
+        if local.is_file() {
+            let data = std::fs::read(&local)?;
+            return load_voice_from_bytes(&data, device);
+        }
+    }
+
+    // (3) Builtin embedded voice
     if let Some(data) = builtin::get_builtin_voice_bytes(voice_name) {
         return load_voice_from_bytes(data, device);
     }
 
-    // Download from HF
+    // (4) Download from HF
     let repo_id = repo_id.unwrap_or(DEFAULT_REPO);
     let api = Api::new().map_err(|e| VoicersError::Hub(e.to_string()))?;
     let repo = api.model(repo_id.to_string());

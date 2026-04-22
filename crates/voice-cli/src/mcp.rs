@@ -995,19 +995,17 @@ fn voice_list_voices(session: &Session, params: Value) -> Result<Value, RpcErr> 
                 .filter_map(|e| {
                     let path = e.path();
                     if path.extension().and_then(|x| x.to_str()) == Some("safetensors") {
-                        path.file_stem()
-                            .and_then(|s| s.to_str())
-                            .map(|id| {
-                                serde_json::json!({
-                                    "id": id,
-                                    "name": id,
-                                    "language": "custom",
-                                    "gender": "unknown",
-                                    "grade": "user",
-                                    "traits": [],
-                                    "status": "local",
-                                })
+                        path.file_stem().and_then(|s| s.to_str()).map(|id| {
+                            serde_json::json!({
+                                "id": id,
+                                "name": id,
+                                "language": "custom",
+                                "gender": "unknown",
+                                "grade": "user",
+                                "traits": [],
+                                "status": "local",
                             })
+                        })
                     } else {
                         None
                     }

@@ -88,7 +88,9 @@ pub fn load_voice(voice_name: &str, repo_id: Option<&str>, device: &Device) -> R
 
     // (2) User-local voice cache
     if let Some(home) = dirs::home_dir() {
-        let local = home.join(".cache/voice/voices").join(format!("{voice_name}.safetensors"));
+        let local = home
+            .join(".cache/voice/voices")
+            .join(format!("{voice_name}.safetensors"));
         if local.is_file() {
             let data = std::fs::read(&local)?;
             return load_voice_from_bytes(&data, device);

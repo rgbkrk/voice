@@ -133,6 +133,10 @@ struct ConverseArgs {
     #[arg(short, long, default_value = "1.0")]
     speed: f32,
 
+    /// Max listen duration in seconds (after speaking)
+    #[arg(short, long, default_value = "30")]
+    duration: u64,
+
     /// Strip markdown/MDX formatting before speaking
     #[arg(long)]
     markdown: bool,
@@ -780,11 +784,11 @@ fn run_converse(args: ConverseArgs) {
     // Listen for response (VAD auto-stop — no Enter key needed)
     if let Some(result) = listen::listen_and_transcribe_vad(
         &mut stt_model,
-        15_000, // max_duration_ms
-        1_500,  // silence_timeout_ms
-        0.01,   // silence_threshold
-        3.0,    // noise_multiplier
-        300,    // calibration_ms
+        args.duration * 1_000, // max_duration_ms
+        1_500,                 // silence_timeout_ms
+        0.01,                  // silence_threshold
+        3.0,                   // noise_multiplier
+        300,                   // calibration_ms
     ) {
         println!("{}", result.text);
         if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {

@@ -7066,6 +7066,7 @@ dependencies = [
  "candle-core",
  "clap",
  "ctrlc",
+ "dirs 5.0.1",
  "hound",
  "pulldown-cmark",
  "rodio",
@@ -7182,6 +7183,7 @@ version = "0.3.0"
 dependencies = [
  "candle-core",
  "candle-nn",
+ "dirs 5.0.1",
  "hf-hub",
  "hound",
  "safetensors 0.6.2",

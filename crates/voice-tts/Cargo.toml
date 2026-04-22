@@ -17,3 +17,4 @@ serde_json = { workspace = true }
 hf-hub = { workspace = true }
 hound = { workspace = true }
 thiserror = { workspace = true }
+dirs = "5"

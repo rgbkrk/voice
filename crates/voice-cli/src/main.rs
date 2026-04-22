@@ -431,7 +431,7 @@ fn collect_subs(
     }
 
     // Sort text subs by key length descending so "nteract.io" matches before "nteract"
-    text_subs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    text_subs.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
 
     (text_subs, phoneme_overrides)
 }

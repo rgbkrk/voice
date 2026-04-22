@@ -985,9 +985,38 @@ fn voice_set_speed(session: &mut Session, params: Value) -> Result<Value, RpcErr
 fn voice_list_voices(session: &Session, params: Value) -> Result<Value, RpcErr> {
     let show_all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
+    // Scan ~/.cache/voice/voices/ for user-local voicepacks.
+    let local_voices: Vec<Value> = dirs::home_dir()
+        .map(|h| h.join(".cache/voice/voices"))
+        .and_then(|dir| std::fs::read_dir(&dir).ok())
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let path = e.path();
+                    if path.extension().and_then(|x| x.to_str()) == Some("safetensors") {
+                        path.file_stem().and_then(|s| s.to_str()).map(|id| {
+                            serde_json::json!({
+                                "id": id,
+                                "name": id,
+                                "language": "custom",
+                                "gender": "unknown",
+                                "grade": "user",
+                                "traits": [],
+                                "status": "local",
+                            })
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     if show_all {
-        // Full catalog with availability status
-        let voices: Vec<Value> = voice_tts::catalog::ALL_VOICES
+        // Full catalog with availability status + local voices
+        let mut voices: Vec<Value> = voice_tts::catalog::ALL_VOICES
             .iter()
             .map(|v| {
                 let builtin = voice_tts::catalog::is_builtin(v.id);
@@ -1010,10 +1039,11 @@ fn voice_list_voices(session: &Session, params: Value) -> Result<Value, RpcErr> 
                 })
             })
             .collect();
+        voices.extend(local_voices);
         Ok(serde_json::json!({ "voices": voices }))
     } else {
-        // Quick: just builtin voices with metadata
-        let voices: Vec<Value> = voice_tts::catalog::ALL_VOICES
+        // Quick: builtin voices + local voices
+        let mut voices: Vec<Value> = voice_tts::catalog::ALL_VOICES
             .iter()
             .filter(|v| voice_tts::catalog::is_builtin(v.id))
             .map(|v| {
@@ -1028,6 +1058,7 @@ fn voice_list_voices(session: &Session, params: Value) -> Result<Value, RpcErr> 
                 })
             })
             .collect();
+        voices.extend(local_voices);
         Ok(serde_json::json!({ "voices": voices }))
     }
 }

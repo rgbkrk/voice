@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/rgbkrk/voice"
 
 [dependencies]
-voice-kokoro = { path = "../voice-kokoro" }
+voice-kokoro = { path = "../voice-kokoro", default-features = false }
 candle-core = { workspace = true }
 candle-nn = { workspace = true }
 safetensors = { workspace = true }
@@ -18,3 +18,11 @@ hf-hub = { workspace = true }
 hound = { workspace = true }
 thiserror = { workspace = true }
 dirs = "5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { workspace = true, features = ["metal"] }
+candle-nn = { workspace = true, features = ["metal"] }
+
+[features]
+default = []
+metal = ["voice-kokoro/metal"]

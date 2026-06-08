@@ -20,10 +20,31 @@ pub struct KokoroModel {
     pub sample_rate: u32,
 }
 
+/// Return the default inference device for TTS.
+///
+/// On macOS this preserves the existing Apple Silicon Metal path. All other
+/// builds use Candle's CPU backend, which keeps Kokoro usable on Linux hosts
+/// with no GPU.
+pub fn default_tts_device() -> Result<Device> {
+    #[cfg(target_os = "macos")]
+    {
+        Device::new_metal(0).map_err(|e| VoicersError::Model(e.to_string()))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(Device::Cpu)
+    }
+}
+
 /// Load a Kokoro TTS model from a HuggingFace repo or local path.
 pub fn load_model(path_or_repo: &str) -> Result<KokoroModel> {
-    let device = Device::new_metal(0).map_err(|e| VoicersError::Model(e.to_string()))?;
+    let device = default_tts_device()?;
+    load_model_on_device(path_or_repo, device)
+}
 
+/// Load a Kokoro TTS model on an explicitly supplied Candle device.
+pub fn load_model_on_device(path_or_repo: &str, device: Device) -> Result<KokoroModel> {
     let (config_path, weights_path) = if Path::new(path_or_repo).exists() {
         let dir = PathBuf::from(path_or_repo);
         (dir.join("config.json"), find_safetensors(&dir)?)

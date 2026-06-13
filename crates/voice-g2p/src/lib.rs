@@ -78,6 +78,7 @@ impl G2P {
             ("apis", "ˈA pˈi ˈIz"),
             ("automerge", "ˈɔTO mˈɜɹʤ"),
             ("aws", "ˈA dˈʌbᵊlju ˈɛs"),
+            ("anywidget", "ˈɛni wˌɪʤət"),
             ("bilstm", "bˈI ˈɛl ˈɛs tˈi ˈɛm"),
             ("chatgpt", "ʧˈæt ʤˈi pˈi tˈi"),
             ("cli", "sˈi ˈɛl ˌI"),
@@ -107,7 +108,11 @@ impl G2P {
             ("https", "ˈAʧ tˈi tˈi pˈi ˈɛs"),
             ("ios", "ˈI ˈO ˈɛs"),
             ("ipykernel", "ˈI pˈI kˌɜɹnᵊl"),
+            ("ipython", "ˌI pˈIθˌɑn"),
+            ("ipywidgets", "ˌI pˈI wˌɪʤəts"),
+            ("isort", "ˈI sˌɔɹt"),
             ("istft", "ˈI ˈɛs tˈi ˈɛf tˈi"),
+            ("jax", "ʤˈæks"),
             ("json", "ʤˌA sˈæhn"),
             ("jsonrpc", "ʤˌA sˈæhn ˈɑɹ pˈi sˈi"),
             ("jsx", "ʤˈA ˈɛs ˈɛks"),
@@ -122,6 +127,7 @@ impl G2P {
             ("latex", "lˈA tˌɛk"),
             ("lstm", "ˈɛl ˈɛs tˈi ˈɛm"),
             ("macos", "mˈæk ˈO ˈɛs"),
+            ("matplotlib", "mˈæt plˌɑt lˌɪb"),
             ("mathjax", "mˈæθ ʤˌæks"),
             ("mcp", "ˈɛm sˈi pˈi"),
             ("mcps", "ˈɛm sˈi pˈiz"),
@@ -130,6 +136,7 @@ impl G2P {
             ("mimebundle", "mˈIm bˌʌndᵊl"),
             ("mlx", "ˈɛm ˈɛl ˈɛks"),
             ("mmap", "ˈɛm mˌæp"),
+            ("mypy", "mˈI pˌI"),
             ("nbconvert", "ˈɛn bˈi kˌɑnvɜɹt"),
             ("nbformat", "ˈɛn bˈi fˌɔɹmæt"),
             ("neuphonic", "nˈu fˌɑnɪk"),
@@ -152,7 +159,10 @@ impl G2P {
             ("protobuf", "pɹˈOTO bˌʌf"),
             ("pwa", "pˈi dˈʌbᵊlju ˈA"),
             ("pyodide", "pˈI ə dˌId"),
+            ("pyarrow", "pˈI ˈɛɹO"),
+            ("pypi", "pˈI pˈi ˌI"),
             ("pyo3", "pˈI ˈO θɹˈi"),
+            ("pytest", "pˈI tˌɛst"),
             ("qqbot", "kjˈu kjˈu bˌɑt"),
             ("todo", "tˈudu"),
             // Developer acronyms and initialisms
@@ -168,7 +178,11 @@ impl G2P {
             ("runtimed", "ɹˈʌntIm dˈi"),
             ("s3", "ˈɛs θɹˈi"),
             ("safetensors", "sˈAf tˌɛnsəɹz"),
+            ("scikit-learn", "sˈɪkɪt lˌɜɹn"),
+            ("scikitlearn", "sˈɪkɪt lˌɜɹn"),
+            ("scipy", "sˈI pˌI"),
             ("serde", "sˈɜɹdˌi"),
+            ("sklearn", "ˈɛs kˈA lˌɜɹn"),
             ("sqlite", "ˌɛs kjˈu ˌɛl lˈIt"),
             ("ssr", "ˈɛs ˈɛs ˈɑɹ"),
             ("stft", "ˈɛs tˈi ˈɛf tˈi"),
@@ -945,6 +959,7 @@ mod tests {
         let pronounces = |text: &str| g2p.convert(text).unwrap().trim().to_string();
         assert_eq!(pronounces("API"), "ˈA pˈi ˌI");
         assert_eq!(pronounces("APIs"), "ˈA pˈi ˈIz");
+        assert_eq!(pronounces("anywidget"), "ˈɛni wˌɪʤət");
         assert_eq!(pronounces("Automerge"), "ˈɔTO mˈɜɹʤ");
         assert_eq!(pronounces("AWS"), "ˈA dˈʌbᵊlju ˈɛs");
         assert_eq!(pronounces("BiLSTM"), "bˈI ˈɛl ˈɛs tˈi ˈɛm");
@@ -977,7 +992,11 @@ mod tests {
         assert_eq!(pronounces("HTTPS"), "ˈAʧ tˈi tˈi pˈi ˈɛs");
         assert_eq!(pronounces("iOS"), "ˈI ˈO ˈɛs");
         assert_eq!(pronounces("ipykernel"), "ˈI pˈI kˌɜɹnᵊl");
+        assert_eq!(pronounces("IPython"), "ˌI pˈIθˌɑn");
+        assert_eq!(pronounces("ipywidgets"), "ˌI pˈI wˌɪʤəts");
+        assert_eq!(pronounces("isort"), "ˈI sˌɔɹt");
         assert_eq!(pronounces("iSTFT"), "ˈI ˈɛs tˈi ˈɛf tˈi");
+        assert_eq!(pronounces("JAX"), "ʤˈæks");
         assert_eq!(pronounces("JSON"), "ʤˌA sˈæhn");
         assert_eq!(pronounces("JSONRPC"), "ʤˌA sˈæhn ˈɑɹ pˈi sˈi");
         assert_eq!(pronounces("JSX"), "ʤˈA ˈɛs ˈɛks");
@@ -992,6 +1011,7 @@ mod tests {
         assert_eq!(pronounces("LaTeX"), "lˈA tˌɛk");
         assert_eq!(pronounces("LSTM"), "ˈɛl ˈɛs tˈi ˈɛm");
         assert_eq!(pronounces("macOS"), "mˈæk ˈO ˈɛs");
+        assert_eq!(pronounces("Matplotlib"), "mˈæt plˌɑt lˌɪb");
         assert_eq!(pronounces("MathJax"), "mˈæθ ʤˌæks");
         assert_eq!(pronounces("MCP"), "ˈɛm sˈi pˈi");
         assert_eq!(pronounces("MCPs"), "ˈɛm sˈi pˈiz");
@@ -1000,6 +1020,7 @@ mod tests {
         assert_eq!(pronounces("MIMEBundle"), "mˈIm bˌʌndᵊl");
         assert_eq!(pronounces("MLX"), "ˈɛm ˈɛl ˈɛks");
         assert_eq!(pronounces("mmap"), "ˈɛm mˌæp");
+        assert_eq!(pronounces("mypy"), "mˈI pˌI");
         assert_eq!(pronounces("nbconvert"), "ˈɛn bˈi kˌɑnvɜɹt");
         assert_eq!(pronounces("nbformat"), "ˈɛn bˈi fˌɔɹmæt");
         assert_eq!(pronounces("Neuphonic"), "nˈu fˌɑnɪk");
@@ -1021,8 +1042,11 @@ mod tests {
         assert_eq!(pronounces("PCM"), "pˈi sˈi ˈɛm");
         assert_eq!(pronounces("Protobuf"), "pɹˈOTO bˌʌf");
         assert_eq!(pronounces("PWA"), "pˈi dˈʌbᵊlju ˈA");
+        assert_eq!(pronounces("PyArrow"), "pˈI ˈɛɹO");
         assert_eq!(pronounces("Pyodide"), "pˈI ə dˌId");
+        assert_eq!(pronounces("PyPI"), "pˈI pˈi ˌI");
         assert_eq!(pronounces("PyO3"), "pˈI ˈO θɹˈi");
+        assert_eq!(pronounces("pytest"), "pˈI tˌɛst");
         assert_eq!(pronounces("QQBot"), "kjˈu kjˈu bˌɑt");
         assert_eq!(pronounces("PyTorch"), "pˈI tˌɔɹʧ");
         assert_eq!(pronounces("vitest"), "vˈi tˌɛst");
@@ -1037,6 +1061,9 @@ mod tests {
         assert_eq!(pronounces("runtimed"), "ɹˈʌntIm dˈi");
         assert_eq!(pronounces("S3"), "ˈɛs θɹˈi");
         assert_eq!(pronounces("safetensors"), "sˈAf tˌɛnsəɹz");
+        assert_eq!(pronounces("scikit-learn"), "sˈɪkɪt lˌɜɹn");
+        assert_eq!(pronounces("sklearn"), "ˈɛs kˈA lˌɜɹn");
+        assert_eq!(pronounces("SciPy"), "sˈI pˌI");
         assert_eq!(pronounces("Serde"), "sˈɜɹdˌi");
         assert_eq!(pronounces("SQLite"), "ˌɛs kjˈu ˌɛl lˈIt");
         assert_eq!(pronounces("SSR"), "ˈɛs ˈɛs ˈɑɹ");

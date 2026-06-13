@@ -86,6 +86,7 @@ impl G2P {
             ("cloudflare", "klˈWd flˈɛɹ"),
             ("coreaudio", "kˈɔɹ ˈɔdiO"),
             ("coreml", "kˈɔɹ ˈɛm ˈɛl"),
+            ("cpal", "sˈi pˈi ˈA ˈɛl"),
             ("crdt", "sˈi ˈɑɹ dˈi tˈi"),
             ("crdts", "sˈi ˈɑɹ dˈi tˈiz"),
             ("csr", "sˈi ˈɛs ˈɑɹ"),
@@ -98,6 +99,7 @@ impl G2P {
             ("demultiplexing", "dˌimˈʌltɪplɛksɪŋ"),
             ("demux", "dˌimˈʌks"),
             ("demuxing", "dˌimˈʌksɪŋ"),
+            ("dtls", "dˈi tˈi ˈɛl ˈɛs"),
             ("duckdb", "dˈʌk dˈi bˈi"),
             ("esbuild", "ˈi ˈɛs bˌɪld"),
             ("eslint", "ˈi ˈɛs lˌɪnt"),
@@ -182,6 +184,7 @@ impl G2P {
             ("pytorch", "pˈI tˌɔɹʧ"),
             ("rpc", "ˈɑɹ pˈi sˈi"),
             ("rpcs", "ˈɑɹ pˈi sˈiz"),
+            ("rodio", "ɹˈOdiˌO"),
             ("rtcp", "ˈɑɹ tˈi sˈi pˈi"),
             ("rtp", "ˈɑɹ tˈi pˈi"),
             ("rxjs", "ˈɑɹ ˈɛks ʤˈA ˈɛs"),
@@ -191,10 +194,12 @@ impl G2P {
             ("scikit-learn", "sˈɪkɪt lˌɜɹn"),
             ("scikitlearn", "sˈɪkɪt lˌɜɹn"),
             ("scipy", "sˈI pˌI"),
+            ("sdp", "ˈɛs dˈi pˈi"),
             ("serde", "sˈɜɹdˌi"),
             ("sklearn", "ˈɛs kˈA lˌɜɹn"),
             ("sqlite", "ˌɛs kjˈu ˌɛl lˈIt"),
             ("scss", "ˈɛs sˈi ˈɛs ˈɛs"),
+            ("srtp", "ˈɛs ˈɑɹ tˈi pˈi"),
             ("ssr", "ˈɛs ˈɛs ˈɑɹ"),
             ("stft", "ˈɛs tˈi ˈɛf tˈi"),
             ("stt", "ˈɛs tˈi tˈi"),
@@ -982,6 +987,7 @@ mod tests {
         assert_eq!(pronounces("Cloudflare"), "klˈWd flˈɛɹ");
         assert_eq!(pronounces("CoreAudio"), "kˈɔɹ ˈɔdiO");
         assert_eq!(pronounces("CoreML"), "kˈɔɹ ˈɛm ˈɛl");
+        assert_eq!(pronounces("CPAL"), "sˈi pˈi ˈA ˈɛl");
         assert_eq!(pronounces("CRDT"), "sˈi ˈɑɹ dˈi tˈi");
         assert_eq!(pronounces("CRDTs"), "sˈi ˈɑɹ dˈi tˈiz");
         assert_eq!(pronounces("CSR"), "sˈi ˈɛs ˈɑɹ");
@@ -995,6 +1001,7 @@ mod tests {
         assert_eq!(pronounces("demux"), "dˌimˈʌks");
         assert_eq!(pronounces("demultiplexing"), "dˌimˈʌltɪplɛksɪŋ");
         assert_eq!(pronounces("demultiplex"), "dˌimˈʌltɪplɛks");
+        assert_eq!(pronounces("DTLS"), "dˈi tˈi ˈɛl ˈɛs");
         assert_eq!(pronounces("DuckDB"), "dˈʌk dˈi bˈi");
         assert_eq!(pronounces("esbuild"), "ˈi ˈɛs bˌɪld");
         assert_eq!(pronounces("ESLint"), "ˈi ˈɛs lˌɪnt");
@@ -1080,6 +1087,7 @@ mod tests {
         assert_eq!(pronounces("PRs"), "pˈi ˈɑɹz");
         assert_eq!(pronounces("RPC"), "ˈɑɹ pˈi sˈi");
         assert_eq!(pronounces("RPCs"), "ˈɑɹ pˈi sˈiz");
+        assert_eq!(pronounces("Rodio"), "ɹˈOdiˌO");
         assert_eq!(pronounces("RTCP"), "ˈɑɹ tˈi sˈi pˈi");
         assert_eq!(pronounces("RTP"), "ˈɑɹ tˈi pˈi");
         assert_eq!(pronounces("runtimed"), "ɹˈʌntIm dˈi");
@@ -1088,9 +1096,11 @@ mod tests {
         assert_eq!(pronounces("scikit-learn"), "sˈɪkɪt lˌɜɹn");
         assert_eq!(pronounces("sklearn"), "ˈɛs kˈA lˌɜɹn");
         assert_eq!(pronounces("SciPy"), "sˈI pˌI");
+        assert_eq!(pronounces("SDP"), "ˈɛs dˈi pˈi");
         assert_eq!(pronounces("Serde"), "sˈɜɹdˌi");
         assert_eq!(pronounces("SQLite"), "ˌɛs kjˈu ˌɛl lˈIt");
         assert_eq!(pronounces("SCSS"), "ˈɛs sˈi ˈɛs ˈɛs");
+        assert_eq!(pronounces("SRTP"), "ˈɛs ˈɑɹ tˈi pˈi");
         assert_eq!(pronounces("SSR"), "ˈɛs ˈɛs ˈɑɹ");
         assert_eq!(pronounces("STFT"), "ˈɛs tˈi ˈɛf tˈi");
         assert_eq!(pronounces("STT"), "ˈɛs tˈi tˈi");

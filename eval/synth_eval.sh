@@ -2,14 +2,14 @@
 # Automated eval using TTS-generated audio (no human recording needed).
 # Usage: ./eval/synth_eval.sh [voice_binary]
 #
-# Generates WAV files from phrases.txt using TTS, then transcribes
-# each with the current STT model and compares against expected text.
+# Generates deterministic WAV files from phrases.txt using TTS, then
+# transcribes each with the current STT model and compares against expected text.
 
 set -euo pipefail
 
 VOICE="${1:-./target/release/voice}"
 PHRASES="eval/phrases.txt"
-TMPDIR="/tmp/voice_synth_eval"
+TMPDIR="/tmp/voice_synth_eval_deterministic"
 RESULTS_DIR="eval/results"
 
 mkdir -p "$TMPDIR"
@@ -34,7 +34,7 @@ while IFS= read -r phrase; do
     padded=$(printf "%03d" "$n")
     wav="$TMPDIR/${padded}.wav"
     if [ ! -f "$wav" ]; then
-        "$VOICE" say -q -o "$wav" "$phrase"
+        "$VOICE" say --deterministic -q -o "$wav" "$phrase"
     fi
     echo "$phrase" > "$TMPDIR/${padded}.txt"
 done < "$PHRASES"

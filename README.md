@@ -214,9 +214,9 @@ cargo build --release -p voice
 ```
 
 `compare.sh` scores recordings from `eval/recordings/`. `synth_eval.sh`
-generates temporary TTS audio from `eval/phrases.txt` first. Both write JSON
-results with WER, CER, exact-match counts, elapsed time, audio duration, and
-real-time factor under `eval/results/`.
+generates deterministic temporary TTS audio from `eval/phrases.txt` first. Both
+write JSON results with WER, CER, exact-match counts, elapsed time, audio
+duration, and real-time factor under `eval/results/`.
 
 ## JSON-RPC server
 

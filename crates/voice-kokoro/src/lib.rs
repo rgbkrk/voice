@@ -8,4 +8,5 @@ pub mod model;
 pub mod modules;
 
 pub use config::ModelConfig;
+pub use istftnet::SynthesisMode;
 pub use model::KModel;

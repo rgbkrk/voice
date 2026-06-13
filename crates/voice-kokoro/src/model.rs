@@ -7,7 +7,7 @@ use candle_nn::{self as nn, VarBuilder};
 
 use crate::albert::CustomAlbert;
 use crate::config::ModelConfig;
-use crate::istftnet::Decoder;
+use crate::istftnet::{Decoder, SynthesisMode};
 use crate::modules::{ProsodyPredictor, TextEncoder};
 
 /// The top-level Kokoro-82M model.
@@ -85,6 +85,21 @@ impl KModel {
         ref_s: &Tensor,
         speed: f32,
         device: &Device,
+    ) -> Result<Tensor> {
+        self.forward_with_mode(input_ids, ref_s, speed, device, SynthesisMode::Stochastic)
+    }
+
+    /// Run inference with explicit synthesis-mode control.
+    ///
+    /// Deterministic mode removes the decoder's random harmonic phase and noise
+    /// sources, making output reproducible on CPU and GPU backends.
+    pub fn forward_with_mode(
+        &self,
+        input_ids: &[i64],
+        ref_s: &Tensor,
+        speed: f32,
+        device: &Device,
+        mode: SynthesisMode,
     ) -> Result<Tensor> {
         // Pad with BOS=0 and EOS=0
         let mut padded = Vec::with_capacity(input_ids.len() + 2);
@@ -220,7 +235,9 @@ impl KModel {
 
         // Decoder
         let s_acoustic = ref_s.narrow(1, 0, 128)?; // [1, 128]
-        let audio = self.decoder.forward(&asr, &f0_pred, &n_pred, &s_acoustic)?;
+        let audio = self
+            .decoder
+            .forward_with_mode(&asr, &f0_pred, &n_pred, &s_acoustic, mode)?;
 
         // audio: [1, 1, samples] -> [samples]
         audio.squeeze(0)?.squeeze(0)

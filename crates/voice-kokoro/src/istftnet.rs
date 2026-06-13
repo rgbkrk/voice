@@ -2,12 +2,50 @@
 //!
 //! Ported from kokoro/istftnet.py
 
-use candle_core::{DType, Device, Module, Result, Tensor};
+use candle_core::{DType, Device, Module, Result, Shape, Tensor};
 use candle_nn::{self as nn, VarBuilder};
 
 use crate::modules::{
     load_weight_norm_conv1d, load_weight_norm_conv_transpose1d, AdaIN1d, AdainResBlk1d,
 };
+
+/// Controls the small stochastic sources used by the iSTFT decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SynthesisMode {
+    /// Match the original Kokoro decoder with random harmonic phase and noise.
+    #[default]
+    Stochastic,
+    /// Replace decoder random phase and noise with zeros for reproducible output.
+    Deterministic,
+}
+
+fn rand_or_zero<S: Into<Shape>>(
+    mode: SynthesisMode,
+    lo: f32,
+    up: f32,
+    shape: S,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    match mode {
+        SynthesisMode::Stochastic => Tensor::rand(lo, up, shape, device)?.to_dtype(dtype),
+        SynthesisMode::Deterministic => Tensor::zeros(shape, dtype, device),
+    }
+}
+
+fn randn_or_zero<S: Into<Shape>>(
+    mode: SynthesisMode,
+    mean: f32,
+    std: f32,
+    shape: S,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    match mode {
+        SynthesisMode::Stochastic => Tensor::randn(mean, std, shape, device)?.to_dtype(dtype),
+        SynthesisMode::Deterministic => Tensor::zeros(shape, dtype, device),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Snake activation: x + (1/alpha) * sin(alpha * x)^2
@@ -152,7 +190,12 @@ impl SineGen {
 
     /// f0: [B, T, 1]
     /// Returns: (sine_waves: [B, T, dim], uv: [B, T, 1])
-    fn forward(&self, f0: &Tensor, device: &Device) -> Result<(Tensor, Tensor)> {
+    fn forward_with_mode(
+        &self,
+        f0: &Tensor,
+        device: &Device,
+        mode: SynthesisMode,
+    ) -> Result<(Tensor, Tensor)> {
         let (b, t, _) = f0.dims3()?;
         let dim = self.harmonic_num + 1;
 
@@ -174,7 +217,7 @@ impl SineGen {
         // Fix 2: Add initial random phase for non-fundamental harmonics
         // Python: rand_ini = torch.rand(B, dim); rand_ini[:, 0] = 0
         //         rad_values[:, 0, :] += rand_ini
-        let rand_ini = Tensor::rand(0f32, 1f32, &[b, dim], device)?.to_dtype(f0.dtype())?;
+        let rand_ini = rand_or_zero(mode, 0f32, 1f32, &[b, dim], device, f0.dtype())?;
         // Zero out fundamental (column 0)
         let mask_data: Vec<f32> = (0..dim).map(|i| if i == 0 { 0.0 } else { 1.0 }).collect();
         let mask = Tensor::new(&mask_data[..], device)?
@@ -229,7 +272,7 @@ impl SineGen {
 
         // Noise for unvoiced regions
         let noise_amp = ((&uv * self.noise_std)? + ((1.0 - &uv)? * (self.sine_amp / 3.0))?)?;
-        let noise = Tensor::randn(0f32, 1f32, sines.shape(), device)?.to_dtype(sines.dtype())?;
+        let noise = randn_or_zero(mode, 0f32, 1f32, sines.shape(), device, sines.dtype())?;
         let noise = noise.broadcast_mul(&noise_amp)?;
 
         // Final: sine * uv + noise
@@ -276,15 +319,25 @@ impl SourceModuleHnNSF {
     /// x: [B, T, 1] (F0 values)
     /// Returns: (sine_merge: [B, T, 1], noise: [B, T, 1], uv: [B, T, 1])
     pub fn forward(&self, x: &Tensor) -> Result<(Tensor, Tensor, Tensor)> {
+        self.forward_with_mode(x, SynthesisMode::Stochastic)
+    }
+
+    /// x: [B, T, 1] (F0 values)
+    /// Returns: (sine_merge: [B, T, 1], noise: [B, T, 1], uv: [B, T, 1])
+    pub fn forward_with_mode(
+        &self,
+        x: &Tensor,
+        mode: SynthesisMode,
+    ) -> Result<(Tensor, Tensor, Tensor)> {
         let device = x.device();
-        let (sine_wavs, uv) = self.sine_gen.forward(x, device)?;
+        let (sine_wavs, uv) = self.sine_gen.forward_with_mode(x, device, mode)?;
 
         // Linear merge of harmonics -> single channel
         let sine_merge = self.l_linear.forward(&sine_wavs)?;
         let sine_merge = sine_merge.tanh()?;
 
         // Noise source
-        let noise = Tensor::randn(0f32, 1f32, uv.shape(), device)?.to_dtype(x.dtype())?;
+        let noise = randn_or_zero(mode, 0f32, 1f32, uv.shape(), device, x.dtype())?;
         let noise = (noise * (self.sine_amp / 3.0))?;
 
         Ok((sine_merge, noise, uv))
@@ -640,12 +693,23 @@ impl Generator {
 
     /// x: [B, C, T], s: [B, style_dim], f0: [B, T_f0]
     pub fn forward(&self, x: &Tensor, s: &Tensor, f0: &Tensor) -> Result<Tensor> {
+        self.forward_with_mode(x, s, f0, SynthesisMode::Stochastic)
+    }
+
+    /// x: [B, C, T], s: [B, style_dim], f0: [B, T_f0]
+    pub fn forward_with_mode(
+        &self,
+        x: &Tensor,
+        s: &Tensor,
+        f0: &Tensor,
+        mode: SynthesisMode,
+    ) -> Result<Tensor> {
         // Upsample F0 to full resolution
         let f0_up = upsample_nearest_1d_single(f0, self.upsample_scale)?; // [B, T_full]
         let f0_3d = f0_up.unsqueeze(2)?; // [B, T_full, 1]
 
         // Generate harmonic source
-        let (har_source, _noise_source, _uv) = self.m_source.forward(&f0_3d)?;
+        let (har_source, _noise_source, _uv) = self.m_source.forward_with_mode(&f0_3d, mode)?;
 
         // har_source: [B, T_full, 1] -> [B, 1, T_full] -> [B, T_full]
         let har_source = har_source.transpose(1, 2)?.contiguous()?;
@@ -823,6 +887,18 @@ impl Decoder {
         n: &Tensor,
         s: &Tensor,
     ) -> Result<Tensor> {
+        self.forward_with_mode(asr, f0_curve, n, s, SynthesisMode::Stochastic)
+    }
+
+    /// asr: [B, C, T], f0_curve: [B, T], n: [B, T], s: [B, style_dim]
+    pub fn forward_with_mode(
+        &self,
+        asr: &Tensor,
+        f0_curve: &Tensor,
+        n: &Tensor,
+        s: &Tensor,
+        mode: SynthesisMode,
+    ) -> Result<Tensor> {
         // F0 and N convolutions: [B, T] -> [B, 1, T] -> conv -> [B, 1, T/2]
         let f0 = self.f0_conv.forward(&f0_curve.unsqueeze(1)?)?;
         let n_out = self.n_conv.forward(&n.unsqueeze(1)?)?;
@@ -845,7 +921,7 @@ impl Decoder {
             }
         }
 
-        self.generator.forward(&x, s, f0_curve)
+        self.generator.forward_with_mode(&x, s, f0_curve, mode)
     }
 }
 
@@ -1015,4 +1091,66 @@ fn gpu_linear_upsample(
     let one_minus_frac = (1.0f64 - &frac_t)?;
     let result = (x_lo.broadcast_mul(&one_minus_frac)? + x_hi.broadcast_mul(&frac_t)?)?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rand_or_zero, randn_or_zero, SynthesisMode};
+    use candle_core::{DType, Device, Result};
+
+    #[test]
+    fn deterministic_uniform_source_returns_zeros() -> Result<()> {
+        let tensor = rand_or_zero(
+            SynthesisMode::Deterministic,
+            0.0,
+            1.0,
+            (2, 3),
+            &Device::Cpu,
+            DType::F32,
+        )?;
+
+        assert_eq!(tensor.dims(), &[2, 3]);
+        assert_eq!(tensor.to_vec2::<f32>()?, vec![vec![0.0; 3], vec![0.0; 3]]);
+        Ok(())
+    }
+
+    #[test]
+    fn deterministic_normal_source_returns_zeros() -> Result<()> {
+        let tensor = randn_or_zero(
+            SynthesisMode::Deterministic,
+            0.0,
+            1.0,
+            (2, 3),
+            &Device::Cpu,
+            DType::F32,
+        )?;
+
+        assert_eq!(tensor.dims(), &[2, 3]);
+        assert_eq!(tensor.to_vec2::<f32>()?, vec![vec![0.0; 3], vec![0.0; 3]]);
+        Ok(())
+    }
+
+    #[test]
+    fn stochastic_sources_keep_requested_shape() -> Result<()> {
+        let uniform = rand_or_zero(
+            SynthesisMode::Stochastic,
+            0.0,
+            1.0,
+            (2, 3),
+            &Device::Cpu,
+            DType::F32,
+        )?;
+        let normal = randn_or_zero(
+            SynthesisMode::Stochastic,
+            0.0,
+            1.0,
+            (2, 3),
+            &Device::Cpu,
+            DType::F32,
+        )?;
+
+        assert_eq!(uniform.dims(), &[2, 3]);
+        assert_eq!(normal.dims(), &[2, 3]);
+        Ok(())
+    }
 }

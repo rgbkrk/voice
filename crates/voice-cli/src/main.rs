@@ -145,6 +145,10 @@ struct SayArgs {
     #[arg(short, long, default_value = "1.0")]
     speed: f32,
 
+    /// Use deterministic synthesis for reproducible evaluation output
+    #[arg(long)]
+    deterministic: bool,
+
     /// Strip markdown/MDX formatting before speaking
     #[arg(long)]
     markdown: bool,
@@ -756,6 +760,7 @@ fn main() {
                     voice: "af_heart".to_string(),
                     output: None,
                     speed: 1.0,
+                    deterministic: false,
                     markdown: false,
                     subs: Vec::new(),
                     sub_file: None,
@@ -1047,7 +1052,9 @@ fn run_say(say_args: SayArgs) {
     // If the daemon is running, delegate normal playback and file synthesis to it.
     // `--phonemes` stays local because the daemon RPC accepts text and runs its
     // own G2P pipeline.
-    if say_args.phonemes.is_none() {
+    // `--deterministic` stays local because the daemon protocol does not expose
+    // synthesis-mode selection yet.
+    if say_args.phonemes.is_none() && !say_args.deterministic {
         if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
             let text = match resolve_text(&say_args) {
                 Ok(t) => t,
@@ -1154,6 +1161,11 @@ fn run_say(say_args: SayArgs) {
 
     let mut model = load_tts_model(model_handle);
     let sample_rate = model.sample_rate;
+    let synthesis_mode = if say_args.deterministic {
+        voice_tts::SynthesisMode::Deterministic
+    } else {
+        voice_tts::SynthesisMode::Stochastic
+    };
 
     // Load voice (fast for builtins — embedded in binary, ~5ms).
     // Must happen after model is loaded so we can share its Metal device.
@@ -1174,6 +1186,7 @@ fn run_say(say_args: SayArgs) {
             &phoneme_chunks,
             say_args.speed,
             sample_rate,
+            synthesis_mode,
             output_path,
         );
     } else {
@@ -1183,6 +1196,7 @@ fn run_say(say_args: SayArgs) {
             &phoneme_chunks,
             say_args.speed,
             sample_rate,
+            synthesis_mode,
         );
     }
 }
@@ -1395,7 +1409,14 @@ fn run_converse(args: ConverseArgs) {
     // Start loading STT model in background while TTS plays
     let stt_handle = std::thread::spawn(listen::load_stt);
 
-    stream_playback(&mut model, &voice, &phoneme_chunks, args.speed, sample_rate);
+    stream_playback(
+        &mut model,
+        &voice,
+        &phoneme_chunks,
+        args.speed,
+        sample_rate,
+        voice_tts::SynthesisMode::Stochastic,
+    );
 
     if interrupted() {
         std::process::exit(130);
@@ -1445,6 +1466,7 @@ fn generate_to_file(
     chunks: &[String],
     speed: f32,
     sample_rate: u32,
+    synthesis_mode: voice_tts::SynthesisMode,
     output_path: &PathBuf,
 ) {
     info!("Generating audio...");
@@ -1460,7 +1482,7 @@ fn generate_to_file(
         if chunks.len() > 1 {
             info!("  generating chunk {}/{}...", i + 1, chunks.len());
         }
-        match voice_tts::generate(model, phonemes, voice, speed) {
+        match voice_tts::generate_with_mode(model, phonemes, voice, speed, synthesis_mode) {
             Ok(audio) => {
                 all_samples.extend_from_slice(&audio);
             }
@@ -1500,6 +1522,7 @@ fn stream_playback(
     chunks: &[String],
     speed: f32,
     sample_rate: u32,
+    synthesis_mode: voice_tts::SynthesisMode,
 ) {
     use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
     use std::num::NonZero;
@@ -1521,7 +1544,7 @@ fn stream_playback(
         if chunks.len() > 1 {
             info!("  generating chunk {}/{}...", i + 1, chunks.len());
         }
-        match voice_tts::generate(model, phonemes, voice, speed) {
+        match voice_tts::generate_with_mode(model, phonemes, voice, speed, synthesis_mode) {
             Ok(audio) => {
                 let source = SamplesBuffer::new(channels, rate, audio);
                 player.append(source);

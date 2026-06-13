@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use voice_stream::{
-    resample_linear, AudioEncoding, Packetizer, StreamEnded, StreamMetadata, TtsStreamEvent,
+    resample_linear, AudioEncoding, InterleavedMonoMixer, Packetizer, StreamEnded, StreamMetadata,
+    TtsStreamEvent,
 };
 use voice_tts::KokoroModel;
 
@@ -754,7 +755,7 @@ fn listen(
     let peak_clone = recent_peak.clone();
     let stop_clone = stop.clone();
     let mic_thread = std::thread::spawn(move || {
-        let ch = channels.max(1) as usize;
+        let mut mixer = InterleavedMonoMixer::new(channels as usize);
         let mut chunk_peak: f32 = 0.0;
         let mut sample_count = 0usize;
 
@@ -767,9 +768,8 @@ fn listen(
             chunk_peak = chunk_peak.max(abs);
             sample_count += 1;
 
-            // Multi-channel: take every ch-th sample (mono mix)
-            if ch == 1 || sample_count % ch == 0 {
-                buf_clone.lock().unwrap().push(sample);
+            if let Some(mono) = mixer.push(sample) {
+                buf_clone.lock().unwrap().push(mono);
             }
 
             // Publish peak every ~100 samples, then reset

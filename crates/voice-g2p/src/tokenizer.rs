@@ -2,8 +2,8 @@
 //!
 //! Splits text into [`MToken`]s using whitespace-based word boundaries, then
 //! assigns POS tags via an embedded averaged perceptron tagger (no external
-//! processes required). espeak-ng subprocess is still used downstream as an
-//! OOV pronunciation fallback, but tokenization itself is fully self-contained.
+//! processes required). OOV fallback is also embedded, so tokenization and
+//! pronunciation are fully self-contained at runtime.
 
 use std::sync::OnceLock;
 

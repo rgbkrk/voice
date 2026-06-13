@@ -1,9 +1,8 @@
-//! Per-word espeak-ng fallback phonemizer, ported from misaki's `espeak.py`.
+//! OOV fallback phonemizer plus espeak-ng conversion helpers.
 //!
-//! This differs from the sentence-level `english_to_phonemes` in `lib.rs`:
-//! 1. Phonemizes one word at a time (not full sentences)
-//! 2. Uses `--tie=^` so multi-character IPA sequences are explicitly tied
-//! 3. Applies misaki's exact E2M (espeak-to-misaki) mapping table
+//! Runtime G2P uses the embedded fallback in this module so `voice` does not
+//! require an `espeak-ng` binary on fresh machines. The espeak conversion
+//! helpers are still used by the offline bronze-dictionary generator.
 
 use std::process::Command;
 
@@ -37,9 +36,8 @@ pub(crate) const E2M: &[(&str, &str)] = &[
     ("\u{02B2}", ""),                 // bare ʲ → remove
 ];
 
-/// Per-word espeak-ng fallback, ported from misaki's `EspeakFallback`.
+/// Per-word fallback for OOV pronunciations.
 pub struct EspeakFallback {
-    british: bool,
     espeak_path: String,
 }
 
@@ -47,20 +45,19 @@ impl EspeakFallback {
     /// Create a new fallback with US English and default PATH lookup.
     pub fn new() -> Self {
         Self {
-            british: false,
             espeak_path: "espeak-ng".to_string(),
         }
     }
 
     /// Create a new fallback with a custom espeak-ng binary path.
     pub fn with_path(espeak_path: String) -> Self {
-        Self {
-            british: false,
-            espeak_path,
-        }
+        Self { espeak_path }
     }
 
     /// Check if espeak-ng is available on the system.
+    ///
+    /// Runtime fallback no longer depends on this; it is retained for tests and
+    /// offline dictionary-generation tooling.
     pub fn is_available(&self) -> bool {
         Command::new(&self.espeak_path)
             .arg("--version")
@@ -69,51 +66,287 @@ impl EspeakFallback {
             .unwrap_or(false)
     }
 
-    /// Convert a single word to Kokoro-compatible phonemes via espeak-ng.
+    /// Convert a single OOV word to Kokoro-compatible phonemes.
     ///
-    /// Returns `Some((phonemes, 2))` on success, or `None` if espeak-ng
-    /// is unavailable or produces no output. Rating 2 indicates espeak fallback.
+    /// Returns `Some((phonemes, 2))` on success. Rating 2 matches the former
+    /// legacy espeak fallback priority.
     pub fn convert_word(&self, word: &str) -> Option<(String, u8)> {
-        let lang = if self.british { "en-gb" } else { "en-us" };
-
-        let output = Command::new(&self.espeak_path)
-            .args(["--ipa", "-q", "-v", lang, "--tie=^", word])
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
-            return None;
-        }
-
-        let raw = String::from_utf8_lossy(&output.stdout);
-        let ps = raw.trim();
-        if ps.is_empty() {
-            return None;
-        }
-
-        if self.british {
-            // British path kept inline (not extracted since bronze is US-only)
-            let mut ps = ps.to_string();
-            for &(old, new) in E2M {
-                ps = ps.replace(old, new);
-            }
-            ps = replace_syllabic_mark(&ps);
-            ps = ps.replace("e^ə", "\u{025B}\u{02D0}"); // e^ə → ɛː
-            ps = ps.replace("i\u{0259}", "\u{026A}\u{0259}"); // iə → ɪə
-            ps = ps.replace("\u{0259}^\u{028A}", "Q"); // ə^ʊ → Q
-            ps = ps.replace('^', "");
-            ps = ps.replace('\u{027E}', "T");
-            ps = ps.replace('\u{0294}', "t");
-            Some((ps, 2))
-        } else {
-            Some((apply_e2m_us(ps), 2))
-        }
+        embedded_oov_word(word).map(|phonemes| (phonemes, 2))
     }
 }
 
 impl Default for EspeakFallback {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn embedded_oov_word(word: &str) -> Option<String> {
+    let trimmed = word.trim_matches(|c: char| !c.is_alphanumeric());
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut current_kind: Option<CharKind> = None;
+
+    for ch in trimmed.chars() {
+        let Some(kind) = CharKind::of(ch) else {
+            flush_oov_part(&mut parts, &mut current, current_kind.take());
+            continue;
+        };
+
+        if current_kind.is_some_and(|k| k != kind) {
+            flush_oov_part(&mut parts, &mut current, current_kind.take());
+        }
+        current_kind = Some(kind);
+        current.push(ch);
+    }
+    flush_oov_part(&mut parts, &mut current, current_kind);
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CharKind {
+    Letter,
+    Digit,
+}
+
+impl CharKind {
+    fn of(ch: char) -> Option<Self> {
+        if ch.is_ascii_alphabetic() {
+            Some(Self::Letter)
+        } else if ch.is_ascii_digit() {
+            Some(Self::Digit)
+        } else {
+            None
+        }
+    }
+}
+
+fn flush_oov_part(parts: &mut Vec<String>, current: &mut String, kind: Option<CharKind>) {
+    if current.is_empty() {
+        return;
+    }
+    match kind {
+        Some(CharKind::Letter) => parts.push(letters_to_phonemes(current)),
+        Some(CharKind::Digit) => {
+            parts.extend(
+                current
+                    .chars()
+                    .filter_map(digit_name_phonemes)
+                    .map(str::to_string),
+            );
+        }
+        None => {}
+    }
+    current.clear();
+}
+
+fn letters_to_phonemes(word: &str) -> String {
+    if should_spell_letters(word) {
+        return spell_letters(word);
+    }
+
+    rough_word_phonemes(&word.to_lowercase())
+}
+
+fn should_spell_letters(word: &str) -> bool {
+    let letters = word.chars().filter(|c| c.is_ascii_alphabetic()).count();
+    letters <= 3 || (letters <= 8 && word.chars().all(|c| c.is_ascii_uppercase()))
+}
+
+fn spell_letters(word: &str) -> String {
+    word.chars()
+        .filter_map(letter_name_phonemes)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn rough_word_phonemes(word: &str) -> String {
+    let chars: Vec<char> = word.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut stressed = false;
+
+    while i < chars.len() {
+        let remaining = &word[i..];
+        if let Some((grapheme, phoneme)) = DIGRAPHS
+            .iter()
+            .find(|(grapheme, _)| remaining.starts_with(*grapheme))
+        {
+            push_phoneme(&mut out, phoneme, is_vowel_phoneme(phoneme), &mut stressed);
+            i += grapheme.len();
+            continue;
+        }
+
+        let ch = chars[i];
+        if ch == 'e' && i == chars.len() - 1 && stressed {
+            i += 1;
+            continue;
+        }
+
+        if let Some(phoneme) = single_letter_phoneme(ch, chars.get(i + 1).copied()) {
+            push_phoneme(&mut out, phoneme, is_vowel_phoneme(phoneme), &mut stressed);
+        }
+        i += ch.len_utf8();
+    }
+
+    if out.is_empty() {
+        spell_letters(word)
+    } else {
+        out
+    }
+}
+
+fn push_phoneme(out: &mut String, phoneme: &str, is_vowel: bool, stressed: &mut bool) {
+    if is_vowel && !*stressed {
+        out.push('\u{02C8}');
+        *stressed = true;
+    }
+    out.push_str(phoneme);
+}
+
+fn is_vowel_phoneme(phoneme: &str) -> bool {
+    phoneme.chars().any(|c| {
+        matches!(
+            c,
+            'A' | 'I'
+                | 'O'
+                | 'W'
+                | 'Y'
+                | 'Q'
+                | 'i'
+                | 'u'
+                | '\u{00E6}'
+                | '\u{0251}'
+                | '\u{0254}'
+                | '\u{0259}'
+                | '\u{025B}'
+                | '\u{026A}'
+                | '\u{028A}'
+                | '\u{028C}'
+                | '\u{025C}'
+        )
+    })
+}
+
+const DIGRAPHS: &[(&str, &str)] = &[
+    ("tion", "\u{0283}\u{1D4A}n"),
+    ("ough", "O"),
+    ("augh", "\u{0254}"),
+    ("eigh", "A"),
+    ("igh", "I"),
+    ("air", "\u{025B}\u{0279}"),
+    ("ear", "i\u{0259}\u{0279}"),
+    ("er", "\u{025C}\u{0279}"),
+    ("ir", "\u{025C}\u{0279}"),
+    ("ur", "\u{025C}\u{0279}"),
+    ("ar", "\u{0251}\u{0279}"),
+    ("or", "\u{0254}\u{0279}"),
+    ("ch", "\u{02A7}"),
+    ("sh", "\u{0283}"),
+    ("th", "\u{03B8}"),
+    ("ph", "f"),
+    ("wh", "w"),
+    ("ck", "k"),
+    ("ng", "\u{014B}"),
+    ("qu", "kw"),
+    ("ee", "i"),
+    ("ea", "i"),
+    ("oo", "u"),
+    ("ai", "A"),
+    ("ay", "A"),
+    ("oa", "O"),
+    ("ow", "O"),
+    ("ou", "W"),
+];
+
+fn single_letter_phoneme(ch: char, next: Option<char>) -> Option<&'static str> {
+    match ch {
+        'a' => Some("\u{00E6}"),
+        'b' => Some("b"),
+        'c' if next.is_some_and(|n| matches!(n, 'e' | 'i' | 'y')) => Some("s"),
+        'c' => Some("k"),
+        'd' => Some("d"),
+        'e' => Some("\u{025B}"),
+        'f' => Some("f"),
+        'g' if next.is_some_and(|n| matches!(n, 'e' | 'i' | 'y')) => Some("\u{02A4}"),
+        'g' => Some("\u{0261}"),
+        'h' => Some("h"),
+        'i' => Some("\u{026A}"),
+        'j' => Some("\u{02A4}"),
+        'k' => Some("k"),
+        'l' => Some("l"),
+        'm' => Some("m"),
+        'n' => Some("n"),
+        'o' => Some("\u{0251}"),
+        'p' => Some("p"),
+        'q' => Some("k"),
+        'r' => Some("\u{0279}"),
+        's' => Some("s"),
+        't' => Some("t"),
+        'u' => Some("\u{028C}"),
+        'v' => Some("v"),
+        'w' => Some("w"),
+        'x' => Some("ks"),
+        'y' => Some("i"),
+        'z' => Some("z"),
+        _ => None,
+    }
+}
+
+fn letter_name_phonemes(ch: char) -> Option<&'static str> {
+    match ch.to_ascii_lowercase() {
+        'a' => Some("\u{02C8}A"),
+        'b' => Some("b\u{02C8}i"),
+        'c' => Some("s\u{02C8}i"),
+        'd' => Some("d\u{02C8}i"),
+        'e' => Some("\u{02C8}i"),
+        'f' => Some("\u{02C8}\u{025B}f"),
+        'g' => Some("\u{02A4}\u{02C8}i"),
+        'h' => Some("\u{02C8}A\u{02A7}"),
+        'i' => Some("\u{02C8}I"),
+        'j' => Some("\u{02A4}\u{02C8}A"),
+        'k' => Some("k\u{02C8}A"),
+        'l' => Some("\u{02C8}\u{025B}l"),
+        'm' => Some("\u{02C8}\u{025B}m"),
+        'n' => Some("\u{02C8}\u{025B}n"),
+        'o' => Some("\u{02C8}O"),
+        'p' => Some("p\u{02C8}i"),
+        'q' => Some("kj\u{02C8}u"),
+        'r' => Some("\u{02C8}\u{0251}\u{0279}"),
+        's' => Some("\u{02C8}\u{025B}s"),
+        't' => Some("t\u{02C8}i"),
+        'u' => Some("j\u{02C8}u"),
+        'v' => Some("v\u{02C8}i"),
+        'w' => Some("d\u{02C8}\u{028C}b\u{1D4A}l j\u{02CC}u"),
+        'x' => Some("\u{02C8}\u{025B}ks"),
+        'y' => Some("w\u{02C8}I"),
+        'z' => Some("z\u{02C8}i"),
+        _ => None,
+    }
+}
+
+fn digit_name_phonemes(ch: char) -> Option<&'static str> {
+    match ch {
+        '0' => Some("z\u{02C8}i\u{0279}O"),
+        '1' => Some("w\u{02C8}\u{028C}n"),
+        '2' => Some("t\u{02C8}u"),
+        '3' => Some("\u{03B8}\u{0279}\u{02C8}i"),
+        '4' => Some("f\u{02C8}\u{0254}\u{0279}"),
+        '5' => Some("f\u{02C8}Iv"),
+        '6' => Some("s\u{02C8}\u{026A}ks"),
+        '7' => Some("s\u{02C8}\u{025B}v\u{1D4A}n"),
+        '8' => Some("\u{02C8}A\u{02A7}"),
+        '9' => Some("n\u{02C8}In"),
+        _ => None,
     }
 }
 
@@ -177,8 +410,8 @@ pub fn apply_e2m_us(raw_ipa: &str) -> String {
 
 /// Sentence-level espeak-ng phonemization (no tie marker).
 ///
-/// This wraps the same espeak-ng subprocess call used by `english_to_phonemes`
-/// in `lib.rs`, but returns `Option<String>` for convenience in fallback chains.
+/// Runtime G2P does not use this. It remains available for offline tooling and
+/// compatibility with callers that still want to post-process espeak output.
 pub fn espeak_sentence(text: &str, espeak_path: &str) -> Option<String> {
     let output = Command::new(espeak_path)
         .args(["--ipa", "-q", "-v", "en-us", text])
@@ -270,26 +503,27 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_word_available() {
-        let fb = EspeakFallback::new();
-        if !fb.is_available() {
-            eprintln!("Skipping test: espeak-ng not installed");
-            return;
-        }
-        let result = fb.convert_word("hello");
-        assert!(
-            result.is_some(),
-            "espeak-ng should produce output for 'hello'"
-        );
+    fn test_convert_word_embedded_without_espeak() {
+        let fb = EspeakFallback::with_path("/definitely/missing/espeak-ng".into());
+        let result = fb.convert_word("neologismxyz");
+        assert!(result.is_some(), "embedded fallback should cover OOV words");
         let (ps, rating) = result.unwrap();
         assert_eq!(rating, 2);
         assert!(!ps.is_empty());
-        // Should contain the O diphthong
         assert!(
-            ps.contains('O'),
-            "Expected O diphthong in phonemes for 'hello': {}",
+            ps.contains('\u{02C8}'),
+            "Expected embedded fallback to assign primary stress: {}",
             ps
         );
+    }
+
+    #[test]
+    fn test_convert_word_embedded_handles_digits() {
+        let fb = EspeakFallback::with_path("/definitely/missing/espeak-ng".into());
+        let (ps, rating) = fb.convert_word("TTS2").unwrap();
+        assert_eq!(rating, 2);
+        assert!(ps.contains("t\u{02C8}i"), "Expected T spelling in: {ps}");
+        assert!(ps.contains("t\u{02C8}u"), "Expected 2 spelling in: {ps}");
     }
 
     #[test]

@@ -24,33 +24,18 @@ for chunk in &chunks {
 }
 ```
 
-### Custom configuration
-
-If `uv` or `espeak-ng` aren't on your `$PATH`:
-
-```rust
-let config = voice_g2p::G2PConfig {
-    uv_path: "/opt/homebrew/bin/uv".into(),
-    espeak_path: "/opt/homebrew/bin/espeak-ng".into(),
-};
-let g2p = voice_g2p::G2P::with_config(config);
-let phonemes = g2p.convert("Hello world")?;
-```
-
 ## What's inside
 
 - **Dictionary lookup** — 90k gold + 93k silver pronunciation entries embedded at compile time
 - **Morphological decomposition** — `-s`, `-ed`, `-ing` suffix rules with voicing logic
 - **Number handling** — cardinals, ordinals, years, currency, phone numbers
-- **POS tagging** — optional spaCy subprocess (via `uv run`) for context-dependent pronunciation
-- **Fallback** — espeak-ng per-word for unknown words
+- **POS tagging** — embedded averaged perceptron model for context-dependent pronunciation
+- **Fallback** — embedded OOV phonemizer for unknown words, acronyms, and mixed alphanumeric tokens
 
-## Optional dependencies
+## Offline tooling
 
-- **espeak-ng** — fallback pronunciation for words not in the dictionary (`brew install espeak-ng`)
-- **uv** — runs spaCy for POS-based disambiguation (e.g. "read" as past vs. present tense)
-
-Both are optional. Without them, the pipeline still works using dictionary lookup alone.
+The runtime G2P pipeline is self-contained. The `generate-bronze` helper binary
+still uses `espeak-ng` to regenerate the embedded bronze dictionary data.
 
 ## License
 

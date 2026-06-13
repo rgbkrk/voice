@@ -17,9 +17,9 @@ use tokenizer::TokenOrGroup;
 
 #[derive(Debug, thiserror::Error)]
 pub enum G2pError {
-    #[error("espeak-ng not found. Install with: brew install espeak-ng")]
+    #[error("legacy espeak-ng helper not found")]
     EspeakNotFound,
-    #[error("espeak-ng failed: {0}")]
+    #[error("legacy espeak-ng helper failed: {0}")]
     EspeakFailed(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -28,8 +28,11 @@ pub enum G2pError {
 /// Configuration for external tool paths used by the G2P pipeline.
 #[derive(Debug, Clone)]
 pub struct G2PConfig {
-    /// Path to the `espeak-ng` binary for fallback pronunciation.
-    /// Defaults to `"espeak-ng"` (PATH lookup).
+    /// Legacy path to the `espeak-ng` binary.
+    ///
+    /// Runtime OOV fallback is embedded and does not require this binary; the
+    /// field is retained so existing callers can keep constructing
+    /// `G2PConfig` without source changes.
     pub espeak_path: String,
 }
 
@@ -97,7 +100,7 @@ impl G2P {
     /// Set custom word-to-phoneme overrides (builder pattern).
     ///
     /// Overrides map lowercase words to phoneme strings, checked before
-    /// the lexicon and espeak fallback.
+    /// the lexicon and embedded fallback.
     pub fn with_overrides(mut self, overrides: HashMap<String, String>) -> Self {
         self.overrides.extend(overrides);
         self
@@ -164,7 +167,7 @@ impl G2P {
             return;
         }
 
-        // Check custom overrides before lexicon/espeak fallback
+        // Check custom overrides before lexicon/embedded fallback.
         let lookup_key = w.text.to_lowercase();
         if let Some(ps) = self.overrides.get(&lookup_key) {
             w.phonemes = Some(ps.clone());
@@ -418,7 +421,7 @@ impl Default for G2P {
 
 /// Convert English text to a Kokoro-compatible phoneme string.
 ///
-/// Uses misaki-style dictionary lookup with espeak-ng fallback for unknown words.
+/// Uses misaki-style dictionary lookup with embedded fallback for unknown words.
 pub fn english_to_phonemes(text: &str) -> Result<String, G2pError> {
     global_g2p().convert(text)
 }
@@ -426,7 +429,7 @@ pub fn english_to_phonemes(text: &str) -> Result<String, G2pError> {
 /// Convert English text to phonemes with custom word overrides.
 ///
 /// Overrides map lowercase words to phoneme strings, checked before
-/// the lexicon and espeak fallback.
+/// the lexicon and embedded fallback.
 pub fn english_to_phonemes_with_overrides(
     text: &str,
     overrides: &HashMap<String, String>,
@@ -512,7 +515,7 @@ pub fn text_to_phoneme_chunks(text: &str) -> Result<Vec<String>, G2pError> {
 /// 510-character context limit, with custom word-to-phoneme overrides.
 ///
 /// Overrides map lowercase words to phoneme strings, checked before
-/// the lexicon and espeak fallback.
+/// the lexicon and embedded fallback.
 pub fn text_to_phoneme_chunks_with_overrides(
     text: &str,
     overrides: &HashMap<String, String>,
@@ -721,6 +724,22 @@ mod tests {
         assert!(result.is_ok());
         let phonemes = result.unwrap();
         assert!(!phonemes.is_empty());
+    }
+
+    #[test]
+    fn test_oov_fallback_does_not_require_espeak() {
+        let g2p = G2P::with_config(G2PConfig {
+            espeak_path: "/definitely/missing/espeak-ng".into(),
+        });
+        let result = g2p.convert("neologismxyz").unwrap();
+        assert!(
+            !result.trim().is_empty(),
+            "OOV fallback should produce phonemes without espeak-ng"
+        );
+        assert!(
+            result.contains('\u{02C8}'),
+            "OOV fallback should assign primary stress: {result}"
+        );
     }
 
     // -- Punctuation preservation tests --------------------------------------

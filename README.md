@@ -304,7 +304,7 @@ All other voices are fetched from HuggingFace Hub on first use:
 | [`voice-stt`](https://crates.io/crates/voice-stt) | Speech-to-text library — Whisper transcription, resampling |
 | [`voice-kokoro`](https://crates.io/crates/voice-kokoro) | Kokoro TTS backend — ALBERT encoder, prosody predictor, iSTFT decoder |
 | [`voice-whisper`](https://crates.io/crates/voice-whisper) | Whisper STT backend — greedy decoding, GPU mel spectrogram |
-| [`voice-g2p`](https://crates.io/crates/voice-g2p) | Grapheme-to-phoneme — misaki dictionary + espeak-ng fallback |
+| [`voice-g2p`](https://crates.io/crates/voice-g2p) | Grapheme-to-phoneme — misaki dictionary + embedded OOV fallback |
 
 ## Library usage
 
@@ -369,7 +369,7 @@ fn main() -> voice_stt::Result<()> {
 
 ### TTS: Kokoro (82M)
 
-- **G2P pipeline**: Ports [misaki](https://github.com/hexgrad/misaki)'s English G2P — POS tagging (embedded averaged perceptron), 90k gold + 93k silver dictionary entries, morphological decomposition, number/currency handling, espeak-ng fallback
+- **G2P pipeline**: Ports [misaki](https://github.com/hexgrad/misaki)'s English G2P — POS tagging (embedded averaged perceptron), 90k gold + 93k silver dictionary entries, morphological decomposition, number/currency handling, embedded OOV fallback
 - **Inference**: StyleTTS2-based model with ISTFT vocoder head. Audio chunks stream to speakers as they're generated — the first chunk plays while subsequent chunks are still synthesizing
 - **Startup**: Model loads in a background thread while text resolution, G2P, and voice loading happen on the main thread
 
@@ -386,7 +386,6 @@ fn main() -> voice_stt::Result<()> {
 - Rust 1.85+
 - Git LFS (`brew install git-lfs && git lfs install`)
 - Xcode command line tools
-- espeak-ng (optional, for G2P fallback on unknown words): `brew install espeak-ng`
 
 ## License
 

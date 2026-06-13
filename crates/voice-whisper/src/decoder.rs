@@ -27,14 +27,12 @@ pub struct DecodingResult {
 /// Whisper decoder wrapping the model, tokenizer, and mel filters.
 ///
 /// Handles greedy autoregressive decoding with KV-caching.
-/// Includes a GPU mel spectrogram processor for Metal-accelerated
-/// audio preprocessing.
 pub struct WhisperDecoder {
     model: m::model::Whisper,
     config: Config,
     device: Device,
     mel_filters: Vec<f32>,
-    gpu_mel: crate::mel::GpuMelSpec,
+    mel_backend: MelBackend,
     tokenizer: Tokenizer,
     suppress_tokens: Tensor,
     sot_token: u32,
@@ -43,6 +41,11 @@ pub struct WhisperDecoder {
     no_speech_token: u32,
     no_timestamps_token: u32,
     language_token: Option<u32>,
+}
+
+enum MelBackend {
+    Cpu,
+    Gpu(crate::mel::GpuMelSpec),
 }
 
 impl WhisperDecoder {
@@ -81,15 +84,17 @@ impl WhisperDecoder {
             .collect();
         let suppress_tokens = Tensor::new(suppress_tokens.as_slice(), &device)?;
 
-        // Build GPU mel spectrogram processor
-        let gpu_mel = crate::mel::GpuMelSpec::new(&config, &mel_filters, &device)?;
+        let mel_backend = match &device {
+            Device::Cpu => MelBackend::Cpu,
+            _ => MelBackend::Gpu(crate::mel::GpuMelSpec::new(&config, &mel_filters, &device)?),
+        };
 
         Ok(Self {
             model,
             config,
             device,
             mel_filters,
-            gpu_mel,
+            mel_backend,
             tokenizer,
             suppress_tokens,
             sot_token,
@@ -119,11 +124,15 @@ impl WhisperDecoder {
     /// Transcribe PCM audio samples (mono, 16kHz f32).
     ///
     /// Supports audio of any length via chunking. The mel spectrogram is
-    /// computed on GPU, then processed in 30-second windows. Each chunk
+    /// computed on the configured device, then processed in 30-second windows. Each chunk
     /// is decoded independently and results are concatenated.
     pub fn transcribe(&mut self, samples: &[f32]) -> candle_core::Result<DecodingResult> {
-        // Compute full mel spectrogram on GPU
-        let mel = self.gpu_mel.compute(samples)?;
+        let mel = match &self.mel_backend {
+            MelBackend::Cpu => {
+                crate::mel::pcm_to_mel(&self.config, samples, &self.mel_filters, &self.device)?
+            }
+            MelBackend::Gpu(gpu_mel) => gpu_mel.compute(samples)?,
+        };
         let (_, _, total_frames) = mel.dims3()?;
 
         let max_chunk_frames = m::N_FRAMES; // 3000 = 30s worth of frames

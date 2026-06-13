@@ -193,3 +193,53 @@ impl GpuMelSpec {
         Ok(mel)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config(num_mel_bins: usize) -> Config {
+        Config {
+            num_mel_bins,
+            max_source_positions: 1500,
+            d_model: 384,
+            encoder_attention_heads: 6,
+            encoder_layers: 1,
+            vocab_size: 128,
+            max_target_positions: 448,
+            decoder_attention_heads: 6,
+            decoder_layers: 1,
+            suppress_tokens: vec![],
+        }
+    }
+
+    #[test]
+    fn cpu_mel_has_whisper_shape() {
+        let config = test_config(80);
+        let filters = load_mel_filters(&config).unwrap();
+        let samples = vec![0.0f32; 16_000];
+
+        let mel = pcm_to_mel(&config, &samples, &filters, &Device::Cpu).unwrap();
+        let (batch, bins, frames) = mel.dims3().unwrap();
+
+        assert_eq!(batch, 1);
+        assert_eq!(bins, 80);
+        assert!(frames > 0);
+        assert!(matches!(mel.device(), Device::Cpu));
+    }
+
+    #[test]
+    fn mel_filter_loader_supports_known_whisper_bin_counts() {
+        assert_eq!(load_mel_filters(&test_config(80)).unwrap().len(), 80 * 201);
+        assert_eq!(
+            load_mel_filters(&test_config(128)).unwrap().len(),
+            128 * 201
+        );
+    }
+
+    #[test]
+    fn mel_filter_loader_rejects_unknown_bin_counts() {
+        let err = load_mel_filters(&test_config(96)).unwrap_err();
+        assert!(err.contains("unsupported num_mel_bins"));
+    }
+}

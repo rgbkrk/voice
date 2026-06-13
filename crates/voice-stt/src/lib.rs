@@ -1,4 +1,4 @@
-//! Speech-to-text library backed by candle + Metal, using Whisper.
+//! Speech-to-text library backed by candle, using Whisper.
 //!
 //! # Quick start
 //!
@@ -48,9 +48,26 @@ pub struct WhisperModel {
     decoder: voice_whisper::WhisperDecoder,
 }
 
+/// Return the default inference device for STT.
+///
+/// On macOS this preserves the existing Apple Silicon Metal path. All other
+/// builds use Candle's CPU backend, which keeps Whisper usable on Linux hosts
+/// with no GPU.
+pub fn default_stt_device() -> Result<Device> {
+    #[cfg(target_os = "macos")]
+    {
+        Device::new_metal(0).map_err(|e| SttError::Model(e.to_string()))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(Device::Cpu)
+    }
+}
+
 /// Load a Whisper model from a HuggingFace repo or local path.
 ///
-/// Creates a Metal GPU device and loads the model weights via mmap.
+/// Creates the default STT device and loads the model weights via mmap.
 ///
 /// # Examples
 ///
@@ -58,8 +75,12 @@ pub struct WhisperModel {
 /// let mut model = voice_stt::load_model("distil-whisper/distil-medium.en").unwrap();
 /// ```
 pub fn load_model(path_or_repo: &str) -> Result<WhisperModel> {
-    let device = Device::new_metal(0).map_err(|e| SttError::Model(e.to_string()))?;
+    let device = default_stt_device()?;
+    load_model_on_device(path_or_repo, device)
+}
 
+/// Load a Whisper model on an explicitly supplied Candle device.
+pub fn load_model_on_device(path_or_repo: &str, device: Device) -> Result<WhisperModel> {
     // Use embedded config/tokenizer when available (zero network fetch).
     // Only the weights need downloading from HuggingFace.
     let config: voice_whisper::Config = if let Some(result) = builtin::config_for_repo(path_or_repo)
@@ -372,7 +393,35 @@ pub fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_core::Device;
     use std::f32::consts::PI;
+
+    #[test]
+    fn test_default_stt_device_is_cpu_on_non_macos() {
+        let device = default_stt_device().unwrap();
+
+        #[cfg(target_os = "macos")]
+        assert!(
+            matches!(device, Device::Metal(_)),
+            "macOS should keep using Metal by default"
+        );
+
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            matches!(device, Device::Cpu),
+            "non-macOS STT should default to CPU"
+        );
+    }
+
+    #[test]
+    #[ignore = "downloads Whisper weights and runs CPU inference"]
+    fn test_cpu_model_transcribes_silence_smoke() {
+        let mut model =
+            load_model_on_device("distil-whisper/distil-medium.en", Device::Cpu).unwrap();
+        let samples = vec![0.0f32; 16_000];
+        let result = transcribe_audio(&mut model, &samples, 16_000).unwrap();
+        assert_eq!(result.sample_rate, 16_000);
+    }
 
     #[test]
     fn test_resample_identity() {

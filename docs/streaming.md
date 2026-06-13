@@ -35,6 +35,9 @@ Run the daemon first so the Kokoro model stays resident:
 voiced --tts-only
 ```
 
+The macOS release archive includes `voiced` alongside `voice`. From source,
+install the daemon with `cargo install --path crates/voice-daemon`.
+
 `voice say -o ...` falls back to local synthesis if the daemon is unavailable,
 so the same command still works outside Hermes.
 

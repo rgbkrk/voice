@@ -18,6 +18,9 @@ cargo install cargo-binstall
 cargo binstall voice
 ```
 
+The tagged macOS release archive also includes `voiced`, the optional daemon
+used by `voice stream` and daemon-backed file synthesis.
+
 ### Build from source
 
 Requires Git LFS for embedded voice/model data:
@@ -31,11 +34,12 @@ git lfs install
 git clone https://github.com/rgbkrk/voice.git
 cd voice
 cargo install --path crates/voice-cli
+cargo install --path crates/voice-daemon
 ```
 
 > **Why git-lfs?** Voice data (`.safetensors`) and tagger weights are stored with Git LFS. Without it, those files are tiny pointers instead of actual data — the build will catch this and tell you what to do.
 
-This puts the `voice` binary on your `$PATH`. Model weights are downloaded from HuggingFace Hub on first run and cached in `~/.cache/huggingface/hub/`. Seven popular voices and the model config are embedded in the binary — no network needed for common use.
+This puts the `voice` and `voiced` binaries on your `$PATH`. Model weights are downloaded from HuggingFace Hub on first run and cached in `~/.cache/huggingface/hub/`. Seven popular voices and the model config are embedded in the binary — no network needed for common use.
 
 ## Usage
 
@@ -269,6 +273,10 @@ Run `voiced --tts-only` to keep Kokoro warm without eagerly loading STT. When th
 daemon is running, `voice say -o output.wav ...` uses the daemon `synthesize`
 RPC and waits until the WAV exists. This is the compatibility path for Hermes'
 command TTS provider and WhatsApp voice-note delivery.
+
+The macOS release archive includes both `voice` and `voiced`. Source installs
+should install both `crates/voice-cli` and `crates/voice-daemon` when the daemon
+or `voice stream` surface is needed.
 
 For lower-level streaming, `stream_speak` emits `tts.started`, `tts.audio`, and
 terminal `tts.ended` / `tts.error` / `tts.cancelled` events over the same daemon

@@ -202,6 +202,22 @@ Performance is ~50× real-time on Apple Silicon (a 10-second recording transcrib
 STT_MODEL=distil-whisper/distil-medium.en voice listen
 ```
 
+## Evaluation
+
+The `eval/` scripts provide optional local STT/TTS evaluation. They may
+download model weights and are not part of normal CI.
+
+```bash
+cargo build --release -p voice
+./eval/compare.sh ./target/release/voice
+./eval/synth_eval.sh ./target/release/voice
+```
+
+`compare.sh` scores recordings from `eval/recordings/`. `synth_eval.sh`
+generates temporary TTS audio from `eval/phrases.txt` first. Both write JSON
+results with WER, CER, exact-match counts, elapsed time, audio duration, and
+real-time factor under `eval/results/`.
+
 ## JSON-RPC server
 
 `voice serve` runs a JSON-RPC 2.0 server on stdin/stdout, designed for integration with AI agents and tool-using LLMs.

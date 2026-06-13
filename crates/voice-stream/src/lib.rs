@@ -135,13 +135,13 @@ impl Packetizer {
     pub fn new(stream_id: impl Into<String>, sample_rate: u32, frame_ms: u32) -> Self {
         let sample_rate = sample_rate.max(1);
         let frame_ms = frame_ms.max(1);
-        let samples_per_frame = ((sample_rate as u64 * frame_ms as u64) / 1_000).max(1) as usize;
+        let frame_samples = samples_per_frame(sample_rate, frame_ms);
         Self {
             stream_id: stream_id.into(),
             sample_rate,
             channels: 1,
             frame_ms,
-            samples_per_frame,
+            samples_per_frame: frame_samples,
             next_sequence: 0,
             offset_samples: 0,
             pending: Vec::new(),
@@ -255,6 +255,18 @@ pub fn f32_to_i16(sample: f32) -> i16 {
     }
 }
 
+pub fn pcm_s16le_frames(samples: &[f32], sample_rate: u32, frame_ms: u32) -> Vec<Vec<i16>> {
+    let frame_samples = samples_per_frame(sample_rate, frame_ms);
+    samples
+        .chunks(frame_samples)
+        .map(|chunk| chunk.iter().copied().map(f32_to_i16).collect())
+        .collect()
+}
+
+pub fn samples_per_frame(sample_rate: u32, frame_ms: u32) -> usize {
+    ((u64::from(sample_rate.max(1)) * u64::from(frame_ms.max(1))) / 1_000).max(1) as usize
+}
+
 pub fn resample_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
     if samples.is_empty() || source_rate == 0 || target_rate == 0 {
         return Vec::new();
@@ -311,6 +323,31 @@ mod tests {
         assert_eq!(f32_to_i16(-1.0), -32768);
         assert_eq!(f32_to_i16(2.0), 32767);
         assert_eq!(f32_to_i16(-2.0), -32768);
+    }
+
+    #[test]
+    fn pcm_s16le_frames_splits_by_frame_duration() {
+        let samples = vec![0.0; 1_000];
+        let frames = pcm_s16le_frames(&samples, 1_000, 20);
+
+        assert_eq!(frames.len(), 50);
+        assert!(frames.iter().all(|frame| frame.len() == 20));
+    }
+
+    #[test]
+    fn pcm_s16le_frames_keeps_short_final_frame() {
+        let samples = vec![0.0; 25];
+        let frames = pcm_s16le_frames(&samples, 1_000, 20);
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].len(), 20);
+        assert_eq!(frames[1].len(), 5);
+    }
+
+    #[test]
+    fn samples_per_frame_uses_minimum_one_sample() {
+        assert_eq!(samples_per_frame(0, 0), 1);
+        assert_eq!(samples_per_frame(1, 1), 1);
     }
 
     #[test]

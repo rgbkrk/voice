@@ -1455,13 +1455,12 @@ fn run_stream_transcribe(stream_args: StreamTranscribeArgs) {
         }
     };
 
-    let frames = match pcm_i16_frames(&audio.samples, audio.sample_rate, stream_args.frame_ms) {
-        Ok(frames) => frames,
-        Err(e) => {
-            eprintln!("voice stream-transcribe: {e}");
-            std::process::exit(1);
-        }
-    };
+    validate_stream_frame_params(audio.sample_rate, stream_args.frame_ms).unwrap_or_else(|e| {
+        eprintln!("voice stream-transcribe: {e}");
+        std::process::exit(1);
+    });
+    let frames =
+        voice_stream::pcm_s16le_frames(&audio.samples, audio.sample_rate, stream_args.frame_ms);
 
     if !QUIET.load(Ordering::Relaxed) {
         let duration = audio.samples.len() as f64 / audio.sample_rate as f64;
@@ -1542,11 +1541,7 @@ fn run_stream_transcribe(stream_args: StreamTranscribeArgs) {
     }
 }
 
-fn pcm_i16_frames(
-    samples: &[f32],
-    sample_rate: u32,
-    frame_ms: u32,
-) -> Result<Vec<Vec<i16>>, String> {
+fn validate_stream_frame_params(sample_rate: u32, frame_ms: u32) -> Result<(), String> {
     if sample_rate == 0 {
         return Err("sample rate must be greater than 0".to_string());
     }
@@ -1554,27 +1549,7 @@ fn pcm_i16_frames(
         return Err("frame-ms must be greater than 0".to_string());
     }
 
-    let frame_samples = (u64::from(sample_rate) * u64::from(frame_ms) / 1_000) as usize;
-    if frame_samples == 0 {
-        return Err(format!(
-            "frame-ms {frame_ms} is too small for sample rate {sample_rate}"
-        ));
-    }
-
-    Ok(samples
-        .chunks(frame_samples)
-        .map(|chunk| chunk.iter().copied().map(f32_to_i16_pcm).collect())
-        .collect())
-}
-
-fn f32_to_i16_pcm(sample: f32) -> i16 {
-    if sample <= -1.0 {
-        i16::MIN
-    } else if sample >= 1.0 {
-        i16::MAX
-    } else {
-        (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16
-    }
+    Ok(())
 }
 
 fn run_converse(args: ConverseArgs) {
@@ -1814,30 +1789,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn f32_to_i16_pcm_clamps_to_signed_pcm_range() {
-        assert_eq!(f32_to_i16_pcm(-2.0), i16::MIN);
-        assert_eq!(f32_to_i16_pcm(-1.0), i16::MIN);
-        assert_eq!(f32_to_i16_pcm(0.0), 0);
-        assert_eq!(f32_to_i16_pcm(1.0), i16::MAX);
-        assert_eq!(f32_to_i16_pcm(2.0), i16::MAX);
-    }
-
-    #[test]
-    fn pcm_i16_frames_splits_by_frame_duration() {
-        let samples = vec![0.0; 1_000];
-        let frames = pcm_i16_frames(&samples, 1_000, 20).unwrap();
-
-        assert_eq!(frames.len(), 50);
-        assert!(frames.iter().all(|frame| frame.len() == 20));
-    }
-
-    #[test]
-    fn pcm_i16_frames_keeps_short_final_frame() {
-        let samples = vec![0.0; 25];
-        let frames = pcm_i16_frames(&samples, 1_000, 20).unwrap();
-
-        assert_eq!(frames.len(), 2);
-        assert_eq!(frames[0].len(), 20);
-        assert_eq!(frames[1].len(), 5);
+    fn validate_stream_frame_params_rejects_zero_values() {
+        assert!(validate_stream_frame_params(0, 20).is_err());
+        assert!(validate_stream_frame_params(48_000, 0).is_err());
+        assert!(validate_stream_frame_params(48_000, 20).is_ok());
     }
 }

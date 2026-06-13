@@ -10,7 +10,8 @@
   `.opus` output paths the same way as the CLI.
 - `stream_speak`: emit ordered audio events over the daemon socket. This is the
   transport-neutral path for WebRTC, voice bridges, or any client that wants
-  audio before a final file exists.
+  audio before a final file exists. `voice stream --output reply.ogg` can also
+  encode those frames to streamed Ogg/Opus without a WAV intermediate.
 - `stream_transcribe`: ingest ordered PCM events over the daemon socket and
   return a transcript after the client sends `stt.end`. This is the first
   inbound-audio contract for WebRTC sidecars. Partial transcripts are a later
@@ -75,9 +76,8 @@ Use `voice stream` to inspect the streaming event flow:
 voice stream "Hello from the stream"
 voice stream --json "Hello from the stream"
 voice say --format ogg-opus -o reply.ogg "Hello"
+voice stream --output streamed.ogg --format ogg-opus "Hello"
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output reply.s16le "Hello"
-voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "Hello" \
-  | ffmpeg -f s16le -ar 48000 -ac 1 -i - -c:a libopus reply.ogg
 voice stream-transcribe recording.wav
 voice stream-transcribe --json recording.wav
 ```
@@ -86,6 +86,12 @@ The raw output is signed 16-bit little-endian mono PCM with no container header.
 Use the event metadata for sample rate, frame duration, and stream ID.
 When `--raw-output -` is used, stdout is reserved for PCM bytes and compact
 progress lines move to stderr.
+
+`--output` is the encoded stream path. It currently accepts `.ogg` / `.opus` or
+`--format ogg-opus`, requires `ffmpeg`, and preserves the daemon's low-latency
+PCM frame contract while producing a valid `audio/ogg; codecs=opus` file.
+Use `--raw-output` when the consumer is a WebRTC sidecar or another process
+that wants raw PCM frames.
 
 `voice stream-transcribe` reads a WAV file, splits it into the same ordered PCM
 frames a WebRTC sidecar would send, and returns the terminal STT event from the

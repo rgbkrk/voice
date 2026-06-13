@@ -3,8 +3,8 @@
 use hound::{WavSpec, WavWriter};
 use std::fmt;
 use std::io::Write;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioOutputFormat {
@@ -199,6 +199,131 @@ pub fn save_ogg_opus(samples: &[f32], path: &Path, sample_rate: u32) -> Result<(
     Ok(())
 }
 
+pub struct OggOpusStreamWriter {
+    child: Option<Child>,
+    stdin: Option<ChildStdin>,
+    output_path: Option<PathBuf>,
+}
+
+impl OggOpusStreamWriter {
+    pub fn create(path: &Path, input_sample_rate: u32) -> Result<Self, String> {
+        let to_stdout = path.as_os_str() == "-";
+        if !to_stdout {
+            ensure_parent_dir(path)?;
+        }
+
+        let mut command = Command::new("ffmpeg");
+        command
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-y")
+            .arg("-f")
+            .arg("s16le")
+            .arg("-ar")
+            .arg(input_sample_rate.to_string())
+            .arg("-ac")
+            .arg("1")
+            .arg("-i")
+            .arg("pipe:0")
+            .arg("-ac")
+            .arg("1")
+            .arg("-ar")
+            .arg("48000")
+            .arg("-c:a")
+            .arg("libopus")
+            .arg("-b:a")
+            .arg("32k")
+            .arg("-vbr")
+            .arg("on")
+            .arg("-application")
+            .arg("voip")
+            .arg("-f")
+            .arg("ogg");
+
+        if to_stdout {
+            command.arg("pipe:1").stdout(Stdio::inherit());
+        } else {
+            command.arg(path).stdout(Stdio::null());
+        }
+
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn ffmpeg for streamed Ogg/Opus output: {e}"))?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "open ffmpeg stdin".to_string())?;
+
+        Ok(Self {
+            child: Some(child),
+            stdin: Some(stdin),
+            output_path: (!to_stdout).then(|| path.to_path_buf()),
+        })
+    }
+
+    pub fn write_pcm_s16le(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "ffmpeg stdin is closed".to_string())?;
+        stdin
+            .write_all(bytes)
+            .map_err(|e| format!("write PCM to ffmpeg: {e}"))
+    }
+
+    pub fn finish(mut self) -> Result<(), String> {
+        drop(self.stdin.take());
+        let Some(child) = self.child.take() else {
+            return Ok(());
+        };
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait for ffmpeg: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "ffmpeg streamed Ogg/Opus encode failed with {}: {}",
+                output.status,
+                stderr.trim()
+            ));
+        }
+
+        if let Some(path) = &self.output_path {
+            if !is_ogg_opus_file(path) {
+                return Err(format!(
+                    "ffmpeg output is not an Ogg/Opus file: {}",
+                    path.display()
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for OggOpusStreamWriter {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        if let Some(mut child) = self.child.take() {
+            match child.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+}
+
 pub fn is_ogg_opus_file(path: &Path) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
         return false;
@@ -298,6 +423,34 @@ mod tests {
         let path = temp_path("ogg");
         let samples = sine_wave(24_000);
         save_ogg_opus(&samples, &path, 24_000).expect("save ogg opus");
+        assert!(is_ogg_opus_file(&path));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn stream_ogg_opus_writer_writes_opus_head() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            eprintln!("skipping streamed Ogg/Opus encode test because ffmpeg is not on PATH");
+            return;
+        }
+
+        let path = temp_path("stream.ogg");
+        let samples = sine_wave(24_000);
+        let mut writer = OggOpusStreamWriter::create(&path, 24_000).expect("create stream writer");
+        for chunk in samples.chunks(480) {
+            let mut bytes = Vec::with_capacity(chunk.len() * 2);
+            for sample in chunk {
+                let clamped = sample.clamp(-1.0, 1.0);
+                let pcm = if clamped >= 0.0 {
+                    (clamped * i16::MAX as f32).round() as i16
+                } else {
+                    (clamped * 32768.0).round() as i16
+                };
+                bytes.extend_from_slice(&pcm.to_le_bytes());
+            }
+            writer.write_pcm_s16le(&bytes).expect("write stream pcm");
+        }
+        writer.finish().expect("finish stream writer");
         assert!(is_ogg_opus_file(&path));
         let _ = std::fs::remove_file(path);
     }

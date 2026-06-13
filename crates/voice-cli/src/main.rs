@@ -42,6 +42,7 @@ macro_rules! info {
                   voice say --markdown -f post.mdx\n  \
                   voice phonemes \"ChatGPT uses RuntimeStateDoc\"\n  \
                   voice stream --json \"Hello world\"\n  \
+                  voice stream --output reply.ogg --format ogg-opus \"Hello world\"\n  \
                   voice stream-transcribe recording.wav\n  \
                   voice listen\n  \
                   voice listen --continuous\n  \
@@ -214,8 +215,16 @@ struct StreamArgs {
     frame_ms: u32,
 
     /// Write raw signed 16-bit little-endian mono PCM to this path (use - for stdout)
-    #[arg(short = 'o', long = "raw-output")]
+    #[arg(short = 'o', long = "raw-output", conflicts_with = "output")]
     raw_output: Option<PathBuf>,
+
+    /// Write streamed audio to an Ogg/Opus file (use - for stdout)
+    #[arg(long = "output", conflicts_with = "raw_output")]
+    output: Option<PathBuf>,
+
+    /// Output container/codec for --output. Defaults from extension: .ogg, .opus
+    #[arg(long = "format", value_enum, requires = "output")]
+    format: Option<SayOutputFormat>,
 
     /// Print full JSON stream events instead of compact summaries
     #[arg(long)]
@@ -474,6 +483,30 @@ fn resolve_stream_text(stream: &StreamArgs) -> Result<String, String> {
         return Err("No text provided on stdin".into());
     }
     Ok(text)
+}
+
+enum StreamOutputWriter {
+    Raw(Box<dyn Write>),
+    OggOpus(voice_audio::OggOpusStreamWriter),
+}
+
+impl StreamOutputWriter {
+    fn write_frame(&mut self, frame: &voice_stream::AudioFrame) -> Result<(), String> {
+        let bytes = frame.payload_le_bytes();
+        match self {
+            Self::Raw(writer) => writer
+                .write_all(&bytes)
+                .map_err(|e| format!("write raw PCM: {e}")),
+            Self::OggOpus(writer) => writer.write_pcm_s16le(&bytes),
+        }
+    }
+
+    fn finish(self) -> Result<(), String> {
+        match self {
+            Self::Raw(mut writer) => writer.flush().map_err(|e| format!("flush raw output: {e}")),
+            Self::OggOpus(writer) => writer.finish(),
+        }
+    }
 }
 
 fn resolve_phonemes_text(args: &PhonemesArgs) -> Result<String, String> {
@@ -1294,32 +1327,67 @@ fn run_stream(stream_args: StreamArgs) {
         stream_args.sub_file.clone(),
     );
 
+    validate_stream_frame_params(stream_args.sample_rate, stream_args.frame_ms).unwrap_or_else(
+        |e| {
+            eprintln!("voice stream: {e}");
+            std::process::exit(1);
+        },
+    );
+
     let raw_to_stdout = stream_args
         .raw_output
         .as_ref()
         .is_some_and(|path| path.as_os_str() == std::ffi::OsStr::new("-"));
-    if raw_to_stdout && stream_args.json {
-        eprintln!("Error: --json cannot be combined with --raw-output -");
+    let output_to_stdout = stream_args
+        .output
+        .as_ref()
+        .is_some_and(|path| path.as_os_str() == std::ffi::OsStr::new("-"));
+    let binary_to_stdout = raw_to_stdout || output_to_stdout;
+    if binary_to_stdout && stream_args.json {
+        eprintln!("Error: --json cannot be combined with binary stream output to stdout");
         std::process::exit(1);
     }
 
-    let mut raw_writer: Option<Box<dyn Write>> = stream_args.raw_output.as_ref().map(|path| {
-        if path.as_os_str() == std::ffi::OsStr::new("-") {
-            return Box::new(io::BufWriter::new(io::stdout())) as Box<dyn Write>;
-        }
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).unwrap_or_else(|e| {
-                    eprintln!("Failed to create {}: {e}", parent.display());
+    let mut output_writer: Option<StreamOutputWriter> = if let Some(path) = &stream_args.raw_output
+    {
+        Some(StreamOutputWriter::Raw(
+            if path.as_os_str() == std::ffi::OsStr::new("-") {
+                Box::new(io::BufWriter::new(io::stdout())) as Box<dyn Write>
+            } else {
+                if let Some(parent) = path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                            eprintln!("Failed to create {}: {e}", parent.display());
+                            std::process::exit(1);
+                        });
+                    }
+                }
+                Box::new(std::fs::File::create(path).unwrap_or_else(|e| {
+                    eprintln!("Failed to create {}: {e}", path.display());
                     std::process::exit(1);
-                });
-            }
-        }
-        Box::new(std::fs::File::create(path).unwrap_or_else(|e| {
-            eprintln!("Failed to create {}: {e}", path.display());
+                })) as Box<dyn Write>
+            },
+        ))
+    } else if let Some(path) = &stream_args.output {
+        let format = resolve_stream_output_format(path, stream_args.format).unwrap_or_else(|e| {
+            eprintln!("voice stream: {e}");
             std::process::exit(1);
-        })) as Box<dyn Write>
-    });
+        });
+        match format {
+            voice_audio::AudioOutputFormat::OggOpus => {
+                let writer =
+                    voice_audio::OggOpusStreamWriter::create(path, stream_args.sample_rate)
+                        .unwrap_or_else(|e| {
+                            eprintln!("voice stream: {e}");
+                            std::process::exit(1);
+                        });
+                Some(StreamOutputWriter::OggOpus(writer))
+            }
+            voice_audio::AudioOutputFormat::Wav => unreachable!(),
+        }
+    } else {
+        None
+    };
 
     let mut daemon = connect_daemon_or_exit();
     let mut terminal_error: Option<String> = None;
@@ -1346,7 +1414,7 @@ fn run_stream(stream_args: StreamArgs) {
                             metadata.frame_ms,
                             metadata.encoding
                         );
-                        if raw_to_stdout {
+                        if binary_to_stdout {
                             eprintln!("{line}");
                         } else {
                             println!("{line}");
@@ -1355,16 +1423,15 @@ fn run_stream(stream_args: StreamArgs) {
                 }
                 voice_stream::TtsStreamEvent::Audio { frame } => {
                     frame_count += 1;
-                    if let Some(file) = raw_writer.as_mut() {
-                        file.write_all(&frame.payload_le_bytes())
-                            .map_err(|e| format!("write raw PCM: {e}"))?;
+                    if let Some(writer) = output_writer.as_mut() {
+                        writer.write_frame(&frame)?;
                     }
                     if !stream_args.json {
                         let line = format!(
                             "audio seq={} samples={} padding={}",
                             frame.sequence, frame.sample_count, frame.padding_samples
                         );
-                        if raw_to_stdout {
+                        if binary_to_stdout {
                             eprintln!("{line}");
                         } else {
                             println!("{line}");
@@ -1377,7 +1444,7 @@ fn run_stream(stream_args: StreamArgs) {
                             "ended stream={} frames={} samples={} duration_ms={}",
                             end.stream_id, end.frames, end.samples, end.duration_ms
                         );
-                        if raw_to_stdout {
+                        if binary_to_stdout {
                             eprintln!("{line}");
                         } else {
                             println!("{line}");
@@ -1388,7 +1455,7 @@ fn run_stream(stream_args: StreamArgs) {
                     terminal_error = Some(err.message.clone());
                     if !stream_args.json {
                         let line = format!("error stream={}: {}", err.stream_id, err.message);
-                        if raw_to_stdout {
+                        if binary_to_stdout {
                             eprintln!("{line}");
                         } else {
                             println!("{line}");
@@ -1402,7 +1469,7 @@ fn run_stream(stream_args: StreamArgs) {
                             "cancelled stream={}: {}",
                             cancelled.stream_id, cancelled.reason
                         );
-                        if raw_to_stdout {
+                        if binary_to_stdout {
                             eprintln!("{line}");
                         } else {
                             println!("{line}");
@@ -1433,9 +1500,9 @@ fn run_stream(stream_args: StreamArgs) {
         std::process::exit(1);
     }
 
-    if let Some(mut file) = raw_writer {
-        file.flush().unwrap_or_else(|e| {
-            eprintln!("Failed to flush raw output: {e}");
+    if let Some(writer) = output_writer {
+        writer.finish().unwrap_or_else(|e| {
+            eprintln!("Failed to finish stream output: {e}");
             std::process::exit(1);
         });
     }
@@ -1550,6 +1617,30 @@ fn validate_stream_frame_params(sample_rate: u32, frame_ms: u32) -> Result<(), S
     }
 
     Ok(())
+}
+
+fn resolve_stream_output_format(
+    path: &Path,
+    explicit: Option<SayOutputFormat>,
+) -> Result<voice_audio::AudioOutputFormat, String> {
+    let explicit = explicit.map(voice_audio::AudioOutputFormat::from);
+    let format = if path.as_os_str() == std::ffi::OsStr::new("-") {
+        explicit.ok_or_else(|| {
+            "voice stream --output - requires --format ogg-opus so stdout is unambiguous"
+                .to_string()
+        })?
+    } else {
+        voice_audio::resolve_output_format(path, explicit)?
+    };
+
+    if format != voice_audio::AudioOutputFormat::OggOpus {
+        return Err(
+            "voice stream --output currently supports only Ogg/Opus; use .ogg/.opus or --format ogg-opus, or use --raw-output for PCM"
+                .to_string(),
+        );
+    }
+
+    Ok(format)
 }
 
 fn run_converse(args: ConverseArgs) {
@@ -1793,5 +1884,33 @@ mod tests {
         assert!(validate_stream_frame_params(0, 20).is_err());
         assert!(validate_stream_frame_params(48_000, 0).is_err());
         assert!(validate_stream_frame_params(48_000, 20).is_ok());
+    }
+
+    #[test]
+    fn resolve_stream_output_format_accepts_ogg_opus_paths() {
+        assert_eq!(
+            resolve_stream_output_format(Path::new("reply.ogg"), None).unwrap(),
+            voice_audio::AudioOutputFormat::OggOpus
+        );
+        assert_eq!(
+            resolve_stream_output_format(Path::new("reply.opus"), None).unwrap(),
+            voice_audio::AudioOutputFormat::OggOpus
+        );
+        assert_eq!(
+            resolve_stream_output_format(Path::new("reply"), Some(SayOutputFormat::OggOpus))
+                .unwrap(),
+            voice_audio::AudioOutputFormat::OggOpus
+        );
+    }
+
+    #[test]
+    fn resolve_stream_output_format_rejects_wav_and_stdout_without_format() {
+        assert!(resolve_stream_output_format(Path::new("reply.wav"), None).is_err());
+        assert!(resolve_stream_output_format(Path::new("reply"), None).is_err());
+        assert!(resolve_stream_output_format(Path::new("-"), None).is_err());
+        assert_eq!(
+            resolve_stream_output_format(Path::new("-"), Some(SayOutputFormat::OggOpus)).unwrap(),
+            voice_audio::AudioOutputFormat::OggOpus
+        );
     }
 }

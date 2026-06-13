@@ -1,0 +1,11 @@
+[package]
+name = "voice-audio"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+description = "Audio container and codec helpers for voice"
+license = "MIT"
+repository = "https://github.com/rgbkrk/voice"
+
+[dependencies]
+hound = { workspace = true }

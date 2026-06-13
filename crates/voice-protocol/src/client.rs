@@ -101,11 +101,26 @@ impl DaemonClient {
         self.call("speak", params)
     }
 
-    /// Convenience: synthesize text to a WAV file via the daemon and wait for completion.
+    /// Convenience: synthesize text to an audio file via the daemon and wait for completion.
+    ///
+    /// The daemon infers the output format from `output_path` (`.wav`, `.ogg`, `.opus`).
     pub fn synthesize(
         &mut self,
         text: &str,
         output_path: &str,
+        voice: Option<&str>,
+        speed: Option<f64>,
+    ) -> Result<Response, String> {
+        self.synthesize_with_format(text, output_path, None, voice, speed)
+    }
+
+    /// Convenience: synthesize text to an audio file via the daemon with an
+    /// explicit output format.
+    pub fn synthesize_with_format(
+        &mut self,
+        text: &str,
+        output_path: &str,
+        output_format: Option<&str>,
         voice: Option<&str>,
         speed: Option<f64>,
     ) -> Result<Response, String> {
@@ -114,6 +129,9 @@ impl DaemonClient {
             "output_path": output_path,
             "wait": true,
         });
+        if let Some(format) = output_format {
+            params["format"] = Value::String(format.to_string());
+        }
         if let Some(v) = voice {
             params["voice"] = Value::String(v.to_string());
         }

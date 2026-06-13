@@ -2,7 +2,7 @@ mod jsonrpc;
 mod listen;
 mod mcp;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use pulldown_cmark::{Event, Options, Parser as MdParser, Tag, TagEnd};
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read, Write};
@@ -37,6 +37,7 @@ macro_rules! info {
                   voice say -v am_adam \"How are you today?\"\n  \
                   echo \"Hello\" | voice say\n  \
                   voice say -f speech.txt -o output.wav\n  \
+                  voice say --format ogg-opus -o reply.ogg \"Hello\"\n  \
                   voice say --phonemes \"hɛloʊ wɜːld\"\n  \
                   voice say --markdown -f post.mdx\n  \
                   voice phonemes \"ChatGPT uses RuntimeStateDoc\"\n  \
@@ -137,9 +138,13 @@ struct SayArgs {
     #[arg(short, long, default_value = "af_heart")]
     voice: String,
 
-    /// Write WAV to file instead of playing
+    /// Write audio to file instead of playing
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Output container/codec for --output. Defaults from extension: .wav, .ogg, .opus
+    #[arg(long = "format", value_enum, requires = "output")]
+    format: Option<SayOutputFormat>,
 
     /// Speech speed factor (1.0 = normal)
     #[arg(short, long, default_value = "1.0")]
@@ -161,6 +166,21 @@ struct SayArgs {
     /// If not set, .voice-subs is auto-discovered from the working directory upward.
     #[arg(long = "sub-file", value_name = "PATH")]
     sub_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SayOutputFormat {
+    Wav,
+    OggOpus,
+}
+
+impl From<SayOutputFormat> for voice_audio::AudioOutputFormat {
+    fn from(format: SayOutputFormat) -> Self {
+        match format {
+            SayOutputFormat::Wav => Self::Wav,
+            SayOutputFormat::OggOpus => Self::OggOpus,
+        }
+    }
 }
 
 #[derive(clap::Args, Debug)]
@@ -759,6 +779,7 @@ fn main() {
                     phonemes: None,
                     voice: "af_heart".to_string(),
                     output: None,
+                    format: None,
                     speed: 1.0,
                     deterministic: false,
                     markdown: false,
@@ -1049,6 +1070,17 @@ fn run_phonemes(args: PhonemesArgs) {
 }
 
 fn run_say(say_args: SayArgs) {
+    let output_format = match say_args.output.as_ref() {
+        Some(output_path) => match resolve_say_output_format(output_path, say_args.format) {
+            Ok(format) => Some(format),
+            Err(msg) => {
+                eprintln!("Error: {msg}");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+
     // If the daemon is running, delegate normal playback and file synthesis to it.
     // `--phonemes` stays local because the daemon RPC accepts text and runs its
     // own G2P pipeline.
@@ -1071,9 +1103,10 @@ fn run_say(say_args: SayArgs) {
             );
 
             let daemon_result = if let Some(output_path) = &say_args.output {
-                daemon.synthesize(
+                daemon.synthesize_with_format(
                     &text,
                     &output_path.to_string_lossy(),
+                    output_format.map(|format| format.as_str()),
                     Some(&say_args.voice),
                     Some(say_args.speed as f64),
                 )
@@ -1089,10 +1122,21 @@ fn run_say(say_args: SayArgs) {
                         .and_then(|r| r.get("status"))
                         .and_then(|s| s.as_str())
                         == Some("failed");
-                    if !failed {
-                        return;
+                    if failed {
+                        eprintln!("Daemon synthesis failed, falling back to local");
+                    } else {
+                        if output_format == Some(voice_audio::AudioOutputFormat::OggOpus) {
+                            if let Some(output_path) = &say_args.output {
+                                if voice_audio::is_ogg_opus_file(output_path) {
+                                    return;
+                                }
+                                let _ = std::fs::remove_file(output_path);
+                                eprintln!("Daemon output was not Ogg/Opus, falling back to local");
+                            }
+                        } else {
+                            return;
+                        }
                     }
-                    eprintln!("Daemon synthesis failed, falling back to local");
                 }
                 Ok(resp) => {
                     if let Some(err) = resp.error {
@@ -1180,7 +1224,7 @@ fn run_say(say_args: SayArgs) {
     };
 
     if let Some(output_path) = &say_args.output {
-        generate_to_file(
+        if let Err(e) = generate_to_file(
             &mut model,
             &voice,
             &phoneme_chunks,
@@ -1188,7 +1232,11 @@ fn run_say(say_args: SayArgs) {
             sample_rate,
             synthesis_mode,
             output_path,
-        );
+            output_format.expect("output format resolved when output path is set"),
+        ) {
+            eprintln!("Failed to write audio: {e}");
+            std::process::exit(1);
+        }
     } else {
         stream_playback(
             &mut model,
@@ -1199,6 +1247,13 @@ fn run_say(say_args: SayArgs) {
             synthesis_mode,
         );
     }
+}
+
+fn resolve_say_output_format(
+    output_path: &std::path::Path,
+    explicit: Option<SayOutputFormat>,
+) -> Result<voice_audio::AudioOutputFormat, String> {
+    voice_audio::resolve_output_format(output_path, explicit.map(Into::into))
 }
 
 fn run_stream(stream_args: StreamArgs) {
@@ -1505,7 +1560,8 @@ fn generate_to_file(
     sample_rate: u32,
     synthesis_mode: voice_tts::SynthesisMode,
     output_path: &PathBuf,
-) {
+    output_format: voice_audio::AudioOutputFormat,
+) -> Result<(), String> {
     info!("Generating audio...");
     let mut all_samples: Vec<f32> = Vec::new();
 
@@ -1534,18 +1590,9 @@ fn generate_to_file(
         std::process::exit(130);
     }
 
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut writer = hound::WavWriter::create(output_path, spec).expect("Failed to create WAV");
-    for s in &all_samples {
-        writer.write_sample(*s).expect("Failed to write sample");
-    }
-    writer.finalize().expect("Failed to finalize WAV");
-    info!("Saved to {}", output_path.display());
+    voice_audio::save_audio(&all_samples, output_path, sample_rate, output_format)?;
+    info!("Saved {} to {}", output_format, output_path.display());
+    Ok(())
 }
 
 /// Generate audio chunks and stream them to the speakers via rodio.

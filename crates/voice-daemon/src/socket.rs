@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use uuid::Uuid;
+use voice_audio::AudioOutputFormat;
 use voice_protocol::frames::{read_frame, write_frame, Frame, FrameType};
 use voice_protocol::rpc::{self, Response};
 use voice_stream::{TtsStreamEvent, DEFAULT_FRAME_MS};
@@ -289,9 +290,14 @@ async fn dispatch(
                 Ok(speed) => speed,
                 Err(resp) => return resp,
             };
+            let output_format = match optional_audio_output_format_param(&req) {
+                Ok(output_format) => output_format,
+                Err(resp) => return resp,
+            };
             VoiceRequest::Synthesize {
                 text,
                 output_path,
+                output_format,
                 voice,
                 speed,
             }
@@ -464,11 +470,19 @@ async fn dispatch(
             VoiceRequest::Synthesize {
                 text,
                 output_path,
+                output_format,
                 voice,
                 speed,
             } => {
                 queue
-                    .enqueue_synthesize(client_id.to_string(), text, output_path, voice, speed)
+                    .enqueue_synthesize(
+                        client_id.to_string(),
+                        text,
+                        output_path,
+                        output_format,
+                        voice,
+                        speed,
+                    )
                     .await
             }
             VoiceRequest::StreamSpeak(_) => {
@@ -597,6 +611,34 @@ fn optional_speed_param(req: &rpc::Request) -> Result<Option<f64>, Response> {
         return Ok(None);
     }
     required_speed_param(req).map(Some)
+}
+
+fn optional_audio_output_format_param(
+    req: &rpc::Request,
+) -> Result<Option<AudioOutputFormat>, Response> {
+    let raw = req
+        .params
+        .get("format")
+        .or_else(|| req.params.get("output_format"));
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    let Some(format) = value.as_str() else {
+        return Err(Response::error(
+            req.id.clone(),
+            rpc::INVALID_PARAMS,
+            "param 'format' must be a string",
+        ));
+    };
+    AudioOutputFormat::from_name(format)
+        .map(Some)
+        .ok_or_else(|| {
+            Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                "param 'format' must be one of: wav, ogg, opus, ogg-opus",
+            )
+        })
 }
 
 fn validate_speed(req: &rpc::Request, speed: f64) -> Result<f64, Response> {

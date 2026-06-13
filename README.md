@@ -55,6 +55,7 @@ echo "The quick brown fox jumps over the lazy dog." | voice say
 
 # Save to file instead of playing
 voice say -o speech.wav "Good morning everyone."
+voice say --format ogg-opus -o speech.ogg "Good morning everyone."
 
 # Stream daemon TTS frames for bridge/WebRTC experiments
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output speech.s16le "Good morning everyone."
@@ -102,7 +103,8 @@ Options:
   -f, --input-file <FILE>        Read text from a file (use - for stdin)
       --phonemes <IPA>           Raw phoneme string (IPA)
   -v, --voice <VOICE>            Voice name [default: af_heart]
-  -o, --output <PATH>            Write WAV to file instead of playing
+  -o, --output <PATH>            Write audio to file instead of playing
+      --format <FORMAT>          Output format: wav, ogg-opus
   -s, --speed <SPEED>            Speech speed factor [default: 1.0]
       --markdown                 Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>   Word substitution (repeatable)
@@ -274,8 +276,10 @@ See [`examples/conversation.py`](examples/conversation.py) for a full speak/list
 
 Run `voiced --tts-only` to keep Kokoro warm without eagerly loading STT. When the
 daemon is running, `voice say -o output.wav ...` uses the daemon `synthesize`
-RPC and waits until the WAV exists. This is the compatibility path for Hermes'
-command TTS provider and WhatsApp voice-note delivery.
+RPC and waits until the WAV exists. For WhatsApp-ready voice notes, use
+`voice say --format ogg-opus -o output.ogg ...` or an `.ogg` / `.opus` output
+path; the CLI writes real `audio/ogg; codecs=opus` instead of a WAV with a
+misleading extension. OGG/Opus output requires `ffmpeg` on `PATH`.
 
 The macOS release archive includes both `voice` and `voiced`. Source installs
 should install both `crates/voice-cli` and `crates/voice-daemon` when the daemon
@@ -284,9 +288,10 @@ or `voice stream` surface is needed.
 See [docs/daemon.md](docs/daemon.md) for systemd user service and macOS
 LaunchAgent examples.
 
-For WhatsApp or Telegram voice-note delivery through Hermes, set
-`voice_compatible: true` on the command provider so Hermes converts Voice's WAV
-output to OGG/Opus when needed.
+For WhatsApp or Telegram voice-note delivery through Hermes, prefer
+`output_format: ogg` with `voice_compatible: true` so Hermes can send Voice's
+Opus output directly. `output_format: wav` remains a compatibility fallback,
+with Hermes converting to OGG/Opus when needed.
 
 For lower-level streaming, `stream_speak` emits `tts.started`, `tts.audio`, and
 terminal `tts.ended` / `tts.error` / `tts.cancelled` events over the same daemon
@@ -369,7 +374,8 @@ All other voices are fetched from HuggingFace Hub on first use:
 | Crate | Description |
 |-------|-------------|
 | [`voice`](https://crates.io/crates/voice) | CLI binary — installs as `voice` |
-| [`voice-tts`](https://crates.io/crates/voice-tts) | Core TTS library — model loading, inference, WAV output |
+| [`voice-audio`](https://crates.io/crates/voice-audio) | Audio container helpers — WAV and OGG/Opus output |
+| [`voice-tts`](https://crates.io/crates/voice-tts) | Core TTS library — model loading and inference |
 | [`voice-stt`](https://crates.io/crates/voice-stt) | Speech-to-text library — Whisper transcription, resampling |
 | [`voice-kokoro`](https://crates.io/crates/voice-kokoro) | Kokoro TTS backend — ALBERT encoder, prosody predictor, iSTFT decoder |
 | [`voice-whisper`](https://crates.io/crates/voice-whisper) | Whisper STT backend — greedy decoding, GPU mel spectrogram |

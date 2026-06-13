@@ -1,10 +1,13 @@
 # Streaming TTS
 
-`voice` exposes two daemon-backed TTS surfaces:
+`voice` exposes three TTS surfaces relevant to integrations:
 
-- `synthesize`: write a completed WAV file. This is the compatibility path for
-  tools that expect `{input_path} -> {output_path}`, including Hermes command
-  TTS providers.
+- `say --output`: write a completed audio file. `.wav` writes float WAV, while
+  `.ogg` / `.opus` or `--format ogg-opus` writes real
+  `audio/ogg; codecs=opus` for WhatsApp-style voice notes. OGG/Opus output
+  requires `ffmpeg` on `PATH`.
+- `synthesize`: daemon RPC for completed files. It infers `.wav`, `.ogg`, and
+  `.opus` output paths the same way as the CLI.
 - `stream_speak`: emit ordered audio events over the daemon socket. This is the
   transport-neutral path for WebRTC, voice bridges, or any client that wants
   audio before a final file exists.
@@ -12,8 +15,8 @@
 ## Hermes / WhatsApp
 
 Hermes' current WhatsApp path sends local media files to the WhatsApp bridge.
-The bridge reads the completed file and converts non-Opus audio to OGG/Opus for
-native `ptt` voice-note delivery. Use daemon synthesis for that path:
+Use OGG/Opus output for native `ptt` voice-note delivery without an extra
+Hermes-side conversion:
 
 ```yaml
 tts:
@@ -21,8 +24,8 @@ tts:
   providers:
     kokoro:
       type: command
-      command: /path/to/voice say --input-file {input_path} --output {output_path} --voice {voice} --speed {speed}
-      output_format: wav
+      command: /path/to/voice say --format ogg-opus --input-file {input_path} --output {output_path} --voice {voice} --speed {speed}
+      output_format: ogg
       voice_compatible: true
       voice: af_heart
       speed: 1.0
@@ -42,10 +45,10 @@ install the daemon with `cargo install --path crates/voice-daemon`.
 `voice say -o ...` falls back to local synthesis if the daemon is unavailable,
 so the same command still works outside Hermes.
 
-Set `voice_compatible: true` so Hermes converts the WAV output to OGG/Opus
-when it needs native voice-note delivery. This requires `ffmpeg` in Hermes'
-environment and lets WhatsApp/Telegram paths receive an Opus voice note instead
-of a generic audio attachment.
+Set `voice_compatible: true` so Hermes routes the returned `.ogg` file as a
+native voice note. `output_format: wav` remains valid as a compatibility
+fallback; Hermes and the WhatsApp bridge can still convert non-Opus audio when
+needed.
 
 The repository also includes `examples/hermes-command-tts.sh`, which matches
 Hermes' command-provider argument order:
@@ -63,6 +66,7 @@ Use `voice stream` to inspect the streaming event flow:
 ```bash
 voice stream "Hello from the stream"
 voice stream --json "Hello from the stream"
+voice say --format ogg-opus -o reply.ogg "Hello"
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output reply.s16le "Hello"
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "Hello" \
   | ffmpeg -f s16le -ar 48000 -ac 1 -i - -c:a libopus reply.ogg

@@ -7072,11 +7072,19 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "voice-audio",
  "voice-g2p",
  "voice-protocol",
  "voice-stream",
  "voice-stt",
  "voice-tts",
+]
+
+[[package]]
+name = "voice-audio"
+version = "0.1.0"
+dependencies = [
+ "hound",
 ]
 
 [[package]]
@@ -7093,6 +7101,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+ "voice-audio",
  "voice-g2p",
  "voice-protocol",
  "voice-stream",

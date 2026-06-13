@@ -12,6 +12,7 @@ use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use voice_audio::AudioOutputFormat;
 use voice_stream::{
     resample_linear, AudioEncoding, InterleavedMonoMixer, Packetizer, StreamEnded, StreamMetadata,
     TtsStreamEvent,
@@ -192,11 +193,13 @@ pub async fn run(
                 VoiceRequest::Synthesize {
                     text,
                     output_path,
+                    output_format,
                     voice,
                     speed,
                 } => {
                     let text = text.clone();
                     let output_path = output_path.clone();
+                    let output_format = *output_format;
                     let voice = voice.clone().or_else(|| Some(config.get_voice_name()));
                     let speed = speed.or_else(|| Some(config.get_speed() as f64));
                     let tts = tts.clone();
@@ -207,6 +210,7 @@ pub async fn run(
                             &tts,
                             &text,
                             &output_path,
+                            output_format,
                             voice.as_deref(),
                             speed,
                             &cancelled,
@@ -460,6 +464,7 @@ fn synthesize_to_file(
     tts: &Arc<Mutex<TtsState>>,
     text: &str,
     output_path: &str,
+    output_format: Option<AudioOutputFormat>,
     voice_name: Option<&str>,
     speed: Option<f64>,
     cancelled: &Arc<AtomicBool>,
@@ -508,17 +513,13 @@ fn synthesize_to_file(
     }
 
     let path = std::path::Path::new(output_path);
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create output dir {}: {}", parent.display(), e))?;
-        }
-    }
-
-    audio_recorder::save_wav(path, &all_samples, sample_rate)?;
+    let output_format = voice_audio::resolve_output_format(path, output_format)?;
+    voice_audio::save_audio(&all_samples, path, sample_rate, output_format)?;
 
     Ok(serde_json::json!({
         "output_path": output_path,
+        "format": output_format.as_str(),
+        "mime_type": output_format.mime_type(),
         "duration_ms": started.elapsed().as_millis() as u64,
         "chunks": chunks.len(),
         "samples": all_samples.len(),
@@ -932,7 +933,10 @@ async fn run_simulated(
                     sync_automerge(&queue, &automerge).await;
                 }
                 VoiceRequest::Synthesize {
-                    text, output_path, ..
+                    text,
+                    output_path,
+                    output_format,
+                    ..
                 } => {
                     let words = text.split_whitespace().count();
                     let ms = (words as u64 * 50).max(100);
@@ -941,12 +945,21 @@ async fn run_simulated(
                     if let Some(parent) = path.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
-                    let _ = audio_recorder::save_wav(path, &[], 24_000);
+                    let format = voice_audio::resolve_output_format(path, *output_format)
+                        .unwrap_or(AudioOutputFormat::Wav);
+                    let samples = if matches!(format, AudioOutputFormat::OggOpus) {
+                        vec![0.0; 2_400]
+                    } else {
+                        Vec::new()
+                    };
+                    let _ = voice_audio::save_audio(&samples, path, 24_000, format);
                     queue
                         .complete(
                             Some(
                                 serde_json::json!({
                                     "output_path": output_path,
+                                    "format": format.as_str(),
+                                    "mime_type": format.mime_type(),
                                     "duration_ms": ms,
                                     "chunks": 0,
                                     "samples": 0,
@@ -1088,6 +1101,7 @@ mod tests {
                 VoiceRequest::Synthesize {
                     text: "hello from simulated synthesis".to_string(),
                     output_path: output_path.to_string_lossy().to_string(),
+                    output_format: None,
                     voice: None,
                     speed: None,
                 },
@@ -1106,6 +1120,58 @@ mod tests {
 
         let (_samples, sample_rate) = audio_recorder::read_wav(&output_path).unwrap();
         assert_eq!(sample_rate, 24_000);
+
+        let _ = std::fs::remove_file(output_path);
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn simulated_synthesize_writes_ogg_opus_and_completes() {
+        if std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping daemon Ogg/Opus test because ffmpeg is not on PATH");
+            return;
+        }
+
+        let (queue, worker) = start_simulated_worker().await;
+        let output_path = std::env::temp_dir().join(format!(
+            "voice-daemon-simulated-synth-{}-{}.ogg",
+            std::process::id(),
+            unique_suffix()
+        ));
+
+        let (_queue_id, rx) = queue
+            .enqueue_and_wait(
+                "test-client".to_string(),
+                VoiceRequest::Synthesize {
+                    text: "hello from simulated opus synthesis".to_string(),
+                    output_path: output_path.to_string_lossy().to_string(),
+                    output_format: Some(AudioOutputFormat::OggOpus),
+                    voice: None,
+                    speed: None,
+                },
+            )
+            .await;
+
+        let result = await_completion(rx).await;
+        assert_eq!(result.status, ItemStatus::Completed);
+        let result_json: serde_json::Value =
+            serde_json::from_str(result.result.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            result_json.get("format").and_then(|v| v.as_str()),
+            Some("ogg-opus")
+        );
+        assert_eq!(
+            result_json.get("mime_type").and_then(|v| v.as_str()),
+            Some("audio/ogg; codecs=opus")
+        );
+        assert!(
+            voice_audio::is_ogg_opus_file(&output_path),
+            "simulated synth should create Ogg/Opus"
+        );
 
         let _ = std::fs::remove_file(output_path);
         worker.abort();

@@ -42,6 +42,7 @@ voice Hello world
 # Text-to-speech with the say subcommand
 voice say -v am_michael "How are you today?"
 voice say -f script.txt -o output.wav
+voice say --format ogg-opus -o output.ogg "Hello WhatsApp"
 echo "Hello" | voice say
 voice say --markdown -f post.mdx
 voice phonemes "ChatGPT uses RuntimeStateDoc"
@@ -93,7 +94,8 @@ Options:
   -f, --input-file <FILE>        Read text from a file (use - for stdin)
       --phonemes <IPA>           Raw phoneme string (IPA)
   -v, --voice <VOICE>            Voice name [default: af_heart]
-  -o, --output <PATH>            Write WAV to file instead of playing
+  -o, --output <PATH>            Write audio to file instead of playing
+      --format <FORMAT>          Output format: wav, ogg-opus
   -s, --speed <SPEED>            Speech speed factor [default: 1.0]
       --markdown                 Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>   Word substitution (repeatable)

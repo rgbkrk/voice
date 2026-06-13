@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use uuid::Uuid;
+use voice_audio::AudioOutputFormat;
 use voice_protocol::rpc::{DaemonState, ItemStatus, QueueItem};
 use voice_stream::TtsStreamEvent;
 
@@ -34,6 +35,7 @@ pub enum VoiceRequest {
     Synthesize {
         text: String,
         output_path: String,
+        output_format: Option<AudioOutputFormat>,
         voice: Option<String>,
         speed: Option<f64>,
     },
@@ -160,6 +162,7 @@ impl RequestQueue {
         client_id: String,
         text: String,
         output_path: String,
+        output_format: Option<AudioOutputFormat>,
         voice: Option<String>,
         speed: Option<f64>,
     ) -> String {
@@ -168,6 +171,7 @@ impl RequestQueue {
             VoiceRequest::Synthesize {
                 text,
                 output_path,
+                output_format,
                 voice,
                 speed,
             },

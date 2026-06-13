@@ -42,6 +42,7 @@ macro_rules! info {
                   voice listen\n  \
                   voice listen --continuous\n  \
                   voice transcribe recording.wav\n  \
+                  voice daemon status\n  \
                   voice serve -v am_michael"
 )]
 struct Args {
@@ -77,6 +78,9 @@ enum Command {
 
     /// Run as an MCP (Model Context Protocol) server on stdin/stdout
     Mcp(ServeArgs),
+
+    /// Inspect and control a running voice daemon
+    Daemon(DaemonArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -185,6 +189,81 @@ struct ServeArgs {
     /// Include Metal GPU memory stats (_mem) in MCP tool responses
     #[arg(long)]
     mem: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct DaemonArgs {
+    #[command(subcommand)]
+    command: Option<DaemonCommand>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum DaemonCommand {
+    /// Show daemon queue state
+    Status {
+        /// Print the raw daemon status JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Print the daemon Unix socket path
+    Socket,
+
+    /// List voices known to the daemon
+    Voices {
+        /// Print the raw daemon voices JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Set the daemon default voice
+    SetVoice {
+        /// Voice name, e.g. af_heart or am_adam
+        voice: String,
+    },
+
+    /// Set the daemon default speech speed
+    SetSpeed {
+        /// Speech speed factor, between 0 and 5
+        speed: f64,
+    },
+
+    /// Cancel a queued item by queue ID
+    Cancel {
+        /// Queue item ID returned by daemon status or speak
+        queue_id: String,
+    },
+
+    /// Replay stored question or answer audio for a queue item
+    Replay {
+        /// Queue item ID returned by daemon status or converse
+        queue_id: String,
+
+        /// Which audio file to replay
+        #[arg(short, long, value_enum, default_value_t = ReplayPart::Question)]
+        part: ReplayPart,
+    },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ReplayPart {
+    Question,
+    Answer,
+}
+
+impl ReplayPart {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Question => "question",
+            Self::Answer => "answer",
+        }
+    }
+}
+
+impl std::fmt::Display for ReplayPart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 fn resolve_text(say: &SayArgs) -> Result<String, String> {
@@ -492,6 +571,9 @@ fn main() {
         Some(Command::Mcp(serve_args)) => {
             run_mcp(serve_args);
         }
+        Some(Command::Daemon(daemon_args)) => {
+            run_daemon(daemon_args);
+        }
         Some(Command::Say(say_args)) => {
             run_say(say_args);
         }
@@ -516,6 +598,178 @@ fn main() {
                 run_say(say_args);
             }
         }
+    }
+}
+
+fn run_daemon(args: DaemonArgs) {
+    let command = args
+        .command
+        .unwrap_or(DaemonCommand::Status { json: false });
+
+    match command {
+        DaemonCommand::Socket => {
+            println!("{}", voice_protocol::client::daemon_socket_path().display());
+        }
+        DaemonCommand::Status { json } => {
+            let mut daemon = connect_daemon_or_exit();
+            let result = daemon_response_or_exit(daemon.status());
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else {
+                print_daemon_status(&result);
+            }
+        }
+        DaemonCommand::Voices { json } => {
+            let mut daemon = connect_daemon_or_exit();
+            let result = daemon_response_or_exit(daemon.list_voices());
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else {
+                print_daemon_voices(&result);
+            }
+        }
+        DaemonCommand::SetVoice { voice } => {
+            let mut daemon = connect_daemon_or_exit();
+            let result = daemon_response_or_exit(daemon.set_voice(&voice));
+            let voice = result
+                .get("voice")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&voice);
+            println!("voice: {voice}");
+        }
+        DaemonCommand::SetSpeed { speed } => {
+            let mut daemon = connect_daemon_or_exit();
+            let result = daemon_response_or_exit(daemon.set_speed(speed));
+            let speed = result
+                .get("speed")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(speed);
+            println!("speed: {speed}");
+        }
+        DaemonCommand::Cancel { queue_id } => {
+            let mut daemon = connect_daemon_or_exit();
+            let result = daemon_response_or_exit(daemon.cancel_item(&queue_id));
+            let cancelled = result
+                .get("cancelled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            println!("cancelled: {cancelled}");
+        }
+        DaemonCommand::Replay { queue_id, part } => {
+            let mut daemon = connect_daemon_or_exit();
+            let result = daemon_response_or_exit(daemon.replay_audio(&queue_id, part.as_str()));
+            let duration = result
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            println!(
+                "played {} audio for {} ({} ms)",
+                part.as_str(),
+                queue_id,
+                duration
+            );
+        }
+    }
+}
+
+fn connect_daemon_or_exit() -> voice_protocol::client::DaemonClient {
+    if let Some(daemon) = voice_protocol::client::DaemonClient::connect() {
+        return daemon;
+    }
+
+    let socket = voice_protocol::client::daemon_socket_path();
+    eprintln!("voice daemon: not running (socket: {})", socket.display());
+    eprintln!("start it with `voiced`");
+    std::process::exit(1);
+}
+
+fn daemon_response_or_exit(
+    result: Result<voice_protocol::rpc::Response, String>,
+) -> serde_json::Value {
+    match result {
+        Ok(resp) => {
+            if let Some(err) = resp.error {
+                eprintln!("voice daemon: {}", err.message);
+                std::process::exit(1);
+            }
+            resp.result.unwrap_or(serde_json::Value::Null)
+        }
+        Err(e) => {
+            eprintln!("voice daemon: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_daemon_status(result: &serde_json::Value) {
+    let status = result
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let pending = result
+        .get("pending")
+        .and_then(|v| v.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let recent = result
+        .get("recent")
+        .and_then(|v| v.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+
+    println!("status: {status}");
+    println!(
+        "socket: {}",
+        voice_protocol::client::daemon_socket_path().display()
+    );
+
+    match result.get("current").filter(|value| !value.is_null()) {
+        Some(current) => println!("current: {}", format_daemon_item(current)),
+        None => println!("current: none"),
+    }
+
+    println!("pending: {pending}");
+    println!("recent: {recent}");
+}
+
+fn format_daemon_item(item: &serde_json::Value) -> String {
+    let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let method = item
+        .get("method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let status = item
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    if let Some(preview) = item.get("text_preview").and_then(|v| v.as_str()) {
+        format!("{id} {method} {status}: {preview}")
+    } else {
+        format!("{id} {method} {status}")
+    }
+}
+
+fn print_daemon_voices(result: &serde_json::Value) {
+    let current = result.get("current").and_then(|v| v.as_str()).unwrap_or("");
+    let voices = result
+        .get("voices")
+        .and_then(|v| v.as_array())
+        .map(|voices| voices.as_slice())
+        .unwrap_or(&[]);
+
+    for voice in voices {
+        let id = voice.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let name = voice.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let language = voice.get("language").and_then(|v| v.as_str()).unwrap_or("");
+        let builtin = voice
+            .get("builtin")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let marker = if id == current { "*" } else { " " };
+        let source = if builtin { "builtin" } else { "download" };
+
+        println!("{marker} {id:<14} {name:<24} {language:<12} {source}");
     }
 }
 

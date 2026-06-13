@@ -1,6 +1,6 @@
 //! Frame codec: length-prefixed typed frames over async byte streams.
 
-use std::io;
+use std::io::{self, Read, Write};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Frame types carried over the wire.
@@ -115,6 +115,52 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Opti
     }))
 }
 
+/// Write a frame to a blocking writer.
+pub fn write_frame_sync<W: Write>(writer: &mut W, frame: &Frame) -> io::Result<()> {
+    let payload_len = frame.payload.len() as u32 + 1; // +1 for frame type byte
+    writer.write_all(&payload_len.to_be_bytes())?;
+    writer.write_all(&[frame.frame_type as u8])?;
+    writer.write_all(&frame.payload)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Read a frame from a blocking reader. Returns None on EOF.
+pub fn read_frame_sync<R: Read>(reader: &mut R) -> io::Result<Option<Frame>> {
+    let mut len_buf = [0u8; 4];
+    match reader.read_exact(&mut len_buf) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e),
+    }
+
+    let total_len = u32::from_be_bytes(len_buf);
+    if total_len == 0 || total_len > MAX_FRAME_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("frame too large: {} bytes", total_len),
+        ));
+    }
+
+    let mut type_byte = [0u8; 1];
+    reader.read_exact(&mut type_byte)?;
+    let frame_type = FrameType::from_byte(type_byte[0]).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown frame type: 0x{:02x}", type_byte[0]),
+        )
+    })?;
+
+    let payload_len = (total_len - 1) as usize;
+    let mut payload = vec![0u8; payload_len];
+    reader.read_exact(&mut payload)?;
+
+    Ok(Some(Frame {
+        frame_type,
+        payload,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +205,18 @@ mod tests {
         drop(client);
         let result = read_frame(&mut server).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_sync_roundtrip() {
+        let request = Frame::request(b"{\"method\":\"status\"}");
+        let mut bytes = Vec::new();
+
+        write_frame_sync(&mut bytes, &request).unwrap();
+
+        let mut cursor = std::io::Cursor::new(bytes);
+        let received = read_frame_sync(&mut cursor).unwrap().unwrap();
+        assert_eq!(received.frame_type, FrameType::Request);
+        assert_eq!(received.payload, b"{\"method\":\"status\"}");
     }
 }

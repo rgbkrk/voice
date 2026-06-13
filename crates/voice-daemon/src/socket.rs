@@ -13,11 +13,11 @@ use voice_protocol::frames::{read_frame, write_frame, Frame, FrameType};
 use voice_protocol::rpc::{self, Response};
 
 pub fn socket_path() -> PathBuf {
-    let dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".voice");
-    std::fs::create_dir_all(&dir).ok();
-    dir.join("daemon.sock")
+    let path = voice_protocol::client::daemon_socket_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    path
 }
 
 pub async fn serve(
@@ -110,6 +110,18 @@ async fn handle_client(
     eprintln!("voiced: client disconnected ({})", client_id);
 }
 
+async fn sync_automerge(
+    queue: &Arc<RequestQueue>,
+    automerge: &Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
+) {
+    let snapshot = queue.snapshot().await;
+    let mut am = automerge.lock().await;
+    am.update(&snapshot);
+    if let Err(e) = am.save() {
+        eprintln!("voiced: failed to save automerge doc: {}", e);
+    }
+}
+
 async fn dispatch(
     req: rpc::Request,
     queue: &Arc<RequestQueue>,
@@ -119,63 +131,63 @@ async fn dispatch(
 ) -> Response {
     use crate::queue::VoiceRequest;
 
-    let wait = req
-        .params
-        .get("wait")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    if !(req.params.is_null() || req.params.is_object()) {
+        return Response::error(req.id, rpc::INVALID_PARAMS, "params must be an object");
+    }
+
+    let wait = match wait_param(&req) {
+        Ok(wait) => wait,
+        Err(resp) => return resp,
+    };
 
     // Build the voice request from params
     let voice_req = match req.method.as_str() {
         "speak" => {
-            let text = req.params.get("text").and_then(|v| v.as_str());
-            let Some(text) = text else {
-                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: text");
+            let text = match required_string_param(&req, "text") {
+                Ok(text) => text,
+                Err(resp) => return resp,
             };
-            let voice = req
-                .params
-                .get("voice")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let speed = req.params.get("speed").and_then(|v| v.as_f64());
-            VoiceRequest::Speak {
-                text: text.to_string(),
-                voice,
-                speed,
-            }
+            let voice = match optional_voice_param(&req) {
+                Ok(voice) => voice,
+                Err(resp) => return resp,
+            };
+            let speed = match optional_speed_param(&req) {
+                Ok(speed) => speed,
+                Err(resp) => return resp,
+            };
+            VoiceRequest::Speak { text, voice, speed }
         }
         "listen" => {
-            let max_duration_ms = req.params.get("max_duration_ms").and_then(|v| v.as_u64());
+            let max_duration_ms = match optional_duration_param(&req, "max_duration_ms") {
+                Ok(duration) => duration,
+                Err(resp) => return resp,
+            };
             VoiceRequest::Listen { max_duration_ms }
         }
         "converse" => {
-            let text = req.params.get("text").and_then(|v| v.as_str());
-            let Some(text) = text else {
-                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: text");
+            let text = match required_string_param(&req, "text") {
+                Ok(text) => text,
+                Err(resp) => return resp,
             };
-            let voice = req
-                .params
-                .get("voice")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            VoiceRequest::Converse {
-                text: text.to_string(),
-                voice,
-            }
+            let voice = match optional_voice_param(&req) {
+                Ok(voice) => voice,
+                Err(resp) => return resp,
+            };
+            VoiceRequest::Converse { text, voice }
         }
         "replay_audio" => {
-            let queue_id = req.params.get("queue_id").and_then(|v| v.as_str());
-            let Some(queue_id) = queue_id else {
-                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: queue_id");
+            let queue_id = match required_string_param(&req, "queue_id") {
+                Ok(queue_id) => queue_id,
+                Err(resp) => return resp,
             };
-            let part = req.params.get("part").and_then(|v| v.as_str());
-            let Some(part) = part else {
-                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: part");
+            let part = match required_string_param(&req, "part") {
+                Ok(part) => part,
+                Err(resp) => return resp,
             };
 
-            let path = match part {
-                "question" => crate::audio_recorder::question_path(queue_id),
-                "answer" => crate::audio_recorder::answer_path(queue_id),
+            let path = match part.as_str() {
+                "question" => crate::audio_recorder::question_path(&queue_id),
+                "answer" => crate::audio_recorder::answer_path(&queue_id),
                 _ => {
                     return Response::error(
                         req.id,
@@ -233,26 +245,20 @@ async fn dispatch(
         }
         "cancel" => {
             let count = queue.cancel_client(client_id).await;
+            sync_automerge(queue, automerge).await;
             return Response::success(req.id, serde_json::json!({ "cancelled_count": count }));
         }
         "cancel_item" => {
-            let queue_id = req.params.get("queue_id").and_then(|v| v.as_str());
-            let Some(queue_id) = queue_id else {
-                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: queue_id");
+            let queue_id = match required_string_param(&req, "queue_id") {
+                Ok(queue_id) => queue_id,
+                Err(resp) => return resp,
             };
 
             // Remove from queue (both pending and current)
-            let removed = queue.cancel_item(queue_id).await;
+            let removed = queue.cancel_item(&queue_id).await;
 
             if removed {
-                // Update Automerge state
-                let snapshot = queue.snapshot().await;
-                let mut am = automerge.lock().await;
-                am.update(&snapshot);
-                if let Err(e) = am.save() {
-                    eprintln!("voiced: failed to save automerge after cancel: {}", e);
-                }
-
+                sync_automerge(queue, automerge).await;
                 return Response::success(req.id, serde_json::json!({ "cancelled": true }));
             } else {
                 return Response::success(req.id, serde_json::json!({ "cancelled": false }));
@@ -263,25 +269,18 @@ async fn dispatch(
             return Response::success(req.id, serde_json::to_value(&state).unwrap());
         }
         "set_voice" => {
-            let voice = req.params.get("voice").and_then(|v| v.as_str());
-            let Some(voice) = voice else {
-                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: voice");
+            let voice = match required_voice_param(&req) {
+                Ok(voice) => voice,
+                Err(resp) => return resp,
             };
-            config.set_voice_name(voice.to_string());
+            config.set_voice_name(voice.clone());
             return Response::success(req.id, serde_json::json!({ "voice": voice }));
         }
         "set_speed" => {
-            let speed = req.params.get("speed").and_then(|v| v.as_f64());
-            let Some(speed) = speed else {
-                return Response::error(req.id, rpc::INVALID_PARAMS, "Missing param: speed");
+            let speed = match required_speed_param(&req) {
+                Ok(speed) => speed,
+                Err(resp) => return resp,
             };
-            if speed <= 0.0 || speed > 5.0 {
-                return Response::error(
-                    req.id,
-                    rpc::INVALID_PARAMS,
-                    "Speed must be between 0 (exclusive) and 5 (inclusive)",
-                );
-            }
             config.set_speed(speed as f32);
             return Response::success(req.id, serde_json::json!({ "speed": speed }));
         }
@@ -334,6 +333,7 @@ async fn dispatch(
                     .await
             }
         };
+        sync_automerge(queue, automerge).await;
         return Response::success(
             req.id,
             serde_json::json!({ "queue_id": queue_id, "status": "queued" }),
@@ -344,6 +344,7 @@ async fn dispatch(
     let (queue_id, rx) = queue
         .enqueue_and_wait(client_id.to_string(), voice_req)
         .await;
+    sync_automerge(queue, automerge).await;
 
     match rx.await {
         Ok(result) => Response::success(
@@ -355,6 +356,125 @@ async fn dispatch(
             }),
         ),
         Err(_) => Response::error(req.id, -32000, "Queue item dropped before completion"),
+    }
+}
+
+fn wait_param(req: &rpc::Request) -> Result<bool, Response> {
+    match req.params.get("wait") {
+        Some(value) => value.as_bool().ok_or_else(|| {
+            Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                "param 'wait' must be a boolean",
+            )
+        }),
+        None => Ok(false),
+    }
+}
+
+fn required_string_param(req: &rpc::Request, name: &str) -> Result<String, Response> {
+    match req.params.get(name) {
+        Some(value) => match value.as_str() {
+            Some(text) if !text.trim().is_empty() => Ok(text.to_string()),
+            Some(_) => Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                format!("param '{}' must not be empty", name),
+            )),
+            None => Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                format!("param '{}' must be a string", name),
+            )),
+        },
+        None => Err(Response::error(
+            req.id.clone(),
+            rpc::INVALID_PARAMS,
+            format!("Missing param: {}", name),
+        )),
+    }
+}
+
+fn required_voice_param(req: &rpc::Request) -> Result<String, Response> {
+    let voice = required_string_param(req, "voice")?;
+    validate_voice(req, voice)
+}
+
+fn optional_voice_param(req: &rpc::Request) -> Result<Option<String>, Response> {
+    if req.params.get("voice").is_none() {
+        return Ok(None);
+    }
+    required_voice_param(req).map(Some)
+}
+
+fn validate_voice(req: &rpc::Request, voice: String) -> Result<String, Response> {
+    if voice_tts::catalog::ALL_VOICES
+        .iter()
+        .any(|v| v.id == voice.as_str())
+    {
+        Ok(voice)
+    } else {
+        Err(Response::error(
+            req.id.clone(),
+            rpc::INVALID_PARAMS,
+            format!("Unknown voice: {}", voice),
+        ))
+    }
+}
+
+fn required_speed_param(req: &rpc::Request) -> Result<f64, Response> {
+    match req.params.get("speed") {
+        Some(value) => match value.as_f64() {
+            Some(speed) => validate_speed(req, speed),
+            None => Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                "param 'speed' must be a number",
+            )),
+        },
+        None => Err(Response::error(
+            req.id.clone(),
+            rpc::INVALID_PARAMS,
+            "Missing param: speed",
+        )),
+    }
+}
+
+fn optional_speed_param(req: &rpc::Request) -> Result<Option<f64>, Response> {
+    if req.params.get("speed").is_none() {
+        return Ok(None);
+    }
+    required_speed_param(req).map(Some)
+}
+
+fn validate_speed(req: &rpc::Request, speed: f64) -> Result<f64, Response> {
+    if speed.is_finite() && speed > 0.0 && speed <= 5.0 {
+        Ok(speed)
+    } else {
+        Err(Response::error(
+            req.id.clone(),
+            rpc::INVALID_PARAMS,
+            "Speed must be between 0 (exclusive) and 5 (inclusive)",
+        ))
+    }
+}
+
+fn optional_duration_param(req: &rpc::Request, name: &str) -> Result<Option<u64>, Response> {
+    match req.params.get(name) {
+        Some(value) => match value.as_u64() {
+            Some(duration) if duration > 0 => Ok(Some(duration)),
+            Some(_) => Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                format!("param '{}' must be greater than 0", name),
+            )),
+            None => Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                format!("param '{}' must be an unsigned integer", name),
+            )),
+        },
+        None => Ok(None),
     }
 }
 

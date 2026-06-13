@@ -61,6 +61,18 @@ async fn main() {
         }
     };
 
+    // Persist an initial idle snapshot so file-watching clients can attach
+    // before the first queue transition.
+    {
+        let snapshot = queue.snapshot().await;
+        let mut am = automerge.lock().await;
+        am.update(&snapshot);
+        if let Err(e) = am.save() {
+            eprintln!("voiced: failed to save initial automerge state: {}", e);
+            std::process::exit(1);
+        }
+    }
+
     // Handle ctrl-c
     tokio::spawn({
         async move {

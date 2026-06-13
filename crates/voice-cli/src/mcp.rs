@@ -680,6 +680,7 @@ fn metal_memory_stats() -> MemStats {
 }
 
 /// Get process resident set size in bytes via mach task_info.
+#[cfg(target_os = "macos")]
 fn process_rss_bytes() -> u64 {
     use std::mem;
 
@@ -722,6 +723,11 @@ fn process_rss_bytes() -> u64 {
     } else {
         0
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_rss_bytes() -> u64 {
+    0
 }
 
 fn round1(v: f64) -> f64 {

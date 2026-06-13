@@ -5,6 +5,8 @@ use tokio::sync::{oneshot, Mutex, Notify};
 use uuid::Uuid;
 use voice_protocol::rpc::{DaemonState, ItemStatus, QueueItem};
 
+const CANCELLED_MESSAGE: &str = "Cancelled by user";
+
 /// What the worker will execute.
 #[derive(Debug, Clone)]
 pub enum VoiceRequest {
@@ -228,56 +230,59 @@ impl RequestQueue {
     }
 
     pub async fn cancel_client(&self, client_id: &str) -> usize {
-        let mut items = self.items.lock().await;
-        let before = items.len();
-        items.retain(|e| e.client_id != client_id);
-        before - items.len()
+        let mut cancelled = Vec::new();
+
+        {
+            let mut items = self.items.lock().await;
+            let mut index = 0;
+            while index < items.len() {
+                if items[index].client_id == client_id {
+                    cancelled.push(items.remove(index).unwrap());
+                } else {
+                    index += 1;
+                }
+            }
+        }
+
+        let count = cancelled.len();
+        for entry in cancelled {
+            self.cancel_entry(entry).await;
+        }
+        count
     }
 
     /// Cancel a specific queue item by ID.
     pub async fn cancel_item(&self, queue_id: &str) -> bool {
         // Check if it's the current item
-        {
+        let current_entry = {
             let mut current = self.current.lock().await;
             if let Some(entry) = current.as_ref() {
                 if entry.id == queue_id {
-                    // Mark as failed and move to recent
-                    let mut entry = current.take().unwrap();
-                    entry.status = ItemStatus::Failed;
-                    entry.result = Some("Cancelled by user".to_string());
-                    self.push_recent(entry).await;
-                    // Signal any waiting client
-                    self.signal_waiter(
-                        queue_id,
-                        CompletionResult {
-                            status: ItemStatus::Failed,
-                            result: Some("Cancelled by user".to_string()),
-                        },
-                    )
-                    .await;
-                    return true;
+                    current.take()
+                } else {
+                    None
                 }
+            } else {
+                None
             }
+        };
+
+        if let Some(entry) = current_entry {
+            self.cancel_entry(entry).await;
+            return true;
         }
 
         // Check pending queue
-        let mut items = self.items.lock().await;
-        if let Some(pos) = items.iter().position(|e| e.id == queue_id) {
-            let mut entry = items.remove(pos).unwrap();
-            let entry_id = entry.id.clone(); // Capture ID before moving entry
-            entry.status = ItemStatus::Failed;
-            entry.result = Some("Cancelled by user".to_string());
-            drop(items); // Release lock before calling push_recent
-            self.push_recent(entry).await;
-            // Signal any waiting client
-            self.signal_waiter(
-                &entry_id,
-                CompletionResult {
-                    status: ItemStatus::Failed,
-                    result: Some("Cancelled by user".to_string()),
-                },
-            )
-            .await;
+        let pending_entry = {
+            let mut items = self.items.lock().await;
+            items
+                .iter()
+                .position(|e| e.id == queue_id)
+                .and_then(|pos| items.remove(pos))
+        };
+
+        if let Some(entry) = pending_entry {
+            self.cancel_entry(entry).await;
             return true;
         }
 
@@ -334,6 +339,21 @@ impl RequestQueue {
         }
     }
 
+    async fn cancel_entry(&self, mut entry: QueueEntry) {
+        let id = entry.id.clone();
+        entry.status = ItemStatus::Failed;
+        entry.result = Some(CANCELLED_MESSAGE.to_string());
+        self.push_recent(entry).await;
+        self.signal_waiter(
+            &id,
+            CompletionResult {
+                status: ItemStatus::Failed,
+                result: Some(CANCELLED_MESSAGE.to_string()),
+            },
+        )
+        .await;
+    }
+
     /// Remove a completed item from the recent list by ID.
     pub async fn remove_recent(&self, id: &str) {
         self.recent.lock().await.retain(|item| item.id != id);
@@ -345,4 +365,55 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancel_client_moves_pending_items_to_recent_and_signals_waiters() {
+        let queue = RequestQueue::new();
+        let (queue_id, rx) = queue
+            .enqueue_and_wait(
+                "client-a".to_string(),
+                VoiceRequest::Speak {
+                    text: "hello".to_string(),
+                    voice: None,
+                    speed: None,
+                },
+            )
+            .await;
+
+        assert_eq!(queue.cancel_client("client-a").await, 1);
+
+        let result = rx.await.unwrap();
+        assert_eq!(result.status, ItemStatus::Failed);
+        assert_eq!(result.result.as_deref(), Some(CANCELLED_MESSAGE));
+
+        let snapshot = queue.snapshot().await;
+        assert!(snapshot.pending.is_empty());
+        assert_eq!(snapshot.recent.len(), 1);
+        assert_eq!(snapshot.recent[0].id, queue_id);
+        assert_eq!(snapshot.recent[0].status, ItemStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn cancel_item_signals_waiter_for_pending_item() {
+        let queue = RequestQueue::new();
+        let (queue_id, rx) = queue
+            .enqueue_and_wait(
+                "client-a".to_string(),
+                VoiceRequest::Listen {
+                    max_duration_ms: None,
+                },
+            )
+            .await;
+
+        assert!(queue.cancel_item(&queue_id).await);
+
+        let result = rx.await.unwrap();
+        assert_eq!(result.status, ItemStatus::Failed);
+        assert_eq!(result.result.as_deref(), Some(CANCELLED_MESSAGE));
+    }
 }

@@ -356,6 +356,10 @@ pub fn subtokenize(word: &str) -> Vec<String> {
     }
 }
 
+fn is_subtoken_boundary_junk(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| matches!(c, '-' | '_' | '/'))
+}
+
 // ---------------------------------------------------------------------------
 // fold_left
 // ---------------------------------------------------------------------------
@@ -493,6 +497,9 @@ pub fn retokenize(tokens: Vec<MToken>) -> Vec<TokenOrGroup> {
             // starts uppercase (e.g. "use" | "Effect" from "useEffect").
             if i > 0 && !is_junk {
                 if let Some(prev) = subtokens.get(i - 1) {
+                    if is_subtoken_boundary_junk(prev) {
+                        sub_tok.underscore.prespace = true;
+                    }
                     if prev.chars().last().is_some_and(|c| c.is_lowercase())
                         && sub_text.chars().next().is_some_and(|c| c.is_uppercase())
                     {

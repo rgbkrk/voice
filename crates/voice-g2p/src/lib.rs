@@ -264,18 +264,20 @@ impl G2P {
         }
 
         if should_fallback {
-            let merged = merge_tokens(group, None);
-            if let Some((ps, rating)) = self.fallback.convert_word(&merged.text) {
-                group[0].phonemes = Some(ps);
-                group[0].underscore.rating = Some(rating);
-                for j in 1..group.len() {
-                    group[j].phonemes = Some(String::new());
-                    group[j].underscore.rating = group[0].underscore.rating;
+            for tk in group.iter_mut() {
+                if tk.phonemes.is_some() {
+                    continue;
+                }
+                if tk.text.chars().all(|c| SUBTOKEN_JUNKS.contains(c)) {
+                    tk.phonemes = Some(String::new());
+                    tk.underscore.rating = Some(3);
+                } else {
+                    self.resolve_single_token(tk, ctx);
                 }
             }
-        } else {
-            Self::resolve_tokens(group);
         }
+
+        Self::resolve_tokens(group);
     }
 
     /// Update TokenContext based on resolved phonemes and token.
@@ -656,6 +658,42 @@ mod tests {
             result.contains(' '),
             "Expected space between words in: {}",
             result
+        );
+    }
+
+    #[test]
+    fn test_g2p_hyphen_compound_preserves_word_boundary() {
+        let g2p = G2P::new();
+        let result = g2p.convert("cat-dog").unwrap();
+        assert!(
+            result.contains(' '),
+            "Expected a phoneme-space boundary for hyphen compound, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_g2p_underscore_compound_preserves_word_boundary() {
+        let g2p = G2P::new();
+        let result = g2p.convert("cat_dog").unwrap();
+        assert!(
+            result.contains(' '),
+            "Expected a phoneme-space boundary for underscore compound, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_g2p_hyphen_fallback_keeps_resolved_subtokens_without_espeak() {
+        let g2p = G2P::with_config(G2PConfig {
+            espeak_path: "/definitely/missing/espeak-ng".to_string(),
+        });
+        let result = g2p.convert("cat-unpronounceablexyz-dog").unwrap();
+        assert!(
+            result.contains(' '),
+            "Expected resolved neighboring words to remain separated, got: {result}"
+        );
+        assert!(
+            result.contains("d"),
+            "Expected resolved trailing word to remain present, got: {result}"
         );
     }
 

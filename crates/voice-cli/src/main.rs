@@ -6,7 +6,7 @@ use clap::{Parser, ValueEnum};
 use pulldown_cmark::{Event, Options, Parser as MdParser, Tag, TagEnd};
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
@@ -1231,8 +1231,10 @@ fn run_say(say_args: SayArgs) {
             say_args.speed,
             sample_rate,
             synthesis_mode,
-            output_path,
-            output_format.expect("output format resolved when output path is set"),
+            FileOutput {
+                path: output_path.as_path(),
+                format: output_format.expect("output format resolved when output path is set"),
+            },
         ) {
             eprintln!("Failed to write audio: {e}");
             std::process::exit(1);
@@ -1551,7 +1553,12 @@ fn load_tts_model(
     }
 }
 
-/// Batch-generate all chunks and write a single WAV file.
+struct FileOutput<'a> {
+    path: &'a Path,
+    format: voice_audio::AudioOutputFormat,
+}
+
+/// Batch-generate all chunks and write a single audio file.
 fn generate_to_file(
     model: &mut voice_tts::KokoroModel,
     voice: &candle_core::Tensor,
@@ -1559,8 +1566,7 @@ fn generate_to_file(
     speed: f32,
     sample_rate: u32,
     synthesis_mode: voice_tts::SynthesisMode,
-    output_path: &PathBuf,
-    output_format: voice_audio::AudioOutputFormat,
+    output: FileOutput<'_>,
 ) -> Result<(), String> {
     info!("Generating audio...");
     let mut all_samples: Vec<f32> = Vec::new();
@@ -1590,8 +1596,8 @@ fn generate_to_file(
         std::process::exit(130);
     }
 
-    voice_audio::save_audio(&all_samples, output_path, sample_rate, output_format)?;
-    info!("Saved {} to {}", output_format, output_path.display());
+    voice_audio::save_audio(&all_samples, output.path, sample_rate, output.format)?;
+    info!("Saved {} to {}", output.format, output.path.display());
     Ok(())
 }
 

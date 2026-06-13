@@ -99,6 +99,7 @@ impl G2P {
             ("demultiplexing", "dˌimˈʌltɪplɛksɪŋ"),
             ("demux", "dˌimˈʌks"),
             ("demuxing", "dˌimˈʌksɪŋ"),
+            ("dft", "dˈi ˈɛf tˈi"),
             ("dtls", "dˈi tˈi ˈɛl ˈɛs"),
             ("duckdb", "dˈʌk dˈi bˈi"),
             ("esbuild", "ˈi ˈɛs bˌɪld"),
@@ -131,9 +132,11 @@ impl G2P {
             ("katex", "kˈA tˌɛk"),
             ("kernelspec", "kˈɜɹnᵊl spˌɛk"),
             ("kokoro", "kˈOkəɹO"),
+            ("kokoro-82m", "kˈOkəɹO ˈATi tˈu ˈɛm"),
             ("kubernetes", "kˌubəɹnˈɛtiz"),
             ("kubectl", "kjˈub kˈʌdᵊl"),
             ("latex", "lˈA tˌɛk"),
+            ("lfs", "ˈɛl ˈɛf ˈɛs"),
             ("lstm", "ˈɛl ˈɛs tˈi ˈɛm"),
             ("macos", "mˈæk ˈO ˈɛs"),
             ("matplotlib", "mˈæt plˌɑt lˌɪb"),
@@ -162,6 +165,7 @@ impl G2P {
             ("ogg", "ˈɑɡ"),
             ("oidc", "ˈO ˌI dˈi sˈi"),
             ("onnx", "ˈɑnɪks"),
+            ("openai-codex", "ˌOpᵊn ˈAˌI kˈOdˌɛks"),
             ("openapi", "ˈOpᵊn ˈA pˈi ˌI"),
             ("opfs", "ˈO pˈi ˈɛf ˈɛs"),
             ("pnpm", "pˈi ˈɛn pˈi ˈɛm"),
@@ -1001,6 +1005,7 @@ mod tests {
         assert_eq!(pronounces("demux"), "dˌimˈʌks");
         assert_eq!(pronounces("demultiplexing"), "dˌimˈʌltɪplɛksɪŋ");
         assert_eq!(pronounces("demultiplex"), "dˌimˈʌltɪplɛks");
+        assert_eq!(pronounces("DFT"), "dˈi ˈɛf tˈi");
         assert_eq!(pronounces("DTLS"), "dˈi tˈi ˈɛl ˈɛs");
         assert_eq!(pronounces("DuckDB"), "dˈʌk dˈi bˈi");
         assert_eq!(pronounces("esbuild"), "ˈi ˈɛs bˌɪld");
@@ -1034,9 +1039,11 @@ mod tests {
         assert_eq!(pronounces("KaTeX"), "kˈA tˌɛk");
         assert_eq!(pronounces("kernelspec"), "kˈɜɹnᵊl spˌɛk");
         assert_eq!(pronounces("Kokoro"), "kˈOkəɹO");
+        assert_eq!(pronounces("Kokoro-82M"), "kˈOkəɹO ˈATi tˈu ˈɛm");
         assert_eq!(pronounces("Kubernetes"), "kˌubəɹnˈɛtiz");
         assert_eq!(pronounces("kubectl"), "kjˈub kˈʌdᵊl");
         assert_eq!(pronounces("LaTeX"), "lˈA tˌɛk");
+        assert_eq!(pronounces("LFS"), "ˈɛl ˈɛf ˈɛs");
         assert_eq!(pronounces("LSTM"), "ˈɛl ˈɛs tˈi ˈɛm");
         assert_eq!(pronounces("macOS"), "mˈæk ˈO ˈɛs");
         assert_eq!(pronounces("Matplotlib"), "mˈæt plˌɑt lˌɪb");
@@ -1065,6 +1072,7 @@ mod tests {
         assert_eq!(pronounces("OGG"), "ˈɑɡ");
         assert_eq!(pronounces("OIDC"), "ˈO ˌI dˈi sˈi");
         assert_eq!(pronounces("ONNX"), "ˈɑnɪks");
+        assert_eq!(pronounces("openai-codex"), "ˌOpᵊn ˈAˌI kˈOdˌɛks");
         assert_eq!(pronounces("OpenAPI"), "ˈOpᵊn ˈA pˈi ˌI");
         assert_eq!(pronounces("OPFS"), "ˈO pˈi ˈɛf ˈɛs");
         assert_eq!(pronounces("pnpm"), "pˈi ˈɛn pˈi ˈɛm");

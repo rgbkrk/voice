@@ -1,0 +1,3 @@
+aiohttp>=3.9
+aiortc>=1.10
+av>=12

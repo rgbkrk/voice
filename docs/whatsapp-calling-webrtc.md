@@ -95,6 +95,11 @@ Owns real-time media concerns:
 - accept local PCM frames from `voice` and send Opus RTP back to WhatsApp
 - terminate quickly and cleanly when the Graph lifecycle ends
 
+The repository includes a first Python spike in
+[`examples/webrtc-sidecar`](../examples/webrtc-sidecar/). It exposes the local
+SDP/PCM boundary described below, sends silence until outbound PCM is available,
+and lets `aiortc` handle Opus RTP, ICE, DTLS, and SRTP.
+
 ### `voice` Daemon
 
 Owns speech model concerns:
@@ -209,7 +214,8 @@ Risk: more time spent on WebRTC plumbing before validating Meta call behavior.
 
 Recommendation: spike in Python or Pipecat first, keep the local audio boundary
 as 48 kHz 20 ms PCM, then port the sidecar to Rust only after the signaling and
-timing behavior is proven.
+timing behavior is proven. The local `examples/webrtc-sidecar` spike follows
+that path.
 
 ## PR Sequence
 
@@ -217,6 +223,8 @@ timing behavior is proven.
 2. Add this architecture document and track open questions.
 3. Add a `voice` streaming STT input API that accepts fixed PCM frames.
 4. Prototype a sidecar that accepts a synthetic SDP offer and round-trips PCM.
+   The initial `examples/webrtc-sidecar` artifact covers the SDP answer,
+   outbound PCM-to-Opus/WebRTC track, and inbound decoded PCM sink.
 5. Wire Hermes WhatsApp Cloud `connect` webhooks to the sidecar.
 6. Build an inbound-call echo bot: WhatsApp audio in, same audio out.
 7. Replace echo with STT -> Hermes turn -> `stream_speak` TTS.

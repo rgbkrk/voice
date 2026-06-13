@@ -167,6 +167,7 @@ impl KModel {
             .iter()
             .map(|&v| v.max(1.0) as i64)
             .collect();
+        let pred_dur_vec = suppress_boundary_token_durations(pred_dur_vec);
 
         let total_frames: usize = pred_dur_vec.iter().sum::<i64>() as usize;
 
@@ -223,5 +224,36 @@ impl KModel {
 
         // audio: [1, 1, samples] -> [samples]
         audio.squeeze(0)?.squeeze(0)
+    }
+}
+
+fn suppress_boundary_token_durations(mut durations: Vec<i64>) -> Vec<i64> {
+    if let Some(first) = durations.first_mut() {
+        *first = 0;
+    }
+    if durations.len() > 1 {
+        let last_idx = durations.len() - 1;
+        durations[last_idx] = 0;
+    }
+    durations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::suppress_boundary_token_durations;
+
+    #[test]
+    fn test_suppresses_bos_eos_duration_frames() {
+        let durations = suppress_boundary_token_durations(vec![4, 7, 9, 3]);
+        assert_eq!(durations, vec![0, 7, 9, 0]);
+    }
+
+    #[test]
+    fn test_suppresses_only_available_boundary_duration() {
+        assert_eq!(suppress_boundary_token_durations(vec![2]), vec![0]);
+        assert_eq!(
+            suppress_boundary_token_durations(Vec::new()),
+            Vec::<i64>::new()
+        );
     }
 }

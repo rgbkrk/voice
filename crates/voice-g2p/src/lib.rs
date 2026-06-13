@@ -89,6 +89,7 @@ impl G2P {
             ("crdt", "sˈi ˈɑɹ dˈi tˈi"),
             ("crdts", "sˈi ˈɑɹ dˈi tˈiz"),
             ("csr", "sˈi ˈɛs ˈɑɹ"),
+            ("css", "sˈi ˈɛs ˈɛs"),
             ("cuda", "kˈudə"),
             ("deno", "dˈinO"),
             ("demo", "dˈɛmO"),
@@ -98,6 +99,8 @@ impl G2P {
             ("demux", "dˌimˈʌks"),
             ("demuxing", "dˌimˈʌksɪŋ"),
             ("duckdb", "dˈʌk dˈi bˈi"),
+            ("esbuild", "ˈi ˈɛs bˌɪld"),
+            ("eslint", "ˈi ˈɛs lˌɪnt"),
             ("espeak", "ˈi spˌik"),
             ("fastapi", "fˈæst ˈA pˈi ˌI"),
             ("flac", "flˈæk"),
@@ -106,7 +109,11 @@ impl G2P {
             ("gpt", "ʤˈi pˈi tˈi"),
             ("http", "ˈAʧ tˈi tˈi pˈi"),
             ("https", "ˈAʧ tˈi tˈi pˈi ˈɛs"),
+            ("html", "ˈAʧ tˈi ˈɛm ˈɛl"),
+            ("idb", "ˌI dˈi bˈi"),
+            ("iframe", "ˌI fɹˌAm"),
             ("ios", "ˈI ˈO ˈɛs"),
+            ("indexeddb", "ˈɪndɛkst dˈi bˈi"),
             ("ipykernel", "ˈI pˈI kˌɜɹnᵊl"),
             ("ipython", "ˌI pˈIθˌɑn"),
             ("ipywidgets", "ˌI pˈI wˌɪʤəts"),
@@ -136,11 +143,14 @@ impl G2P {
             ("mimebundle", "mˈIm bˌʌndᵊl"),
             ("mlx", "ˈɛm ˈɛl ˈɛks"),
             ("mmap", "ˈɛm mˌæp"),
+            ("msw", "ˈɛm ˈɛs dˈʌbᵊlju"),
             ("mypy", "mˈI pˌI"),
             ("nbconvert", "ˈɛn bˈi kˌɑnvɜɹt"),
             ("nbformat", "ˈɛn bˈi fˌɔɹmæt"),
             ("neuphonic", "nˈu fˌɑnɪk"),
             ("neutts", "nˈu tˈi tˈi ˈɛs"),
+            ("next.js", "nˈɛkst ʤˈA ˈɛs"),
+            ("nextjs", "nˈɛkst ʤˈA ˈɛs"),
             ("nginx", "ˈɛnʤən ˌɛks"),
             ("node.js", "nˈOd ʤˈA ˈɛs"),
             ("nodejs", "nˈOd ʤˈA ˈɛs"),
@@ -184,10 +194,13 @@ impl G2P {
             ("serde", "sˈɜɹdˌi"),
             ("sklearn", "ˈɛs kˈA lˌɜɹn"),
             ("sqlite", "ˌɛs kjˈu ˌɛl lˈIt"),
+            ("scss", "ˈɛs sˈi ˈɛs ˈɛs"),
             ("ssr", "ˈɛs ˈɛs ˈɑɹ"),
             ("stft", "ˈɛs tˈi ˈɛf tˈi"),
             ("stt", "ˈɛs tˈi tˈi"),
             ("supabase", "sˈupə bˌAs"),
+            ("swc", "ˈɛs dˈʌbᵊlju sˈi"),
+            ("tailwindcss", "tˈAl wˈɪnd sˈi ˈɛs ˈɛs"),
             ("tauri", "tˈW ɹˌi"),
             ("tex", "tˈɛk"),
             ("tokenizer", "tˈOkᵊn ˌIzəɹ"),
@@ -209,6 +222,7 @@ impl G2P {
             ("vads", "vˈi ˈA dˈiz"),
             ("vite", "vˈit"),
             ("vitest", "vˈi tˌɛst"),
+            ("vue", "vjˈu"),
             ("vscode", "vˈi ˈɛs kˈOd"),
             ("wav", "wˈAv"),
             ("wavs", "wˈAvz"),
@@ -971,6 +985,7 @@ mod tests {
         assert_eq!(pronounces("CRDT"), "sˈi ˈɑɹ dˈi tˈi");
         assert_eq!(pronounces("CRDTs"), "sˈi ˈɑɹ dˈi tˈiz");
         assert_eq!(pronounces("CSR"), "sˈi ˈɛs ˈɑɹ");
+        assert_eq!(pronounces("CSS"), "sˈi ˈɛs ˈɛs");
         assert_eq!(pronounces("CUDA"), "kˈudə");
         assert_eq!(pronounces("Deno"), "dˈinO");
         assert_eq!(pronounces("demos"), "dˈɛmOz");
@@ -981,6 +996,8 @@ mod tests {
         assert_eq!(pronounces("demultiplexing"), "dˌimˈʌltɪplɛksɪŋ");
         assert_eq!(pronounces("demultiplex"), "dˌimˈʌltɪplɛks");
         assert_eq!(pronounces("DuckDB"), "dˈʌk dˈi bˈi");
+        assert_eq!(pronounces("esbuild"), "ˈi ˈɛs bˌɪld");
+        assert_eq!(pronounces("ESLint"), "ˈi ˈɛs lˌɪnt");
         assert_eq!(pronounces("espeak"), "ˈi spˌik");
         assert_eq!(pronounces("FastAPI"), "fˈæst ˈA pˈi ˌI");
         assert_eq!(pronounces("FLAC"), "flˈæk");
@@ -990,7 +1007,11 @@ mod tests {
         assert_eq!(pronounces("ChatGPT"), "ʧˈæt ʤˈi pˈi tˈi");
         assert_eq!(pronounces("HTTP"), "ˈAʧ tˈi tˈi pˈi");
         assert_eq!(pronounces("HTTPS"), "ˈAʧ tˈi tˈi pˈi ˈɛs");
+        assert_eq!(pronounces("HTML"), "ˈAʧ tˈi ˈɛm ˈɛl");
+        assert_eq!(pronounces("IDB"), "ˌI dˈi bˈi");
+        assert_eq!(pronounces("iframe"), "ˌI fɹˌAm");
         assert_eq!(pronounces("iOS"), "ˈI ˈO ˈɛs");
+        assert_eq!(pronounces("IndexedDB"), "ˈɪndɛkst dˈi bˈi");
         assert_eq!(pronounces("ipykernel"), "ˈI pˈI kˌɜɹnᵊl");
         assert_eq!(pronounces("IPython"), "ˌI pˈIθˌɑn");
         assert_eq!(pronounces("ipywidgets"), "ˌI pˈI wˌɪʤəts");
@@ -1020,11 +1041,14 @@ mod tests {
         assert_eq!(pronounces("MIMEBundle"), "mˈIm bˌʌndᵊl");
         assert_eq!(pronounces("MLX"), "ˈɛm ˈɛl ˈɛks");
         assert_eq!(pronounces("mmap"), "ˈɛm mˌæp");
+        assert_eq!(pronounces("MSW"), "ˈɛm ˈɛs dˈʌbᵊlju");
         assert_eq!(pronounces("mypy"), "mˈI pˌI");
         assert_eq!(pronounces("nbconvert"), "ˈɛn bˈi kˌɑnvɜɹt");
         assert_eq!(pronounces("nbformat"), "ˈɛn bˈi fˌɔɹmæt");
         assert_eq!(pronounces("Neuphonic"), "nˈu fˌɑnɪk");
         assert_eq!(pronounces("NeuTTS"), "nˈu tˈi tˈi ˈɛs");
+        assert_eq!(pronounces("Next.js"), "nˈɛkst ʤˈA ˈɛs");
+        assert_eq!(pronounces("NextJS"), "nˈɛkst ʤˈA ˈɛs");
         assert_eq!(pronounces("nginx"), "ˈɛnʤən ˌɛks");
         assert_eq!(pronounces("Node.js"), "nˈOd ʤˈA ˈɛs");
         assert_eq!(pronounces("NodeJS"), "nˈOd ʤˈA ˈɛs");
@@ -1066,10 +1090,13 @@ mod tests {
         assert_eq!(pronounces("SciPy"), "sˈI pˌI");
         assert_eq!(pronounces("Serde"), "sˈɜɹdˌi");
         assert_eq!(pronounces("SQLite"), "ˌɛs kjˈu ˌɛl lˈIt");
+        assert_eq!(pronounces("SCSS"), "ˈɛs sˈi ˈɛs ˈɛs");
         assert_eq!(pronounces("SSR"), "ˈɛs ˈɛs ˈɑɹ");
         assert_eq!(pronounces("STFT"), "ˈɛs tˈi ˈɛf tˈi");
         assert_eq!(pronounces("STT"), "ˈɛs tˈi tˈi");
         assert_eq!(pronounces("Supabase"), "sˈupə bˌAs");
+        assert_eq!(pronounces("SWC"), "ˈɛs dˈʌbᵊlju sˈi");
+        assert_eq!(pronounces("TailwindCSS"), "tˈAl wˈɪnd sˈi ˈɛs ˈɛs");
         assert_eq!(pronounces("Tauri"), "tˈW ɹˌi");
         assert_eq!(pronounces("TeX"), "tˈɛk");
         assert_eq!(pronounces("tokenizer"), "tˈOkᵊn ˌIzəɹ");
@@ -1090,6 +1117,7 @@ mod tests {
         assert_eq!(pronounces("VADs"), "vˈi ˈA dˈiz");
         assert_eq!(pronounces("Vite"), "vˈit");
         assert_eq!(pronounces("Vitest"), "vˈi tˌɛst");
+        assert_eq!(pronounces("Vue"), "vjˈu");
         assert_eq!(pronounces("VSCode"), "vˈi ˈɛs kˈOd");
         assert_eq!(pronounces("WAV"), "wˈAv");
         assert_eq!(pronounces("WAVs"), "wˈAvz");

@@ -23,6 +23,7 @@ tts:
       type: command
       command: /path/to/voice say --input-file {input_path} --output {output_path} --voice {voice} --speed {speed}
       output_format: wav
+      voice_compatible: true
       voice: af_heart
       speed: 1.0
       timeout: 180
@@ -40,6 +41,11 @@ install the daemon with `cargo install --path crates/voice-daemon`.
 
 `voice say -o ...` falls back to local synthesis if the daemon is unavailable,
 so the same command still works outside Hermes.
+
+Set `voice_compatible: true` so Hermes converts the WAV output to OGG/Opus
+when it needs native voice-note delivery. This requires `ffmpeg` in Hermes'
+environment and lets WhatsApp/Telegram paths receive an Opus voice note instead
+of a generic audio attachment.
 
 The repository also includes `examples/hermes-command-tts.sh`, which matches
 Hermes' command-provider argument order:

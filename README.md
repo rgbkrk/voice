@@ -278,6 +278,10 @@ The macOS release archive includes both `voice` and `voiced`. Source installs
 should install both `crates/voice-cli` and `crates/voice-daemon` when the daemon
 or `voice stream` surface is needed.
 
+For WhatsApp or Telegram voice-note delivery through Hermes, set
+`voice_compatible: true` on the command provider so Hermes converts Voice's WAV
+output to OGG/Opus when needed.
+
 For lower-level streaming, `stream_speak` emits `tts.started`, `tts.audio`, and
 terminal `tts.ended` / `tts.error` / `tts.cancelled` events over the same daemon
 frame protocol. See [docs/streaming.md](docs/streaming.md) for the event schema

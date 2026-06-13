@@ -218,6 +218,17 @@ generates deterministic temporary TTS audio from `eval/phrases.txt` first. Both
 write JSON results with WER, CER, exact-match counts, elapsed time, audio
 duration, and real-time factor under `eval/results/`.
 
+Before tagging a macOS release, compare the current checkout against the latest
+stable release on local Apple Silicon hardware:
+
+```bash
+scripts/macos_release_compare.py --keep
+```
+
+This builds the current CLI, downloads the latest stable release binary, forces
+the benchmark path to run without a daemon, and reports TTS timing plus optional
+STT timing if `eval/recordings/*.wav` fixtures are present.
+
 ## JSON-RPC server
 
 `voice serve` runs a JSON-RPC 2.0 server on stdin/stdout, designed for integration with AI agents and tool-using LLMs.

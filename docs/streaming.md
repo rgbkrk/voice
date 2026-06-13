@@ -50,6 +50,10 @@ native voice note. `output_format: wav` remains valid as a compatibility
 fallback; Hermes and the WhatsApp bridge can still convert non-Opus audio when
 needed.
 
+For live WhatsApp Calling, keep Ogg/Opus as the file path and bridge WebRTC
+media through 48 kHz 20 ms PCM frames. See
+[whatsapp-calling-webrtc.md](whatsapp-calling-webrtc.md).
+
 The repository also includes `examples/hermes-command-tts.sh`, which matches
 Hermes' command-provider argument order:
 

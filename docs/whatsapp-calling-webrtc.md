@@ -1,0 +1,238 @@
+# WhatsApp Calling / WebRTC Architecture
+
+Status: planning document, current as of 2026-06-13.
+
+This document describes how `voice` should fit into Hermes + WhatsApp beyond
+file-based voice notes. The short version:
+
+- WhatsApp voice notes are a file problem. `voice` should emit
+  `audio/ogg; codecs=opus` directly, and Hermes should send that file with
+  `ptt: true` or upload it to the WhatsApp Cloud API.
+- WhatsApp live calls are a WebRTC media problem. `voice` should not own Meta
+  signaling, ICE, DTLS, SRTP, or RTP. It should own local speech synthesis,
+  transcription, and a stable PCM frame contract.
+- A small sidecar should bridge WhatsApp Cloud Calling SDP/webhooks to `voice`
+  PCM streams.
+
+## References
+
+- Meta user-initiated calls:
+  https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/user-initiated-calls/
+- Meta business-initiated calls:
+  https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/business-initiated-calls
+- Meta calling API/webhook reference:
+  https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/reference
+- Pipecat WhatsApp Calling + SmallWebRTC example:
+  https://docs.pipecat.ai/pipecat/features/whatsapp
+- 360dialog calling overview:
+  https://docs.360dialog.com/docs/messaging/calling
+
+## Existing Surfaces
+
+`voice` now exposes three relevant surfaces:
+
+- Completed files: `voice say --format ogg-opus -o reply.ogg "hello"`
+  produces WhatsApp-ready Ogg/Opus.
+- Daemon completed files: `synthesize` can write `.wav`, `.ogg`, or `.opus`
+  using the same format resolver.
+- Streaming frames: `stream_speak` emits ordered signed 16-bit little-endian
+  mono PCM frames. Use `sample_rate: 48000` and `frame_ms: 20` for WebRTC.
+
+The streaming frame contract is documented in [streaming.md](streaming.md).
+
+## Deployment Split
+
+### Voice Notes
+
+Use this path for Hermes replies over the current local WhatsApp bridge and for
+Cloud API media uploads:
+
+```text
+Hermes text response
+  -> TTS command provider
+  -> voice say --format ogg-opus -o reply.ogg
+  -> WhatsApp bridge / Cloud media upload
+  -> ptt voice note
+```
+
+No PCM stream is needed. The Ogg container is useful here because WhatsApp
+expects an uploaded media file.
+
+### Live Calls
+
+Use this path for real-time WhatsApp Calling:
+
+```text
+WhatsApp user
+  <-> Meta RTC infrastructure
+  <-> WebRTC sidecar
+  <-> voice daemon PCM frames
+  <-> Hermes agent loop
+```
+
+The Ogg container is not useful in the live path. The sidecar should accept and
+produce RTP media through WebRTC, while `voice` stays on raw PCM frames locally.
+
+## Proposed Components
+
+### Hermes WhatsApp Cloud Adapter
+
+Owns Cloud API/webhook concerns:
+
+- receive call webhooks with `call_id` and SDP
+- call Graph API actions: `pre_accept`, `accept`, `reject`, `terminate`
+- track call lifecycle and map calls to Hermes sessions
+- route transcripts and spoken responses into the existing agent loop
+
+### WebRTC Sidecar
+
+Owns real-time media concerns:
+
+- create a peer connection from Meta's remote SDP
+- produce the SDP answer used for `pre_accept` and `accept`
+- complete ICE/DTLS/SRTP negotiation
+- receive Opus RTP from WhatsApp and expose decoded PCM frames locally
+- accept local PCM frames from `voice` and send Opus RTP back to WhatsApp
+- terminate quickly and cleanly when the Graph lifecycle ends
+
+### `voice` Daemon
+
+Owns speech model concerns:
+
+- TTS: emit 48 kHz 20 ms PCM frames from `stream_speak`
+- STT: consume 16 kHz or 48 kHz PCM frames through a future streaming STT API
+- cancellation: stop current TTS on barge-in or call termination
+- backpressure: avoid unbounded audio buffering
+
+## Inbound Call Flow
+
+1. WhatsApp sends a `connect` webhook containing `call_id` and an SDP offer.
+2. Hermes creates a WebRTC sidecar session for that `call_id`.
+3. The sidecar creates a peer connection, attaches inbound and outbound audio
+   tracks, sets the remote SDP, and creates a local SDP answer.
+4. Hermes calls the Graph API with `action: pre_accept` and the SDP answer.
+5. The sidecar waits until its media path is ready enough to send/receive audio.
+6. Hermes calls the Graph API with `action: accept` and the same SDP answer.
+7. The sidecar starts forwarding inbound PCM to STT and outbound PCM from TTS.
+8. Either side can terminate; Hermes calls `terminate` if it ends locally.
+
+The important timing rule is that `accept` should not happen before the media
+sender is ready. Meta's troubleshooting docs call out media-flow timing as a
+common failure mode, and their API rejects mismatched SDP answers between
+`pre_accept` and `accept`.
+
+## Sidecar API Sketch
+
+The exact transport can be Unix socket, local HTTP, or WebSocket. The first
+implementation should favor debuggability over abstraction.
+
+```http
+POST /calls
+{
+  "call_id": "wamid-call-id",
+  "remote_sdp": "v=0..."
+}
+```
+
+Response:
+
+```json
+{
+  "call_id": "wamid-call-id",
+  "local_sdp": "v=0...",
+  "audio": {
+    "sample_rate": 48000,
+    "channels": 1,
+    "frame_ms": 20,
+    "encoding": "pcm_s16le"
+  }
+}
+```
+
+Runtime events:
+
+```json
+{"type": "connected", "call_id": "..."}
+{"type": "inbound_audio", "sequence": 42, "pcm_s16le_base64": "..."}
+{"type": "dtmf", "digit": "1"}
+{"type": "ended", "reason": "remote_hangup"}
+```
+
+Outbound audio command:
+
+```json
+{
+  "type": "outbound_audio",
+  "sequence": 17,
+  "sample_rate": 48000,
+  "frame_ms": 20,
+  "pcm_s16le_base64": "..."
+}
+```
+
+This mirrors the current `voice` daemon stream shape closely enough that the
+bridge can be mostly mechanical.
+
+## Implementation Options
+
+### Python `aiortc`
+
+Best first spike if the goal is fast integration with Hermes:
+
+- easy to run next to Hermes
+- known examples exist for WebRTC bots
+- simpler SDP and media debugging than Rust
+- enough performance for a first single-call bot
+
+Risk: long-term CPU overhead and Python dependency surface.
+
+### Pipecat / SmallWebRTC
+
+Best reference implementation path:
+
+- already documents WhatsApp Calling integration
+- gives a working transport abstraction for AI voice bots
+- useful to compare call lifecycle and timeout handling
+
+Risk: may pull the architecture toward Pipecat's frame model instead of the
+small `voice` daemon contract.
+
+### Rust `webrtc-rs`
+
+Best long-term sidecar if we want one Rust deployment:
+
+- aligns with `voice` runtime and Tokio
+- avoids Python media-loop overhead
+- can share typed frame structs with `voice-protocol`
+
+Risk: more time spent on WebRTC plumbing before validating Meta call behavior.
+
+Recommendation: spike in Python or Pipecat first, keep the local audio boundary
+as 48 kHz 20 ms PCM, then port the sidecar to Rust only after the signaling and
+timing behavior is proven.
+
+## PR Sequence
+
+1. Keep direct Ogg/Opus file output in `voice` and Hermes.
+2. Add this architecture document and track open questions.
+3. Add a `voice` streaming STT input API that accepts fixed PCM frames.
+4. Prototype a sidecar that accepts a synthetic SDP offer and round-trips PCM.
+5. Wire Hermes WhatsApp Cloud `connect` webhooks to the sidecar.
+6. Build an inbound-call echo bot: WhatsApp audio in, same audio out.
+7. Replace echo with STT -> Hermes turn -> `stream_speak` TTS.
+8. Add interruption/barge-in: inbound voice cancels outbound TTS.
+
+## Open Questions
+
+- Do we have a Cloud API number with calling enabled, or only the local Baileys
+  bridge? The local bridge is enough for voice notes, but not a stable live
+  calling target.
+- Which sidecar runtime should own the first spike: `aiortc`, Pipecat, Node, or
+  Rust `webrtc-rs`?
+- Should streaming STT live in `voice-daemon` as a first-class RPC, or should
+  Hermes feed buffered call audio into the existing file transcribe path until
+  latency forces the daemon API?
+- How much silence should the sidecar send before the agent's first TTS frame
+  is ready? WebRTC calls should have media flowing immediately after accept.
+- What barge-in policy should Hermes use: immediate cancel on VAD, cancel after
+  partial transcript, or full-duplex overlap?

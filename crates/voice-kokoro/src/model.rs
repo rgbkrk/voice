@@ -2,7 +2,7 @@
 //!
 //! Ported from kokoro/model.py
 
-use candle_core::{DType, Device, Module, Result, Tensor};
+use candle_core::{DType, Device, Error, Module, Result, Tensor};
 use candle_nn::{self as nn, VarBuilder};
 
 use crate::albert::CustomAlbert;
@@ -93,12 +93,7 @@ impl KModel {
         padded.push(0i64);
 
         let seq_len = padded.len();
-        assert!(
-            seq_len <= self.context_length,
-            "Input too long: {} > {}",
-            seq_len,
-            self.context_length
-        );
+        validate_context_length(seq_len, self.context_length)?;
 
         let input_ids_t = Tensor::new(&padded[..], device)?.unsqueeze(0)?; // [1, T]
         let input_lengths = Tensor::new(&[seq_len as i64][..], device)?; // [1]
@@ -227,6 +222,15 @@ impl KModel {
     }
 }
 
+fn validate_context_length(seq_len: usize, context_length: usize) -> Result<()> {
+    if seq_len > context_length {
+        return Err(Error::Msg(format!(
+            "Input too long: {seq_len} > {context_length}"
+        )));
+    }
+    Ok(())
+}
+
 fn suppress_boundary_token_durations(mut durations: Vec<i64>) -> Vec<i64> {
     if let Some(first) = durations.first_mut() {
         *first = 0;
@@ -240,7 +244,18 @@ fn suppress_boundary_token_durations(mut durations: Vec<i64>) -> Vec<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::suppress_boundary_token_durations;
+    use super::{suppress_boundary_token_durations, validate_context_length};
+
+    #[test]
+    fn context_length_allows_equal_length() {
+        assert!(validate_context_length(510, 510).is_ok());
+    }
+
+    #[test]
+    fn context_length_rejects_overlong_input() {
+        let err = validate_context_length(511, 510).unwrap_err();
+        assert!(err.to_string().contains("Input too long: 511 > 510"));
+    }
 
     #[test]
     fn test_suppresses_bos_eos_duration_frames() {

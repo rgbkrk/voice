@@ -5,21 +5,19 @@
 # Generates WAV files from phrases.txt using TTS, then transcribes
 # each with the current STT model and compares against expected text.
 
-set -e
+set -euo pipefail
 
 VOICE="${1:-./target/release/voice}"
 PHRASES="eval/phrases.txt"
 TMPDIR="/tmp/voice_synth_eval"
+RESULTS_DIR="eval/results"
 
 mkdir -p "$TMPDIR"
+mkdir -p "$RESULTS_DIR"
 
 echo "=== Synthetic STT Evaluation ==="
 echo "Using: $VOICE"
 echo ""
-
-normalize() {
-    echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9 ]//g' | tr -s ' ' | sed 's/^ //;s/ $//'
-}
 
 # Models to test
 MODELS=(
@@ -44,37 +42,11 @@ echo "Generated $n audio files."
 echo ""
 
 for model in "${MODELS[@]}"; do
-    echo "=== Model: $model ==="
-    pass=0
-    fail=0
-    start_time=$(date +%s)
-
-    for txt_file in "$TMPDIR"/*.txt; do
-        base=$(basename "$txt_file" .txt)
-        wav_file="$TMPDIR/${base}.wav"
-        [ ! -f "$wav_file" ] && continue
-
-        expected=$(cat "$txt_file")
-        transcript=$(STT_MODEL="$model" "$VOICE" transcribe -q "$wav_file" 2>/dev/null || echo "ERROR")
-
-        exp_norm=$(normalize "$expected")
-        act_norm=$(normalize "$transcript")
-
-        if [ "$exp_norm" = "$act_norm" ]; then
-            printf "  %s PASS\n" "$base"
-            pass=$((pass + 1))
-        else
-            printf "  %s FAIL\n" "$base"
-            printf "    expected: %s\n" "$exp_norm"
-            printf "    got:      %s\n" "$act_norm"
-            fail=$((fail + 1))
-        fi
-    done
-
-    end_time=$(date +%s)
-    elapsed=$((end_time - start_time))
-    total=$((pass + fail))
-    echo ""
-    echo "  Results: $pass/$total passed ($fail failed) in ${elapsed}s"
+    safe_model="${model//\//_}"
+    python3 eval/evaluate.py \
+        --recordings "$TMPDIR" \
+        --voice "$VOICE" \
+        --model "$model" \
+        --json-out "$RESULTS_DIR/synth_${safe_model}.json"
     echo ""
 done

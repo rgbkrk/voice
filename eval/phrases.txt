@@ -8,3 +8,15 @@ The API endpoint returns a JSON response with the user's authentication token.
 Can you run the deployment pipeline and check the staging environment?
 Kubernetes pods are restarting because the liveness probe is failing.
 The neural network achieved ninety-seven percent accuracy on the test set.
+Please send this answer to WhatsApp through Hermes.
+The WebRTC stream should use twenty millisecond audio frames.
+The MCP server returned a JSON-RPC error for the missing parameter.
+CPU inference is slower than GPU inference but useful on Linux.
+The TTS daemon should keep running after a bad phoneme chunk.
+STT accuracy depends on clean microphone input and low background noise.
+nteract displayName and useEffect should be pronounced clearly.
+JupyterLab opens notebooks, terminals, and markdown previews.
+KV-cache reuse makes the decoder faster for long transcripts.
+The ASR model ignored two seconds of leading silence.
+Please compare WER and CER before merging the pull request.
+The agent read three files, wrote one patch, and opened a PR.

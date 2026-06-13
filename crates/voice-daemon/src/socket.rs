@@ -1040,10 +1040,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn stream_transcribe_socket_round_trips_to_queue() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let socket_path = std::env::temp_dir().join(format!(
-            "voice-daemon-stream-transcribe-{}-{}.sock",
+        let suffix = Uuid::new_v4().to_string();
+        let socket_path = PathBuf::from(format!(
+            "/tmp/vstt-{}-{}.sock",
             std::process::id(),
-            uuid::Uuid::new_v4()
+            &suffix[..8]
         ));
         let _ = std::fs::remove_file(&socket_path);
         let old_socket = std::env::var(voice_protocol::client::daemon_socket_env_var()).ok();

@@ -58,6 +58,8 @@ voice say -o speech.wav "Good morning everyone."
 
 # Stream daemon TTS frames for bridge/WebRTC experiments
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output speech.s16le "Good morning everyone."
+voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "Good morning everyone." \
+  | ffmpeg -f s16le -ar 48000 -ac 1 -i - -c:a libopus speech.ogg
 
 # Read from a file, strip markdown
 voice say --markdown -f blog-post.mdx
@@ -159,6 +161,7 @@ Options:
       --sample-rate <SAMPLE_RATE>  Target stream sample rate [default: 24000]
       --frame-ms <FRAME_MS>        Target frame duration in milliseconds [default: 20]
   -o, --raw-output <PATH>          Write raw signed 16-bit little-endian mono PCM
+                                   (use - for stdout)
       --json                       Print full JSON stream events
       --markdown                   Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>     Word substitution (repeatable)

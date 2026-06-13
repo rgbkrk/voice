@@ -189,7 +189,7 @@ struct StreamArgs {
     #[arg(long = "frame-ms", default_value = "20")]
     frame_ms: u32,
 
-    /// Write raw signed 16-bit little-endian mono PCM to this path
+    /// Write raw signed 16-bit little-endian mono PCM to this path (use - for stdout)
     #[arg(short = 'o', long = "raw-output")]
     raw_output: Option<PathBuf>,
 
@@ -1216,7 +1216,19 @@ fn run_stream(stream_args: StreamArgs) {
         stream_args.sub_file.clone(),
     );
 
-    let mut raw_writer = stream_args.raw_output.as_ref().map(|path| {
+    let raw_to_stdout = stream_args
+        .raw_output
+        .as_ref()
+        .is_some_and(|path| path.as_os_str() == std::ffi::OsStr::new("-"));
+    if raw_to_stdout && stream_args.json {
+        eprintln!("Error: --json cannot be combined with --raw-output -");
+        std::process::exit(1);
+    }
+
+    let mut raw_writer: Option<Box<dyn Write>> = stream_args.raw_output.as_ref().map(|path| {
+        if path.as_os_str() == std::ffi::OsStr::new("-") {
+            return Box::new(io::BufWriter::new(io::stdout())) as Box<dyn Write>;
+        }
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).unwrap_or_else(|e| {
@@ -1225,10 +1237,10 @@ fn run_stream(stream_args: StreamArgs) {
                 });
             }
         }
-        std::fs::File::create(path).unwrap_or_else(|e| {
+        Box::new(std::fs::File::create(path).unwrap_or_else(|e| {
             eprintln!("Failed to create {}: {e}", path.display());
             std::process::exit(1);
-        })
+        })) as Box<dyn Write>
     });
 
     let mut daemon = connect_daemon_or_exit();
@@ -1249,13 +1261,18 @@ fn run_stream(stream_args: StreamArgs) {
             match event {
                 voice_stream::TtsStreamEvent::Started { metadata } => {
                     if !stream_args.json {
-                        println!(
+                        let line = format!(
                             "started stream={} rate={}Hz frame={}ms encoding={:?}",
                             metadata.stream_id,
                             metadata.sample_rate,
                             metadata.frame_ms,
                             metadata.encoding
                         );
+                        if raw_to_stdout {
+                            eprintln!("{line}");
+                        } else {
+                            println!("{line}");
+                        }
                     }
                 }
                 voice_stream::TtsStreamEvent::Audio { frame } => {
@@ -1265,33 +1282,53 @@ fn run_stream(stream_args: StreamArgs) {
                             .map_err(|e| format!("write raw PCM: {e}"))?;
                     }
                     if !stream_args.json {
-                        println!(
+                        let line = format!(
                             "audio seq={} samples={} padding={}",
                             frame.sequence, frame.sample_count, frame.padding_samples
                         );
+                        if raw_to_stdout {
+                            eprintln!("{line}");
+                        } else {
+                            println!("{line}");
+                        }
                     }
                 }
                 voice_stream::TtsStreamEvent::Ended(end) => {
                     if !stream_args.json {
-                        println!(
+                        let line = format!(
                             "ended stream={} frames={} samples={} duration_ms={}",
                             end.stream_id, end.frames, end.samples, end.duration_ms
                         );
+                        if raw_to_stdout {
+                            eprintln!("{line}");
+                        } else {
+                            println!("{line}");
+                        }
                     }
                 }
                 voice_stream::TtsStreamEvent::Error(err) => {
                     terminal_error = Some(err.message.clone());
                     if !stream_args.json {
-                        println!("error stream={}: {}", err.stream_id, err.message);
+                        let line = format!("error stream={}: {}", err.stream_id, err.message);
+                        if raw_to_stdout {
+                            eprintln!("{line}");
+                        } else {
+                            println!("{line}");
+                        }
                     }
                 }
                 voice_stream::TtsStreamEvent::Cancelled(cancelled) => {
                     terminal_error = Some(cancelled.reason.clone());
                     if !stream_args.json {
-                        println!(
+                        let line = format!(
                             "cancelled stream={}: {}",
                             cancelled.stream_id, cancelled.reason
                         );
+                        if raw_to_stdout {
+                            eprintln!("{line}");
+                        } else {
+                            println!("{line}");
+                        }
                     }
                 }
             }

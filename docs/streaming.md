@@ -64,10 +64,14 @@ Use `voice stream` to inspect the streaming event flow:
 voice stream "Hello from the stream"
 voice stream --json "Hello from the stream"
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output reply.s16le "Hello"
+voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "Hello" \
+  | ffmpeg -f s16le -ar 48000 -ac 1 -i - -c:a libopus reply.ogg
 ```
 
 The raw output is signed 16-bit little-endian mono PCM with no container header.
 Use the event metadata for sample rate, frame duration, and stream ID.
+When `--raw-output -` is used, stdout is reserved for PCM bytes and compact
+progress lines move to stderr.
 
 ## Daemon Protocol
 

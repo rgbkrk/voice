@@ -3,7 +3,7 @@ use voice_kokoro::istftnet::TorchSTFT;
 
 #[test]
 fn stft_roundtrip() {
-    let device = Device::new_metal(0).unwrap();
+    let device = stft_test_device();
 
     // Simple 440Hz sine wave, 0.1 seconds at 24kHz
     let n = 2400;
@@ -33,4 +33,16 @@ fn stft_roundtrip() {
         / len as f32;
 
     assert!(mse < 0.01, "STFT roundtrip MSE too high: {}", mse);
+}
+
+fn stft_test_device() -> Device {
+    #[cfg(target_os = "macos")]
+    {
+        Device::new_metal(0).unwrap_or(Device::Cpu)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Device::Cpu
+    }
 }

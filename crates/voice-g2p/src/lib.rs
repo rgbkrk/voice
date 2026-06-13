@@ -74,22 +74,81 @@ impl G2P {
     /// Words whose default lexicon/espeak phonemes are wrong or misleading.
     fn builtin_overrides() -> HashMap<String, String> {
         const ENTRIES: &[(&str, &str)] = &[
+            ("api", "ˈA pˈi ˌI"),
+            ("apis", "ˈA pˈi ˈIz"),
+            ("aws", "ˈA dˈʌbᵊlju ˈɛs"),
+            ("cli", "sˈi ˈɛl ˌI"),
+            ("clis", "sˈi ˈɛl ˈIz"),
+            ("crdt", "sˈi ˈɑɹ dˈi tˈi"),
+            ("crdts", "sˈi ˈɑɹ dˈi tˈiz"),
+            ("cuda", "kˈudə"),
+            ("deno", "dˈinO"),
             ("demo", "dˈɛmO"),
             ("demos", "dˈɛmOz"),
             ("demultiplex", "dˌimˈʌltɪplɛks"),
             ("demultiplexing", "dˌimˈʌltɪplɛksɪŋ"),
             ("demux", "dˌimˈʌks"),
             ("demuxing", "dˌimˈʌksɪŋ"),
+            ("fastapi", "fˈæst ˈA pˈi ˌI"),
+            ("http", "ˈAʧ tˈi tˈi pˈi"),
+            ("https", "ˈAʧ tˈi tˈi pˈi ˈɛs"),
+            ("ios", "ˈI ˈO ˈɛs"),
+            ("istft", "ˈI ˈɛs tˈi ˈɛf tˈi"),
+            ("json", "ʤˌA sˈæhn"),
             ("jupyter", "ʤˈupɪTəɹ"),
+            ("jwt", "ʤˈA dˈʌbᵊlju tˈi"),
+            ("jwts", "ʤˈA dˈʌbᵊlju tˈiz"),
+            ("kokoro", "kˈOkəɹO"),
+            ("kubernetes", "kˌubəɹnˈɛtiz"),
+            ("kubectl", "kjˈub kˈʌdᵊl"),
+            ("macos", "mˈæk ˈO ˈɛs"),
+            ("mcp", "ˈɛm sˈi pˈi"),
+            ("mcps", "ˈɛm sˈi pˈiz"),
+            ("nginx", "ˈɛnʤən ˌɛks"),
             ("nteract", "ˈɛntəɹˌækt"),
+            ("numpy", "nˈʌm pˌI"),
+            ("oauth", "ˌO ˈɔθ"),
+            ("onnx", "ˈɑnɪks"),
+            ("openapi", "ˈOpᵊn ˈA pˈi ˌI"),
+            ("pnpm", "pˈi ˈɛn pˈi ˈɛm"),
+            ("postgres", "pˈOstɡɹɛs"),
+            ("postgresql", "pˈOst ɡɹˈɛs kjˈu ˈɛl"),
             ("todo", "tˈudu"),
             // Developer acronyms and initialisms
             ("ipynb", "nˈOtbˌʊk fˈIl"),
             ("pr", "pˈi ˈɑɹ"),
             ("prs", "pˈi ˈɑɹz"),
+            ("pytorch", "pˈI tˌɔɹʧ"),
+            ("rpc", "ˈɑɹ pˈi sˈi"),
+            ("rpcs", "ˈɑɹ pˈi sˈiz"),
             ("rxjs", "ˈɑɹ ˈɛks ʤˈA ˈɛs"),
+            ("safetensors", "sˈAf tˌɛnsəɹz"),
+            ("serde", "sˈɜɹdˌi"),
+            ("sqlite", "ˌɛs kjˈu ˌɛl lˈIt"),
+            ("stt", "ˈɛs tˈi tˈi"),
+            ("supabase", "sˈupə bˌAs"),
+            ("toml", "tˈɑmᵊl"),
+            ("tokio", "tˈOkiˌO"),
             ("tsconfig", "tˈi ˈɛs kˌɑnfˈɪɡ"),
-            ("vitest", "vˈItˌɛst"),
+            ("tts", "tˈi tˈi ˈɛs"),
+            ("typescript", "tˈIp skɹˌɪpt"),
+            ("url", "jˈu ˈɑɹ ˈɛl"),
+            ("urls", "jˈu ˈɑɹ ˈɛlz"),
+            ("uri", "jˈu ˈɑɹ ˌI"),
+            ("uris", "jˈu ˈɑɹ ˈIz"),
+            ("uuid", "jˈu jˈu ˌI dˈi"),
+            ("uuids", "jˈu jˈu ˌI dˈiz"),
+            ("vad", "vˈi ˈA dˈi"),
+            ("vads", "vˈi ˈA dˈiz"),
+            ("vite", "vˈit"),
+            ("vitest", "vˈi tˌɛst"),
+            ("vscode", "vˈi ˈɛs kˈOd"),
+            ("wav", "wˈAv"),
+            ("wavs", "wˈAvz"),
+            ("wasm", "wˈæzəm"),
+            ("webrtc", "wˈɛb ˈɑɹ tˈi sˈi"),
+            ("wifi", "wˈI fˌI"),
+            ("yaml", "jˈæmᵊl"),
         ];
         ENTRIES
             .iter()
@@ -824,20 +883,81 @@ mod tests {
     #[test]
     fn test_builtin_overrides() {
         let g2p = G2P::new();
-        assert_eq!(g2p.convert("demos").unwrap(), "dˈɛmOz");
-        assert_eq!(g2p.convert("demo").unwrap(), "dˈɛmO");
-        assert_eq!(g2p.convert("TODO").unwrap(), "tˈudu");
-        assert_eq!(g2p.convert("demuxing").unwrap(), "dˌimˈʌksɪŋ");
-        assert_eq!(g2p.convert("demux").unwrap(), "dˌimˈʌks");
-        assert_eq!(g2p.convert("demultiplexing").unwrap(), "dˌimˈʌltɪplɛksɪŋ");
-        assert_eq!(g2p.convert("demultiplex").unwrap(), "dˌimˈʌltɪplɛks");
-        assert_eq!(g2p.convert("Jupyter").unwrap(), "ʤˈupɪTəɹ");
-        assert_eq!(g2p.convert("nteract").unwrap(), "ˈɛntəɹˌækt");
-        assert_eq!(g2p.convert("vitest").unwrap(), "vˈItˌɛst");
-        assert_eq!(g2p.convert("tsconfig").unwrap(), "tˈi ˈɛs kˌɑnfˈɪɡ");
-        assert_eq!(g2p.convert("ipynb").unwrap(), "nˈOtbˌʊk fˈIl");
-        assert_eq!(g2p.convert("PR").unwrap(), "pˈi ˈɑɹ");
-        assert_eq!(g2p.convert("PRs").unwrap(), "pˈi ˈɑɹz");
+        let pronounces = |text: &str| g2p.convert(text).unwrap().trim().to_string();
+        assert_eq!(pronounces("API"), "ˈA pˈi ˌI");
+        assert_eq!(pronounces("APIs"), "ˈA pˈi ˈIz");
+        assert_eq!(pronounces("AWS"), "ˈA dˈʌbᵊlju ˈɛs");
+        assert_eq!(pronounces("CLI"), "sˈi ˈɛl ˌI");
+        assert_eq!(pronounces("CLIs"), "sˈi ˈɛl ˈIz");
+        assert_eq!(pronounces("CRDT"), "sˈi ˈɑɹ dˈi tˈi");
+        assert_eq!(pronounces("CRDTs"), "sˈi ˈɑɹ dˈi tˈiz");
+        assert_eq!(pronounces("CUDA"), "kˈudə");
+        assert_eq!(pronounces("Deno"), "dˈinO");
+        assert_eq!(pronounces("demos"), "dˈɛmOz");
+        assert_eq!(pronounces("demo"), "dˈɛmO");
+        assert_eq!(pronounces("TODO"), "tˈudu");
+        assert_eq!(pronounces("demuxing"), "dˌimˈʌksɪŋ");
+        assert_eq!(pronounces("demux"), "dˌimˈʌks");
+        assert_eq!(pronounces("demultiplexing"), "dˌimˈʌltɪplɛksɪŋ");
+        assert_eq!(pronounces("demultiplex"), "dˌimˈʌltɪplɛks");
+        assert_eq!(pronounces("FastAPI"), "fˈæst ˈA pˈi ˌI");
+        assert_eq!(pronounces("HTTP"), "ˈAʧ tˈi tˈi pˈi");
+        assert_eq!(pronounces("HTTPS"), "ˈAʧ tˈi tˈi pˈi ˈɛs");
+        assert_eq!(pronounces("iOS"), "ˈI ˈO ˈɛs");
+        assert_eq!(pronounces("iSTFT"), "ˈI ˈɛs tˈi ˈɛf tˈi");
+        assert_eq!(pronounces("JSON"), "ʤˌA sˈæhn");
+        assert_eq!(pronounces("Jupyter"), "ʤˈupɪTəɹ");
+        assert_eq!(pronounces("JWT"), "ʤˈA dˈʌbᵊlju tˈi");
+        assert_eq!(pronounces("JWTs"), "ʤˈA dˈʌbᵊlju tˈiz");
+        assert_eq!(pronounces("Kokoro"), "kˈOkəɹO");
+        assert_eq!(pronounces("Kubernetes"), "kˌubəɹnˈɛtiz");
+        assert_eq!(pronounces("kubectl"), "kjˈub kˈʌdᵊl");
+        assert_eq!(pronounces("macOS"), "mˈæk ˈO ˈɛs");
+        assert_eq!(pronounces("MCP"), "ˈɛm sˈi pˈi");
+        assert_eq!(pronounces("MCPs"), "ˈɛm sˈi pˈiz");
+        assert_eq!(pronounces("nginx"), "ˈɛnʤən ˌɛks");
+        assert_eq!(pronounces("nteract"), "ˈɛntəɹˌækt");
+        assert_eq!(pronounces("NumPy"), "nˈʌm pˌI");
+        assert_eq!(pronounces("OAuth"), "ˌO ˈɔθ");
+        assert_eq!(pronounces("ONNX"), "ˈɑnɪks");
+        assert_eq!(pronounces("OpenAPI"), "ˈOpᵊn ˈA pˈi ˌI");
+        assert_eq!(pronounces("pnpm"), "pˈi ˈɛn pˈi ˈɛm");
+        assert_eq!(pronounces("Postgres"), "pˈOstɡɹɛs");
+        assert_eq!(pronounces("PostgreSQL"), "pˈOst ɡɹˈɛs kjˈu ˈɛl");
+        assert_eq!(pronounces("PyTorch"), "pˈI tˌɔɹʧ");
+        assert_eq!(pronounces("vitest"), "vˈi tˌɛst");
+        assert_eq!(pronounces("tsconfig"), "tˈi ˈɛs kˌɑnfˈɪɡ");
+        assert_eq!(pronounces("ipynb"), "nˈOtbˌʊk fˈIl");
+        assert_eq!(pronounces("PR"), "pˈi ˈɑɹ");
+        assert_eq!(pronounces("PRs"), "pˈi ˈɑɹz");
+        assert_eq!(pronounces("RPC"), "ˈɑɹ pˈi sˈi");
+        assert_eq!(pronounces("RPCs"), "ˈɑɹ pˈi sˈiz");
+        assert_eq!(pronounces("safetensors"), "sˈAf tˌɛnsəɹz");
+        assert_eq!(pronounces("Serde"), "sˈɜɹdˌi");
+        assert_eq!(pronounces("SQLite"), "ˌɛs kjˈu ˌɛl lˈIt");
+        assert_eq!(pronounces("STT"), "ˈɛs tˈi tˈi");
+        assert_eq!(pronounces("Supabase"), "sˈupə bˌAs");
+        assert_eq!(pronounces("TOML"), "tˈɑmᵊl");
+        assert_eq!(pronounces("Tokio"), "tˈOkiˌO");
+        assert_eq!(pronounces("TTS"), "tˈi tˈi ˈɛs");
+        assert_eq!(pronounces("TypeScript"), "tˈIp skɹˌɪpt");
+        assert_eq!(pronounces("URL"), "jˈu ˈɑɹ ˈɛl");
+        assert_eq!(pronounces("URLs"), "jˈu ˈɑɹ ˈɛlz");
+        assert_eq!(pronounces("URI"), "jˈu ˈɑɹ ˌI");
+        assert_eq!(pronounces("URIs"), "jˈu ˈɑɹ ˈIz");
+        assert_eq!(pronounces("UUID"), "jˈu jˈu ˌI dˈi");
+        assert_eq!(pronounces("UUIDs"), "jˈu jˈu ˌI dˈiz");
+        assert_eq!(pronounces("VAD"), "vˈi ˈA dˈi");
+        assert_eq!(pronounces("VADs"), "vˈi ˈA dˈiz");
+        assert_eq!(pronounces("Vite"), "vˈit");
+        assert_eq!(pronounces("Vitest"), "vˈi tˌɛst");
+        assert_eq!(pronounces("VSCode"), "vˈi ˈɛs kˈOd");
+        assert_eq!(pronounces("WAV"), "wˈAv");
+        assert_eq!(pronounces("WAVs"), "wˈAvz");
+        assert_eq!(pronounces("WASM"), "wˈæzəm");
+        assert_eq!(pronounces("WebRTC"), "wˈɛb ˈɑɹ tˈi sˈi");
+        assert_eq!(pronounces("WiFi"), "wˈI fˌI");
+        assert_eq!(pronounces("YAML"), "jˈæmᵊl");
     }
 
     // -- camelCase tests ------------------------------------------------------

@@ -475,29 +475,7 @@ fn strip_frontmatter(text: &str) -> String {
 
 /// Built-in substitutions for common tech terms that G2P mispronounces.
 /// These are always applied (before user subs). User subs can override.
-const TECH_SUBS: &[(&str, &str)] = &[
-    ("JSON", "jay-sahn"),
-    ("json", "jay-sahn"),
-    ("Json", "jay-sahn"),
-    ("YAML", "yam-ul"),
-    ("yaml", "yam-ul"),
-    ("TOML", "tom-ul"),
-    ("toml", "tom-ul"),
-    ("WASM", "waz-um"),
-    ("wasm", "waz-um"),
-    ("OAuth", "oh-auth"),
-    ("oauth", "oh-auth"),
-    ("NGINX", "engine-X"),
-    ("nginx", "engine-X"),
-    ("PostgreSQL", "post-gres-Q-L"),
-    ("CRDTs", "C R D Ts"),
-    ("CRDT", "C R D T"),
-    ("SQLite", "S-Q-lite"),
-    ("WiFi", "why-fye"),
-    ("iOS", "eye-O-S"),
-    ("macOS", "mac O S"),
-    ("VS Code", "V S Code"),
-];
+const TECH_SUBS: &[(&str, &str)] = &[("VS Code", "V S Code")];
 
 /// Apply word-level text substitutions (case-sensitive match, preserves replacement as-is).
 fn apply_substitutions(text: &str, subs: &[(String, String)]) -> String {

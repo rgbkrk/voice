@@ -78,12 +78,19 @@ voice say --format ogg-opus -o reply.ogg "Hello"
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output reply.s16le "Hello"
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "Hello" \
   | ffmpeg -f s16le -ar 48000 -ac 1 -i - -c:a libopus reply.ogg
+voice stream-transcribe recording.wav
+voice stream-transcribe --json recording.wav
 ```
 
 The raw output is signed 16-bit little-endian mono PCM with no container header.
 Use the event metadata for sample rate, frame duration, and stream ID.
 When `--raw-output -` is used, stdout is reserved for PCM bytes and compact
 progress lines move to stderr.
+
+`voice stream-transcribe` reads a WAV file, splits it into the same ordered PCM
+frames a WebRTC sidecar would send, and returns the terminal STT event from the
+daemon. It is a transport smoke test; `voice transcribe` remains the direct
+file transcription command.
 
 ## Daemon Protocol
 

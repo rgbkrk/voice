@@ -42,6 +42,7 @@ macro_rules! info {
                   voice say --markdown -f post.mdx\n  \
                   voice phonemes \"ChatGPT uses RuntimeStateDoc\"\n  \
                   voice stream --json \"Hello world\"\n  \
+                  voice stream-transcribe recording.wav\n  \
                   voice listen\n  \
                   voice listen --continuous\n  \
                   voice transcribe recording.wav\n  \
@@ -72,6 +73,9 @@ enum Command {
 
     /// Stream TTS audio chunks from the voice daemon
     Stream(StreamArgs),
+
+    /// Replay a WAV file through daemon streaming STT
+    StreamTranscribe(StreamTranscribeArgs),
 
     /// Speak text aloud, then listen for a response (speak + listen in one shot)
     Converse(ConverseArgs),
@@ -229,6 +233,20 @@ struct StreamArgs {
     /// If not set, .voice-subs is auto-discovered from the working directory upward.
     #[arg(long = "sub-file", value_name = "PATH")]
     sub_file: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
+struct StreamTranscribeArgs {
+    /// Path to WAV audio file
+    file: PathBuf,
+
+    /// Target stream frame duration in milliseconds
+    #[arg(long = "frame-ms", default_value = "20")]
+    frame_ms: u32,
+
+    /// Print full JSON STT events instead of only the transcript
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -765,6 +783,9 @@ fn main() {
         }
         Some(Command::Stream(stream_args)) => {
             run_stream(stream_args);
+        }
+        Some(Command::StreamTranscribe(stream_args)) => {
+            run_stream_transcribe(stream_args);
         }
         None => {
             // Backward compatibility: `voice Hello world` = `voice say Hello world`
@@ -1425,6 +1446,137 @@ fn run_stream(stream_args: StreamArgs) {
     }
 }
 
+fn run_stream_transcribe(stream_args: StreamTranscribeArgs) {
+    let audio = match listen::load_transcription_wav(&stream_args.file) {
+        Ok(audio) => audio,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
+    let frames = match pcm_i16_frames(&audio.samples, audio.sample_rate, stream_args.frame_ms) {
+        Ok(frames) => frames,
+        Err(e) => {
+            eprintln!("voice stream-transcribe: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !QUIET.load(Ordering::Relaxed) {
+        let duration = audio.samples.len() as f64 / audio.sample_rate as f64;
+        eprintln!(
+            "Streaming: {} ({:.1}s, {}Hz, {} frames)",
+            stream_args.file.display(),
+            duration,
+            audio.sample_rate,
+            frames.len()
+        );
+    }
+
+    let mut daemon = connect_daemon_or_exit();
+    let mut transcript: Option<String> = None;
+    let mut terminal_error: Option<String> = None;
+    let mut received_terminal = false;
+
+    let result =
+        daemon.stream_transcribe(&frames, audio.sample_rate, stream_args.frame_ms, |event| {
+            if stream_args.json {
+                println!("{}", serde_json::to_string(&event).unwrap());
+            }
+
+            match event.event.as_str() {
+                "stt.transcribed" => {
+                    received_terminal = true;
+                    transcript = Some(
+                        event
+                            .data
+                            .get("text")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+                "stt.error" => {
+                    received_terminal = true;
+                    terminal_error = Some(
+                        event
+                            .data
+                            .get("message")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("stream transcription failed")
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
+
+            Ok(())
+        });
+
+    match result {
+        Ok(resp) => {
+            if let Some(err) = resp.error {
+                eprintln!("voice daemon: {}", err.message);
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("voice daemon stream-transcribe: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    if let Some(err) = terminal_error {
+        eprintln!("voice stream-transcribe failed: {err}");
+        std::process::exit(1);
+    }
+
+    if !received_terminal {
+        eprintln!("voice stream-transcribe produced no terminal event");
+        std::process::exit(1);
+    }
+
+    if !stream_args.json {
+        println!("{}", transcript.unwrap_or_default());
+    }
+}
+
+fn pcm_i16_frames(
+    samples: &[f32],
+    sample_rate: u32,
+    frame_ms: u32,
+) -> Result<Vec<Vec<i16>>, String> {
+    if sample_rate == 0 {
+        return Err("sample rate must be greater than 0".to_string());
+    }
+    if frame_ms == 0 {
+        return Err("frame-ms must be greater than 0".to_string());
+    }
+
+    let frame_samples = (u64::from(sample_rate) * u64::from(frame_ms) / 1_000) as usize;
+    if frame_samples == 0 {
+        return Err(format!(
+            "frame-ms {frame_ms} is too small for sample rate {sample_rate}"
+        ));
+    }
+
+    Ok(samples
+        .chunks(frame_samples)
+        .map(|chunk| chunk.iter().copied().map(f32_to_i16_pcm).collect())
+        .collect())
+}
+
+fn f32_to_i16_pcm(sample: f32) -> i16 {
+    if sample <= -1.0 {
+        i16::MIN
+    } else if sample >= 1.0 {
+        i16::MAX
+    } else {
+        (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16
+    }
+}
+
 fn run_converse(args: ConverseArgs) {
     if args.text.is_empty() {
         eprintln!("Error: No text provided. Usage: voice converse <text>");
@@ -1654,5 +1806,38 @@ fn stream_playback(
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn f32_to_i16_pcm_clamps_to_signed_pcm_range() {
+        assert_eq!(f32_to_i16_pcm(-2.0), i16::MIN);
+        assert_eq!(f32_to_i16_pcm(-1.0), i16::MIN);
+        assert_eq!(f32_to_i16_pcm(0.0), 0);
+        assert_eq!(f32_to_i16_pcm(1.0), i16::MAX);
+        assert_eq!(f32_to_i16_pcm(2.0), i16::MAX);
+    }
+
+    #[test]
+    fn pcm_i16_frames_splits_by_frame_duration() {
+        let samples = vec![0.0; 1_000];
+        let frames = pcm_i16_frames(&samples, 1_000, 20).unwrap();
+
+        assert_eq!(frames.len(), 50);
+        assert!(frames.iter().all(|frame| frame.len() == 20));
+    }
+
+    #[test]
+    fn pcm_i16_frames_keeps_short_final_frame() {
+        let samples = vec![0.0; 25];
+        let frames = pcm_i16_frames(&samples, 1_000, 20).unwrap();
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].len(), 20);
+        assert_eq!(frames[1].len(), 5);
     }
 }

@@ -62,6 +62,9 @@ voice stream --sample-rate 48000 --frame-ms 20 --raw-output speech.s16le "Good m
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "Good morning everyone." \
   | ffmpeg -f s16le -ar 48000 -ac 1 -i - -c:a libopus speech.ogg
 
+# Replay a WAV through daemon streaming STT
+voice stream-transcribe recording.wav
+
 # Read from a file, strip markdown
 voice say --markdown -f blog-post.mdx
 
@@ -168,6 +171,25 @@ Options:
       --markdown                   Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>     Word substitution (repeatable)
       --sub-file <PATH>            Load substitutions from a file
+```
+
+### `voice stream-transcribe`
+
+Replays a WAV file as ordered PCM frames into a running `voiced` daemon. Use
+this to smoke-test the inbound STT stream contract that WebRTC and bridge
+clients use.
+
+```
+Usage: voice stream-transcribe [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>                 Path to WAV audio file
+
+Options:
+      --frame-ms <MS>    Target stream frame duration in milliseconds [default: 20]
+      --json             Print full JSON STT events
+  -q, --quiet            Suppress progress output
+  -h, --help             Print help
 ```
 
 ### `voice transcribe`
@@ -296,7 +318,8 @@ with Hermes converting to OGG/Opus when needed.
 For lower-level streaming, `stream_speak` emits `tts.started`, `tts.audio`, and
 terminal `tts.ended` / `tts.error` / `tts.cancelled` events over the same daemon
 frame protocol. `stream_transcribe` accepts client-sent `stt.audio` frames and
-returns a terminal `stt.transcribed` event. See
+returns a terminal `stt.transcribed` event. Use `voice stream-transcribe` to
+replay a WAV through that inbound stream path. See
 [docs/streaming.md](docs/streaming.md) for the event schema and Hermes/WebRTC
 notes. See
 [docs/whatsapp-calling-webrtc.md](docs/whatsapp-calling-webrtc.md) for the

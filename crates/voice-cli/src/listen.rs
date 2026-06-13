@@ -53,6 +53,11 @@ pub struct CachedSound {
     pub channels: u16,
 }
 
+pub struct TranscriptionAudio {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+}
+
 impl SoundConfig {
     pub fn new() -> Self {
         Self {
@@ -124,6 +129,59 @@ pub fn load_wav_sound(path: &std::path::Path) -> Result<CachedSound, String> {
         samples,
         sample_rate,
         channels,
+    })
+}
+
+pub fn load_transcription_wav(path: &Path) -> Result<TranscriptionAudio, String> {
+    let reader = hound::WavReader::open(path)
+        .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+
+    let spec = reader.spec();
+    let channels = spec.channels as usize;
+    let sample_rate = spec.sample_rate;
+
+    if sample_rate == 0 {
+        return Err("Invalid WAV: sample rate is 0".to_string());
+    }
+    if channels == 0 {
+        return Err("Invalid WAV: channel count is 0".to_string());
+    }
+
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let bits = spec.bits_per_sample;
+            if bits == 0 || bits > 32 {
+                return Err(format!(
+                    "Unsupported bits_per_sample {bits}; expected 1..=32"
+                ));
+            }
+            let max_val = (1u32 << (bits - 1)) as f32;
+            reader
+                .into_samples::<i32>()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to read WAV samples: {e}"))?
+                .into_iter()
+                .map(|s| s as f32 / max_val)
+                .collect()
+        }
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read WAV samples: {e}"))?,
+    };
+
+    let mono = if channels > 1 {
+        samples
+            .chunks(channels)
+            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+            .collect()
+    } else {
+        samples
+    };
+
+    Ok(TranscriptionAudio {
+        samples: mono,
+        sample_rate,
     })
 }
 
@@ -1422,54 +1480,25 @@ pub fn transcribe_file(path: &Path) {
         eprintln!("Transcribing: {}", path.display());
     }
 
-    // Load WAV
-    let reader = match hound::WavReader::open(path) {
-        Ok(r) => r,
+    let audio = match load_transcription_wav(path) {
+        Ok(audio) => audio,
         Err(e) => {
-            eprintln!("Failed to open {}: {e}", path.display());
+            eprintln!("{e}");
             std::process::exit(1);
         }
     };
 
-    let spec = reader.spec();
-    let channels = spec.channels as usize;
-    let sample_rate = spec.sample_rate;
-
-    let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Int => {
-            let max_val = (1u32 << (spec.bits_per_sample - 1)) as f32;
-            reader
-                .into_samples::<i32>()
-                .map(|s| s.unwrap_or(0) as f32 / max_val)
-                .collect()
-        }
-        hound::SampleFormat::Float => reader
-            .into_samples::<f32>()
-            .map(|s| s.unwrap_or(0.0))
-            .collect(),
-    };
-
-    // Mix to mono
-    let mono: Vec<f32> = if channels > 1 {
-        samples
-            .chunks(channels)
-            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
-            .collect()
-    } else {
-        samples
-    };
-
-    let duration = mono.len() as f32 / sample_rate as f32;
+    let duration = audio.samples.len() as f32 / audio.sample_rate as f32;
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!(
             "Audio: {:.1}s ({} samples at {}Hz)",
             duration,
-            mono.len(),
-            sample_rate
+            audio.samples.len(),
+            audio.sample_rate
         );
     }
 
-    let result = match voice_stt::transcribe_audio(&mut model, &mono, sample_rate) {
+    let result = match voice_stt::transcribe_audio(&mut model, &audio.samples, audio.sample_rate) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Transcription failed: {e}");

@@ -1,6 +1,6 @@
 # voice
 
-Like `say`, but with [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) TTS and [Moonshine](https://huggingface.co/UsefulSensors/moonshine-tiny) STT. A command-line speech tool for macOS, powered by MLX on Apple Silicon.
+Like `say`, but with [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) TTS and [Whisper](https://huggingface.co/distil-whisper/distil-large-v3) STT. A command-line speech tool powered by Candle, with Metal acceleration on Apple Silicon and CPU fallback on Linux.
 
 ## Install
 
@@ -31,7 +31,7 @@ cd voice
 cargo install --path crates/voice-cli
 ```
 
-> **Note:** `cargo install voice` compiles from source on crates.io, but the Metal shader library path can break — see the [main README](../../README.md) for details. Use `cargo binstall voice` or build from a local clone instead.
+> **Note:** `cargo install voice` compiles from source on crates.io. Use `cargo binstall voice` for the pre-built binary, or build from a local clone when working on the repo.
 
 ## Usage
 

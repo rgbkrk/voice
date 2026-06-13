@@ -78,9 +78,12 @@ impl G2P {
             ("apis", "ˈA pˈi ˈIz"),
             ("automerge", "ˈɔTO mˈɜɹʤ"),
             ("aws", "ˈA dˈʌbᵊlju ˈɛs"),
+            ("bilstm", "bˈI ˈɛl ˈɛs tˈi ˈɛm"),
             ("cli", "sˈi ˈɛl ˌI"),
             ("clis", "sˈi ˈɛl ˈIz"),
             ("cloudflare", "klˈWd flˈɛɹ"),
+            ("coreaudio", "kˈɔɹ ˈɔdiO"),
+            ("coreml", "kˈɔɹ ˈɛm ˈɛl"),
             ("crdt", "sˈi ˈɑɹ dˈi tˈi"),
             ("crdts", "sˈi ˈɑɹ dˈi tˈiz"),
             ("csr", "sˈi ˈɛs ˈɑɹ"),
@@ -93,7 +96,10 @@ impl G2P {
             ("demux", "dˌimˈʌks"),
             ("demuxing", "dˌimˈʌksɪŋ"),
             ("duckdb", "dˈʌk dˈi bˈi"),
+            ("espeak", "ˈi spˌik"),
             ("fastapi", "fˈæst ˈA pˈi ˌI"),
+            ("flac", "flˈæk"),
+            ("gguf", "ʤˈi ʤˈi jˈu ˈɛf"),
             ("grpc", "ʤˈi ˈɑɹ pˈi sˈi"),
             ("http", "ˈAʧ tˈi tˈi pˈi"),
             ("https", "ˈAʧ tˈi tˈi pˈi ˈɛs"),
@@ -101,6 +107,7 @@ impl G2P {
             ("ipykernel", "ˈI pˈI kˌɜɹnᵊl"),
             ("istft", "ˈI ˈɛs tˈi ˈɛf tˈi"),
             ("json", "ʤˌA sˈæhn"),
+            ("jsonrpc", "ʤˌA sˈæhn ˈɑɹ pˈi sˈi"),
             ("jsx", "ʤˈA ˈɛs ˈɛks"),
             ("jupyter", "ʤˈupɪTəɹ"),
             ("jwt", "ʤˈA dˈʌbᵊlju tˈi"),
@@ -111,6 +118,7 @@ impl G2P {
             ("kubernetes", "kˌubəɹnˈɛtiz"),
             ("kubectl", "kjˈub kˈʌdᵊl"),
             ("latex", "lˈA tˌɛk"),
+            ("lstm", "ˈɛl ˈɛs tˈi ˈɛm"),
             ("macos", "mˈæk ˈO ˈɛs"),
             ("mathjax", "mˈæθ ʤˌæks"),
             ("mcp", "ˈɛm sˈi pˈi"),
@@ -118,12 +126,15 @@ impl G2P {
             ("mdx", "ˈɛm dˈi ˈɛks"),
             ("micropip", "mˈIkɹO pˌɪp"),
             ("mimebundle", "mˈIm bˌʌndᵊl"),
+            ("mlx", "ˈɛm ˈɛl ˈɛks"),
+            ("mmap", "ˈɛm mˌæp"),
             ("nbconvert", "ˈɛn bˈi kˌɑnvɜɹt"),
             ("nbformat", "ˈɛn bˈi fˌɔɹmæt"),
             ("nginx", "ˈɛnʤən ˌɛks"),
             ("nteract", "ˈɛntəɹˌækt"),
             ("numpy", "nˈʌm pˌI"),
             ("oauth", "ˌO ˈɔθ"),
+            ("ogg", "ˈɑɡ"),
             ("oidc", "ˈO ˌI dˈi sˈi"),
             ("onnx", "ˈɑnɪks"),
             ("openapi", "ˈOpᵊn ˈA pˈi ˌI"),
@@ -131,9 +142,11 @@ impl G2P {
             ("pnpm", "pˈi ˈɛn pˈi ˈɛm"),
             ("postgres", "pˈOstɡɹɛs"),
             ("postgresql", "pˈOst ɡɹˈɛs kjˈu ˈɛl"),
+            ("pcm", "pˈi sˈi ˈɛm"),
             ("protobuf", "pɹˈOTO bˌʌf"),
             ("pwa", "pˈi dˈʌbᵊlju ˈA"),
             ("pyodide", "pˈI ə dˌId"),
+            ("pyo3", "pˈI ˈO θɹˈi"),
             ("todo", "tˈudu"),
             // Developer acronyms and initialisms
             ("ipynb", "nˈOtbˌʊk fˈIl"),
@@ -142,6 +155,8 @@ impl G2P {
             ("pytorch", "pˈI tˌɔɹʧ"),
             ("rpc", "ˈɑɹ pˈi sˈi"),
             ("rpcs", "ˈɑɹ pˈi sˈiz"),
+            ("rtcp", "ˈɑɹ tˈi sˈi pˈi"),
+            ("rtp", "ˈɑɹ tˈi pˈi"),
             ("rxjs", "ˈɑɹ ˈɛks ʤˈA ˈɛs"),
             ("runtimed", "ɹˈʌntIm dˈi"),
             ("s3", "ˈɛs θɹˈi"),
@@ -149,10 +164,13 @@ impl G2P {
             ("serde", "sˈɜɹdˌi"),
             ("sqlite", "ˌɛs kjˈu ˌɛl lˈIt"),
             ("ssr", "ˈɛs ˈɛs ˈɑɹ"),
+            ("stft", "ˈɛs tˈi ˈɛf tˈi"),
             ("stt", "ˈɛs tˈi tˈi"),
             ("supabase", "sˈupə bˌAs"),
             ("tauri", "tˈW ɹˌi"),
             ("tex", "tˈɛk"),
+            ("tokenizer", "tˈOkᵊn ˌIzəɹ"),
+            ("tokenizers", "tˈOkᵊn ˌIzəɹz"),
             ("toml", "tˈɑmᵊl"),
             ("tokio", "tˈOkiˌO"),
             ("tsconfig", "tˈi ˈɛs kˌɑnfˈɪɡ"),
@@ -921,9 +939,12 @@ mod tests {
         assert_eq!(pronounces("APIs"), "ˈA pˈi ˈIz");
         assert_eq!(pronounces("Automerge"), "ˈɔTO mˈɜɹʤ");
         assert_eq!(pronounces("AWS"), "ˈA dˈʌbᵊlju ˈɛs");
+        assert_eq!(pronounces("BiLSTM"), "bˈI ˈɛl ˈɛs tˈi ˈɛm");
         assert_eq!(pronounces("CLI"), "sˈi ˈɛl ˌI");
         assert_eq!(pronounces("CLIs"), "sˈi ˈɛl ˈIz");
         assert_eq!(pronounces("Cloudflare"), "klˈWd flˈɛɹ");
+        assert_eq!(pronounces("CoreAudio"), "kˈɔɹ ˈɔdiO");
+        assert_eq!(pronounces("CoreML"), "kˈɔɹ ˈɛm ˈɛl");
         assert_eq!(pronounces("CRDT"), "sˈi ˈɑɹ dˈi tˈi");
         assert_eq!(pronounces("CRDTs"), "sˈi ˈɑɹ dˈi tˈiz");
         assert_eq!(pronounces("CSR"), "sˈi ˈɛs ˈɑɹ");
@@ -937,7 +958,10 @@ mod tests {
         assert_eq!(pronounces("demultiplexing"), "dˌimˈʌltɪplɛksɪŋ");
         assert_eq!(pronounces("demultiplex"), "dˌimˈʌltɪplɛks");
         assert_eq!(pronounces("DuckDB"), "dˈʌk dˈi bˈi");
+        assert_eq!(pronounces("espeak"), "ˈi spˌik");
         assert_eq!(pronounces("FastAPI"), "fˈæst ˈA pˈi ˌI");
+        assert_eq!(pronounces("FLAC"), "flˈæk");
+        assert_eq!(pronounces("GGUF"), "ʤˈi ʤˈi jˈu ˈɛf");
         assert_eq!(pronounces("gRPC"), "ʤˈi ˈɑɹ pˈi sˈi");
         assert_eq!(pronounces("HTTP"), "ˈAʧ tˈi tˈi pˈi");
         assert_eq!(pronounces("HTTPS"), "ˈAʧ tˈi tˈi pˈi ˈɛs");
@@ -945,6 +969,7 @@ mod tests {
         assert_eq!(pronounces("ipykernel"), "ˈI pˈI kˌɜɹnᵊl");
         assert_eq!(pronounces("iSTFT"), "ˈI ˈɛs tˈi ˈɛf tˈi");
         assert_eq!(pronounces("JSON"), "ʤˌA sˈæhn");
+        assert_eq!(pronounces("JSONRPC"), "ʤˌA sˈæhn ˈɑɹ pˈi sˈi");
         assert_eq!(pronounces("JSX"), "ʤˈA ˈɛs ˈɛks");
         assert_eq!(pronounces("Jupyter"), "ʤˈupɪTəɹ");
         assert_eq!(pronounces("JWT"), "ʤˈA dˈʌbᵊlju tˈi");
@@ -955,6 +980,7 @@ mod tests {
         assert_eq!(pronounces("Kubernetes"), "kˌubəɹnˈɛtiz");
         assert_eq!(pronounces("kubectl"), "kjˈub kˈʌdᵊl");
         assert_eq!(pronounces("LaTeX"), "lˈA tˌɛk");
+        assert_eq!(pronounces("LSTM"), "ˈɛl ˈɛs tˈi ˈɛm");
         assert_eq!(pronounces("macOS"), "mˈæk ˈO ˈɛs");
         assert_eq!(pronounces("MathJax"), "mˈæθ ʤˌæks");
         assert_eq!(pronounces("MCP"), "ˈɛm sˈi pˈi");
@@ -962,12 +988,15 @@ mod tests {
         assert_eq!(pronounces("MDX"), "ˈɛm dˈi ˈɛks");
         assert_eq!(pronounces("micropip"), "mˈIkɹO pˌɪp");
         assert_eq!(pronounces("MIMEBundle"), "mˈIm bˌʌndᵊl");
+        assert_eq!(pronounces("MLX"), "ˈɛm ˈɛl ˈɛks");
+        assert_eq!(pronounces("mmap"), "ˈɛm mˌæp");
         assert_eq!(pronounces("nbconvert"), "ˈɛn bˈi kˌɑnvɜɹt");
         assert_eq!(pronounces("nbformat"), "ˈɛn bˈi fˌɔɹmæt");
         assert_eq!(pronounces("nginx"), "ˈɛnʤən ˌɛks");
         assert_eq!(pronounces("nteract"), "ˈɛntəɹˌækt");
         assert_eq!(pronounces("NumPy"), "nˈʌm pˌI");
         assert_eq!(pronounces("OAuth"), "ˌO ˈɔθ");
+        assert_eq!(pronounces("OGG"), "ˈɑɡ");
         assert_eq!(pronounces("OIDC"), "ˈO ˌI dˈi sˈi");
         assert_eq!(pronounces("ONNX"), "ˈɑnɪks");
         assert_eq!(pronounces("OpenAPI"), "ˈOpᵊn ˈA pˈi ˌI");
@@ -975,9 +1004,11 @@ mod tests {
         assert_eq!(pronounces("pnpm"), "pˈi ˈɛn pˈi ˈɛm");
         assert_eq!(pronounces("Postgres"), "pˈOstɡɹɛs");
         assert_eq!(pronounces("PostgreSQL"), "pˈOst ɡɹˈɛs kjˈu ˈɛl");
+        assert_eq!(pronounces("PCM"), "pˈi sˈi ˈɛm");
         assert_eq!(pronounces("Protobuf"), "pɹˈOTO bˌʌf");
         assert_eq!(pronounces("PWA"), "pˈi dˈʌbᵊlju ˈA");
         assert_eq!(pronounces("Pyodide"), "pˈI ə dˌId");
+        assert_eq!(pronounces("PyO3"), "pˈI ˈO θɹˈi");
         assert_eq!(pronounces("PyTorch"), "pˈI tˌɔɹʧ");
         assert_eq!(pronounces("vitest"), "vˈi tˌɛst");
         assert_eq!(pronounces("tsconfig"), "tˈi ˈɛs kˌɑnfˈɪɡ");
@@ -986,16 +1017,21 @@ mod tests {
         assert_eq!(pronounces("PRs"), "pˈi ˈɑɹz");
         assert_eq!(pronounces("RPC"), "ˈɑɹ pˈi sˈi");
         assert_eq!(pronounces("RPCs"), "ˈɑɹ pˈi sˈiz");
+        assert_eq!(pronounces("RTCP"), "ˈɑɹ tˈi sˈi pˈi");
+        assert_eq!(pronounces("RTP"), "ˈɑɹ tˈi pˈi");
         assert_eq!(pronounces("runtimed"), "ɹˈʌntIm dˈi");
         assert_eq!(pronounces("S3"), "ˈɛs θɹˈi");
         assert_eq!(pronounces("safetensors"), "sˈAf tˌɛnsəɹz");
         assert_eq!(pronounces("Serde"), "sˈɜɹdˌi");
         assert_eq!(pronounces("SQLite"), "ˌɛs kjˈu ˌɛl lˈIt");
         assert_eq!(pronounces("SSR"), "ˈɛs ˈɛs ˈɑɹ");
+        assert_eq!(pronounces("STFT"), "ˈɛs tˈi ˈɛf tˈi");
         assert_eq!(pronounces("STT"), "ˈɛs tˈi tˈi");
         assert_eq!(pronounces("Supabase"), "sˈupə bˌAs");
         assert_eq!(pronounces("Tauri"), "tˈW ɹˌi");
         assert_eq!(pronounces("TeX"), "tˈɛk");
+        assert_eq!(pronounces("tokenizer"), "tˈOkᵊn ˌIzəɹ");
+        assert_eq!(pronounces("tokenizers"), "tˈOkᵊn ˌIzəɹz");
         assert_eq!(pronounces("TOML"), "tˈɑmᵊl");
         assert_eq!(pronounces("Tokio"), "tˈOkiˌO");
         assert_eq!(pronounces("TTS"), "tˈi tˈi ˈɛs");

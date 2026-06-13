@@ -39,6 +39,7 @@ macro_rules! info {
                   voice say -f speech.txt -o output.wav\n  \
                   voice say --phonemes \"hɛloʊ wɜːld\"\n  \
                   voice say --markdown -f post.mdx\n  \
+                  voice stream --json \"Hello world\"\n  \
                   voice listen\n  \
                   voice listen --continuous\n  \
                   voice transcribe recording.wav\n  \
@@ -63,6 +64,9 @@ struct Args {
 enum Command {
     /// Speak text aloud (default when no subcommand given)
     Say(SayArgs),
+
+    /// Stream TTS audio chunks from the voice daemon
+    Stream(StreamArgs),
 
     /// Speak text aloud, then listen for a response (speak + listen in one shot)
     Converse(ConverseArgs),
@@ -108,6 +112,54 @@ struct SayArgs {
     /// Speech speed factor (1.0 = normal)
     #[arg(short, long, default_value = "1.0")]
     speed: f32,
+
+    /// Strip markdown/MDX formatting before speaking
+    #[arg(long)]
+    markdown: bool,
+
+    /// Word substitutions (pre-processing), e.g. --sub nteract=enteract
+    #[arg(long = "sub", value_name = "WORD=REPLACEMENT")]
+    subs: Vec<String>,
+
+    /// Load substitutions from a file (one WORD=REPLACEMENT per line, # comments).
+    /// If not set, .voice-subs is auto-discovered from the working directory upward.
+    #[arg(long = "sub-file", value_name = "PATH")]
+    sub_file: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
+struct StreamArgs {
+    /// Text to stream
+    #[arg(trailing_var_arg = true)]
+    text: Vec<String>,
+
+    /// Read text from a file (use - for stdin)
+    #[arg(short = 'f', long = "input-file")]
+    input_file: Option<PathBuf>,
+
+    /// Voice name (e.g. af_heart, am_adam)
+    #[arg(short, long, default_value = "af_heart")]
+    voice: String,
+
+    /// Speech speed factor (1.0 = normal)
+    #[arg(short, long, default_value = "1.0")]
+    speed: f32,
+
+    /// Target stream sample rate
+    #[arg(long = "sample-rate", default_value = "24000")]
+    sample_rate: u32,
+
+    /// Target stream frame duration in milliseconds
+    #[arg(long = "frame-ms", default_value = "20")]
+    frame_ms: u32,
+
+    /// Write raw signed 16-bit little-endian mono PCM to this path
+    #[arg(short = 'o', long = "raw-output")]
+    raw_output: Option<PathBuf>,
+
+    /// Print full JSON stream events instead of compact summaries
+    #[arg(long)]
+    json: bool,
 
     /// Strip markdown/MDX formatting before speaking
     #[arg(long)]
@@ -297,6 +349,44 @@ fn resolve_text(say: &SayArgs) -> Result<String, String> {
     }
 
     // Fall back to stdin if it's not a TTY
+    if io::stdin().is_terminal() {
+        return Err("No text provided. Pass text as arguments, use -f, or pipe to stdin.".into());
+    }
+
+    let mut buf = String::new();
+    io::stdin()
+        .read_to_string(&mut buf)
+        .map_err(|e| format!("Failed to read stdin: {e}"))?;
+    let text = buf.trim().to_string();
+    if text.is_empty() {
+        return Err("No text provided on stdin".into());
+    }
+    Ok(text)
+}
+
+fn resolve_stream_text(stream: &StreamArgs) -> Result<String, String> {
+    if let Some(path) = &stream.input_file {
+        let text = if path.to_str() == Some("-") {
+            let mut buf = String::new();
+            io::stdin()
+                .read_to_string(&mut buf)
+                .map_err(|e| format!("Failed to read stdin: {e}"))?;
+            buf
+        } else {
+            std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read {}: {e}", path.display()))?
+        };
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Err("Input file is empty".into());
+        }
+        return Ok(text);
+    }
+
+    if !stream.text.is_empty() {
+        return Ok(stream.text.join(" "));
+    }
+
     if io::stdin().is_terminal() {
         return Err("No text provided. Pass text as arguments, use -f, or pipe to stdin.".into());
     }
@@ -519,6 +609,27 @@ fn collect_subs(
     (text_subs, phoneme_overrides)
 }
 
+fn preprocess_daemon_text(
+    text: String,
+    markdown: bool,
+    cli_subs: &[String],
+    sub_file: Option<PathBuf>,
+) -> String {
+    let text = if markdown {
+        strip_markdown(&text)
+    } else {
+        text
+    };
+    let text = apply_tech_subs(&text);
+    let sub_file = sub_file.or_else(find_sub_file);
+    let (subs, _phoneme_overrides) = collect_subs(cli_subs, sub_file.as_deref());
+    if subs.is_empty() {
+        text
+    } else {
+        apply_substitutions(&text, &subs)
+    }
+}
+
 fn main() {
     // Ctrl+C: set flag for cooperative cancellation. The generation loops
     // check this between chunks and exit cleanly, letting the current
@@ -576,6 +687,9 @@ fn main() {
         }
         Some(Command::Say(say_args)) => {
             run_say(say_args);
+        }
+        Some(Command::Stream(stream_args)) => {
+            run_stream(stream_args);
         }
         None => {
             // Backward compatibility: `voice Hello world` = `voice say Hello world`
@@ -827,8 +941,10 @@ fn run_mcp(serve_args: ServeArgs) {
 }
 
 fn run_say(say_args: SayArgs) {
-    // If the daemon is running and we're not writing to a file, delegate to it.
-    if say_args.output.is_none() {
+    // If the daemon is running, delegate normal playback and file synthesis to it.
+    // `--phonemes` stays local because the daemon RPC accepts text and runs its
+    // own G2P pipeline.
+    if say_args.phonemes.is_none() {
         if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
             let text = match resolve_text(&say_args) {
                 Ok(t) => t,
@@ -837,22 +953,42 @@ fn run_say(say_args: SayArgs) {
                     std::process::exit(1);
                 }
             };
-            // Apply the same preprocessing the local path uses
-            let text = if say_args.markdown {
-                strip_markdown(&text)
+            let text = preprocess_daemon_text(
+                text,
+                say_args.markdown,
+                &say_args.subs,
+                say_args.sub_file.clone(),
+            );
+
+            let daemon_result = if let Some(output_path) = &say_args.output {
+                daemon.synthesize(
+                    &text,
+                    &output_path.to_string_lossy(),
+                    Some(&say_args.voice),
+                    Some(say_args.speed as f64),
+                )
             } else {
-                text
+                daemon.speak(&text, Some(&say_args.voice), Some(say_args.speed as f64))
             };
-            let text = apply_tech_subs(&text);
-            let sub_file = say_args.sub_file.clone().or_else(find_sub_file);
-            let (subs, _phoneme_overrides) = collect_subs(&say_args.subs, sub_file.as_deref());
-            let text = if subs.is_empty() {
-                text
-            } else {
-                apply_substitutions(&text, &subs)
-            };
-            match daemon.speak(&text, Some(&say_args.voice), Some(say_args.speed as f64)) {
-                Ok(_resp) => return,
+
+            match daemon_result {
+                Ok(resp) if resp.error.is_none() => {
+                    let failed = resp
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.get("status"))
+                        .and_then(|s| s.as_str())
+                        == Some("failed");
+                    if !failed {
+                        return;
+                    }
+                    eprintln!("Daemon synthesis failed, falling back to local");
+                }
+                Ok(resp) => {
+                    if let Some(err) = resp.error {
+                        eprintln!("Daemon error: {}, falling back to local", err.message);
+                    }
+                }
                 Err(e) => {
                     eprintln!("Daemon error: {e}, falling back to local");
                 }
@@ -945,6 +1081,136 @@ fn run_say(say_args: SayArgs) {
             say_args.speed,
             sample_rate,
         );
+    }
+}
+
+fn run_stream(stream_args: StreamArgs) {
+    let text = match resolve_stream_text(&stream_args) {
+        Ok(t) => t,
+        Err(msg) => {
+            eprintln!("Error: {msg}");
+            std::process::exit(1);
+        }
+    };
+    let text = preprocess_daemon_text(
+        text,
+        stream_args.markdown,
+        &stream_args.subs,
+        stream_args.sub_file.clone(),
+    );
+
+    let mut raw_writer = stream_args.raw_output.as_ref().map(|path| {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                    eprintln!("Failed to create {}: {e}", parent.display());
+                    std::process::exit(1);
+                });
+            }
+        }
+        std::fs::File::create(path).unwrap_or_else(|e| {
+            eprintln!("Failed to create {}: {e}", path.display());
+            std::process::exit(1);
+        })
+    });
+
+    let mut daemon = connect_daemon_or_exit();
+    let mut terminal_error: Option<String> = None;
+    let mut frame_count = 0u64;
+
+    let result = daemon.stream_speak(
+        &text,
+        Some(&stream_args.voice),
+        Some(stream_args.speed as f64),
+        Some(stream_args.sample_rate),
+        Some(stream_args.frame_ms),
+        |event| {
+            if stream_args.json {
+                println!("{}", serde_json::to_string(&event).unwrap());
+            }
+
+            match event {
+                voice_stream::TtsStreamEvent::Started { metadata } => {
+                    if !stream_args.json {
+                        println!(
+                            "started stream={} rate={}Hz frame={}ms encoding={:?}",
+                            metadata.stream_id,
+                            metadata.sample_rate,
+                            metadata.frame_ms,
+                            metadata.encoding
+                        );
+                    }
+                }
+                voice_stream::TtsStreamEvent::Audio { frame } => {
+                    frame_count += 1;
+                    if let Some(file) = raw_writer.as_mut() {
+                        file.write_all(&frame.payload_le_bytes())
+                            .map_err(|e| format!("write raw PCM: {e}"))?;
+                    }
+                    if !stream_args.json {
+                        println!(
+                            "audio seq={} samples={} padding={}",
+                            frame.sequence, frame.sample_count, frame.padding_samples
+                        );
+                    }
+                }
+                voice_stream::TtsStreamEvent::Ended(end) => {
+                    if !stream_args.json {
+                        println!(
+                            "ended stream={} frames={} samples={} duration_ms={}",
+                            end.stream_id, end.frames, end.samples, end.duration_ms
+                        );
+                    }
+                }
+                voice_stream::TtsStreamEvent::Error(err) => {
+                    terminal_error = Some(err.message.clone());
+                    if !stream_args.json {
+                        println!("error stream={}: {}", err.stream_id, err.message);
+                    }
+                }
+                voice_stream::TtsStreamEvent::Cancelled(cancelled) => {
+                    terminal_error = Some(cancelled.reason.clone());
+                    if !stream_args.json {
+                        println!(
+                            "cancelled stream={}: {}",
+                            cancelled.stream_id, cancelled.reason
+                        );
+                    }
+                }
+            }
+
+            Ok(())
+        },
+    );
+
+    match result {
+        Ok(resp) => {
+            if let Some(err) = resp.error {
+                eprintln!("voice daemon: {}", err.message);
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("voice daemon stream: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    if let Some(err) = terminal_error {
+        eprintln!("voice stream failed: {err}");
+        std::process::exit(1);
+    }
+
+    if let Some(mut file) = raw_writer {
+        file.flush().unwrap_or_else(|e| {
+            eprintln!("Failed to flush raw output: {e}");
+            std::process::exit(1);
+        });
+    }
+
+    if frame_count == 0 {
+        eprintln!("voice stream produced no audio frames");
+        std::process::exit(1);
     }
 }
 

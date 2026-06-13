@@ -83,6 +83,9 @@ fn main() {
                 tray.on_tray_icon_event(move |_tray, event| {
                     info!("Tray icon event: {:?}", event);
                     if let tauri::tray::TrayIconEvent::Click { button, rect, .. } = event {
+                        #[cfg(not(target_os = "macos"))]
+                        let _ = &rect;
+
                         if button == MouseButton::Left {
                             if let Some(window) = window_handle.get_webview_window("main") {
                                 let is_visible = window.is_visible().unwrap_or(false);

@@ -6,6 +6,7 @@
 //! Usage:
 //!   voiced              # start the daemon
 //!   voiced --status     # print daemon state and exit
+//!   voiced --tts-only   # start without eagerly loading STT/microphone path
 
 mod audio_recorder;
 mod automerge_state;
@@ -32,7 +33,12 @@ async fn main() {
         return;
     }
 
+    let tts_only = args.iter().any(|a| a == "--tts-only");
+
     eprintln!("voiced: starting voice daemon");
+    if tts_only {
+        eprintln!("voiced: TTS-only mode enabled (STT loads only if listen/converse is requested)");
+    }
 
     // Check if another instance is already running
     let sock_path = socket::socket_path();
@@ -88,7 +94,7 @@ async fn main() {
     let worker_config = config.clone();
     let worker_automerge = automerge.clone();
     tokio::spawn(async move {
-        worker::run(worker_queue, worker_config, worker_automerge).await;
+        worker::run(worker_queue, worker_config, worker_automerge, tts_only).await;
     });
 
     // Start cleanup task

@@ -12,6 +12,9 @@ use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use voice_stream::{
+    resample_linear, AudioEncoding, Packetizer, StreamEnded, StreamMetadata, TtsStreamEvent,
+};
 use voice_tts::KokoroModel;
 
 use crate::audio_recorder;
@@ -30,6 +33,17 @@ struct TtsState {
     speed: f32,
     sample_rate: u32,
     repo_id: String,
+}
+
+struct StreamSpeakJob {
+    text: String,
+    stream_id: String,
+    voice_name: Option<String>,
+    speed: Option<f64>,
+    sample_rate: u32,
+    frame_ms: u32,
+    event_tx: tokio::sync::mpsc::Sender<TtsStreamEvent>,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl TtsState {
@@ -63,6 +77,7 @@ pub async fn run(
     queue: Arc<RequestQueue>,
     config: Arc<crate::config::DaemonConfig>,
     automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
+    tts_only: bool,
 ) {
     eprintln!("voiced: loading TTS model...");
     let start = Instant::now();
@@ -86,29 +101,34 @@ pub async fn run(
         start.elapsed().as_secs_f32()
     );
 
-    // Eagerly load STT model — daemon is long-lived, pay the cost once
-    eprintln!("voiced: loading STT model...");
-    let stt_start = Instant::now();
-    let stt: Arc<Mutex<Option<voice_stt::WhisperModel>>> = match tokio::task::spawn_blocking(|| {
-        voice_stt::load_model(STT_REPO).map_err(|e| format!("stt: {}", e))
-    })
-    .await
-    {
-        Ok(Ok(model)) => {
-            eprintln!(
-                "voiced: STT model loaded in {:.1}s",
-                stt_start.elapsed().as_secs_f32()
-            );
-            Arc::new(Mutex::new(Some(model)))
-        }
-        Ok(Err(e)) => {
-            eprintln!("voiced: STT model failed to load: {}", e);
-            eprintln!("voiced: listen/converse will be unavailable");
-            Arc::new(Mutex::new(None))
-        }
-        Err(e) => {
-            eprintln!("voiced: STT init panicked: {}", e);
-            Arc::new(Mutex::new(None))
+    let stt: Arc<Mutex<Option<voice_stt::WhisperModel>>> = if tts_only {
+        eprintln!("voiced: skipping eager STT load (TTS-only mode)");
+        Arc::new(Mutex::new(None))
+    } else {
+        // Eagerly load STT model — daemon is long-lived, pay the cost once
+        eprintln!("voiced: loading STT model...");
+        let stt_start = Instant::now();
+        match tokio::task::spawn_blocking(|| {
+            voice_stt::load_model(STT_REPO).map_err(|e| format!("stt: {}", e))
+        })
+        .await
+        {
+            Ok(Ok(model)) => {
+                eprintln!(
+                    "voiced: STT model loaded in {:.1}s",
+                    stt_start.elapsed().as_secs_f32()
+                );
+                Arc::new(Mutex::new(Some(model)))
+            }
+            Ok(Err(e)) => {
+                eprintln!("voiced: STT model failed to load: {}", e);
+                eprintln!("voiced: listen/converse will be unavailable");
+                Arc::new(Mutex::new(None))
+            }
+            Err(e) => {
+                eprintln!("voiced: STT init panicked: {}", e);
+                Arc::new(Mutex::new(None))
+            }
         }
     };
 
@@ -137,9 +157,17 @@ pub async fn run(
                     let speed = speed.or_else(|| Some(config.get_speed() as f64));
                     let tts = tts.clone();
                     let queue_id = entry.id.clone();
+                    let cancelled = entry.cancelled.clone();
 
                     let result = tokio::task::spawn_blocking(move || {
-                        speak(&tts, &text, voice.as_deref(), speed, Some(&queue_id))
+                        speak(
+                            &tts,
+                            &text,
+                            voice.as_deref(),
+                            speed,
+                            Some(&queue_id),
+                            &cancelled,
+                        )
                     })
                     .await;
 
@@ -155,6 +183,83 @@ pub async fn run(
                         }
                         Err(e) => {
                             eprintln!("voiced: speak panicked: {}", e);
+                            queue.fail(format!("panic: {}", e)).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
+                    }
+                }
+                VoiceRequest::Synthesize {
+                    text,
+                    output_path,
+                    voice,
+                    speed,
+                } => {
+                    let text = text.clone();
+                    let output_path = output_path.clone();
+                    let voice = voice.clone().or_else(|| Some(config.get_voice_name()));
+                    let speed = speed.or_else(|| Some(config.get_speed() as f64));
+                    let tts = tts.clone();
+                    let cancelled = entry.cancelled.clone();
+
+                    let result = tokio::task::spawn_blocking(move || {
+                        synthesize_to_file(
+                            &tts,
+                            &text,
+                            &output_path,
+                            voice.as_deref(),
+                            speed,
+                            &cancelled,
+                        )
+                    })
+                    .await;
+
+                    match result {
+                        Ok(Ok(msg)) => {
+                            queue.complete(Some(msg), None).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("voiced: synthesize error: {}", e);
+                            queue.fail(e).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
+                        Err(e) => {
+                            eprintln!("voiced: synthesize panicked: {}", e);
+                            queue.fail(format!("panic: {}", e)).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
+                    }
+                }
+                VoiceRequest::StreamSpeak(request) => {
+                    let job = StreamSpeakJob {
+                        text: request.text.clone(),
+                        stream_id: request.stream_id.clone(),
+                        voice_name: request
+                            .voice
+                            .clone()
+                            .or_else(|| Some(config.get_voice_name())),
+                        speed: request.speed.or_else(|| Some(config.get_speed() as f64)),
+                        sample_rate: request.sample_rate,
+                        frame_ms: request.frame_ms,
+                        event_tx: request.event_tx.clone(),
+                        cancelled: entry.cancelled.clone(),
+                    };
+                    let tts = tts.clone();
+
+                    let result = tokio::task::spawn_blocking(move || stream_speak(&tts, job)).await;
+
+                    match result {
+                        Ok(Ok(msg)) => {
+                            queue.complete(Some(msg), None).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("voiced: stream_speak error: {}", e);
+                            queue.fail(e).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
+                        Err(e) => {
+                            eprintln!("voiced: stream_speak panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
                             sync_automerge(&queue, &automerge).await;
                         }
@@ -193,6 +298,7 @@ pub async fn run(
                     let tts = tts.clone();
                     let stt = stt.clone();
                     let queue_id = entry.id.clone(); // Capture for audio recording
+                    let cancelled = entry.cancelled.clone();
 
                     // Speak then listen, return combined JSON
                     let speak_result = tokio::task::spawn_blocking(move || {
@@ -202,6 +308,7 @@ pub async fn run(
                             voice.as_deref(),
                             default_speed,
                             Some(&queue_id),
+                            &cancelled,
                         )?;
                         let heard_json = listen(&stt, None, Some(&queue_id))?; // Pass queue_id for answer recording
                                                                                // Parse both results and combine into the converse format
@@ -272,6 +379,7 @@ fn speak(
     voice_name: Option<&str>,
     speed: Option<f64>,
     queue_id: Option<&str>,
+    cancelled: &Arc<AtomicBool>,
 ) -> Result<String, String> {
     let chunks =
         voice_g2p::text_to_phoneme_chunks(text).map_err(|e| format!("G2P error: {}", e))?;
@@ -296,6 +404,9 @@ fn speak(
         let rate = NonZero::new(sample_rate).unwrap();
 
         for (i, phonemes) in chunks.iter().enumerate() {
+            if cancelled.load(Ordering::SeqCst) {
+                return Err("Cancelled by user".to_string());
+            }
             if phonemes.is_empty() {
                 continue;
             }
@@ -342,6 +453,248 @@ fn speak(
         "chunks": chunks.len(),
     })
     .to_string())
+}
+
+fn synthesize_to_file(
+    tts: &Arc<Mutex<TtsState>>,
+    text: &str,
+    output_path: &str,
+    voice_name: Option<&str>,
+    speed: Option<f64>,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<String, String> {
+    let chunks =
+        voice_g2p::text_to_phoneme_chunks(text).map_err(|e| format!("G2P error: {}", e))?;
+
+    let started = Instant::now();
+    let mut all_samples: Vec<f32> = Vec::new();
+    let sample_rate: u32;
+    let speed_used: f32;
+
+    {
+        let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
+        speed_used = speed.map(|s| s as f32).unwrap_or(state.speed);
+        sample_rate = state.sample_rate;
+
+        for (i, phonemes) in chunks.iter().enumerate() {
+            if cancelled.load(Ordering::SeqCst) {
+                return Err("Cancelled by user".to_string());
+            }
+            if phonemes.is_empty() {
+                continue;
+            }
+
+            let voice = if let Some(name) = voice_name {
+                state.get_voice(name)?.clone()
+            } else {
+                state.default_voice.clone()
+            };
+
+            match voice_tts::generate(&mut state.model, phonemes, &voice, speed_used) {
+                Ok(audio) => {
+                    all_samples.extend_from_slice(&audio);
+                    if chunks.len() > 1 {
+                        eprintln!("voiced:   chunk {}/{} synthesized", i + 1, chunks.len());
+                    }
+                }
+                Err(e) => return Err(format!("generate chunk {}: {}", i + 1, e)),
+            }
+        }
+    }
+
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("Cancelled by user".to_string());
+    }
+
+    let path = std::path::Path::new(output_path);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create output dir {}: {}", parent.display(), e))?;
+        }
+    }
+
+    audio_recorder::save_wav(path, &all_samples, sample_rate)?;
+
+    Ok(serde_json::json!({
+        "output_path": output_path,
+        "duration_ms": started.elapsed().as_millis() as u64,
+        "chunks": chunks.len(),
+        "samples": all_samples.len(),
+        "sample_rate": sample_rate,
+        "voice": voice_name,
+        "speed": speed_used,
+    })
+    .to_string())
+}
+
+fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<String, String> {
+    let StreamSpeakJob {
+        text,
+        stream_id,
+        voice_name,
+        speed,
+        sample_rate,
+        frame_ms,
+        event_tx,
+        cancelled,
+    } = job;
+
+    let started = Instant::now();
+    let chunks = match voice_g2p::text_to_phoneme_chunks(&text) {
+        Ok(chunks) => chunks,
+        Err(e) => {
+            let msg = format!("G2P error: {}", e);
+            let _ = send_stream_event(
+                &event_tx,
+                TtsStreamEvent::error(stream_id.clone(), msg.clone()),
+                &cancelled,
+            );
+            return Err(msg);
+        }
+    };
+
+    let init_result: Result<(Tensor, u32, f32, Option<String>), String> = {
+        let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
+        let voice_tensor = if let Some(name) = voice_name.as_deref() {
+            state.get_voice(name)?.clone()
+        } else {
+            state.default_voice.clone()
+        };
+        Ok((
+            voice_tensor,
+            state.sample_rate,
+            speed.map(|s| s as f32).unwrap_or(state.speed),
+            voice_name
+                .clone()
+                .or_else(|| Some(state.default_voice_name.clone())),
+        ))
+    };
+    let (voice_tensor, source_sample_rate, speed_used, resolved_voice) = match init_result {
+        Ok(result) => result,
+        Err(e) => {
+            let _ = send_stream_event(
+                &event_tx,
+                TtsStreamEvent::error(stream_id.clone(), e.clone()),
+                &cancelled,
+            );
+            return Err(e);
+        }
+    };
+
+    let output_sample_rate = sample_rate.max(1);
+    let frame_ms = frame_ms.max(1);
+    let metadata = StreamMetadata {
+        stream_id: stream_id.clone(),
+        sample_rate: output_sample_rate,
+        source_sample_rate,
+        channels: 1,
+        encoding: AudioEncoding::PcmS16Le,
+        frame_ms,
+        voice: resolved_voice.clone(),
+        speed: speed_used,
+        total_phoneme_chunks: chunks.len(),
+    };
+    send_stream_event(&event_tx, TtsStreamEvent::Started { metadata }, &cancelled)?;
+
+    let mut packetizer = Packetizer::new(stream_id.clone(), output_sample_rate, frame_ms);
+
+    for (i, phonemes) in chunks.iter().enumerate() {
+        if cancelled.load(Ordering::SeqCst) {
+            send_stream_event(
+                &event_tx,
+                TtsStreamEvent::cancelled(stream_id.clone(), "Cancelled by user"),
+                &cancelled,
+            )
+            .ok();
+            return Err("Cancelled by user".to_string());
+        }
+        if phonemes.is_empty() {
+            continue;
+        }
+
+        let audio_result: Result<Vec<f32>, String> = {
+            let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
+            voice_tts::generate(&mut state.model, phonemes, &voice_tensor, speed_used)
+                .map_err(|e| format!("generate chunk {}: {}", i + 1, e))
+        };
+        let audio = match audio_result {
+            Ok(audio) => audio,
+            Err(e) => {
+                let _ = send_stream_event(
+                    &event_tx,
+                    TtsStreamEvent::error(stream_id.clone(), e.clone()),
+                    &cancelled,
+                );
+                return Err(e);
+            }
+        };
+
+        let audio = if output_sample_rate == source_sample_rate {
+            audio
+        } else {
+            resample_linear(&audio, source_sample_rate, output_sample_rate)
+        };
+
+        for frame in packetizer.push_samples(i as u32, &audio) {
+            send_stream_event(&event_tx, TtsStreamEvent::Audio { frame }, &cancelled)?;
+        }
+
+        if chunks.len() > 1 {
+            eprintln!(
+                "voiced:   stream chunk {}/{} generated",
+                i + 1,
+                chunks.len()
+            );
+        }
+    }
+
+    if let Some(frame) = packetizer.finish(chunks.len().saturating_sub(1) as u32) {
+        send_stream_event(&event_tx, TtsStreamEvent::Audio { frame }, &cancelled)?;
+    }
+
+    let samples = packetizer.samples_emitted();
+    let duration_ms = if output_sample_rate == 0 {
+        0
+    } else {
+        samples.saturating_mul(1_000) / output_sample_rate as u64
+    };
+    let ended = StreamEnded {
+        stream_id: stream_id.clone(),
+        frames: packetizer.frames_emitted(),
+        samples,
+        duration_ms,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    };
+    send_stream_event(&event_tx, TtsStreamEvent::Ended(ended), &cancelled)?;
+
+    Ok(serde_json::json!({
+        "stream_id": stream_id,
+        "duration_ms": duration_ms,
+        "elapsed_ms": started.elapsed().as_millis() as u64,
+        "chunks": chunks.len(),
+        "frames": packetizer.frames_emitted(),
+        "samples": samples,
+        "sample_rate": output_sample_rate,
+        "source_sample_rate": source_sample_rate,
+        "frame_ms": frame_ms,
+        "voice": resolved_voice,
+        "speed": speed_used,
+    })
+    .to_string())
+}
+
+fn send_stream_event(
+    event_tx: &tokio::sync::mpsc::Sender<TtsStreamEvent>,
+    event: TtsStreamEvent,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    if cancelled.load(Ordering::SeqCst) && !event.is_terminal() {
+        return Err("Cancelled by user".to_string());
+    }
+    event_tx
+        .blocking_send(event)
+        .map_err(|_| "stream receiver closed".to_string())
 }
 
 // -- STT listen ---------------------------------------------------------------
@@ -578,6 +931,77 @@ async fn run_simulated(
                         .await;
                     sync_automerge(&queue, &automerge).await;
                 }
+                VoiceRequest::Synthesize {
+                    text, output_path, ..
+                } => {
+                    let words = text.split_whitespace().count();
+                    let ms = (words as u64 * 50).max(100);
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                    let path = std::path::Path::new(output_path);
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = audio_recorder::save_wav(path, &[], 24_000);
+                    queue
+                        .complete(
+                            Some(
+                                serde_json::json!({
+                                    "output_path": output_path,
+                                    "duration_ms": ms,
+                                    "chunks": 0,
+                                    "samples": 0,
+                                    "sample_rate": 24000,
+                                    "simulated": true,
+                                })
+                                .to_string(),
+                            ),
+                            None,
+                        )
+                        .await;
+                    sync_automerge(&queue, &automerge).await;
+                }
+                VoiceRequest::StreamSpeak(request) => {
+                    let words = request.text.split_whitespace().count();
+                    let sample_rate = request.sample_rate;
+                    let frame_ms = request.frame_ms;
+                    let samples = (sample_rate as usize / 10).max(1);
+                    let metadata = StreamMetadata {
+                        stream_id: request.stream_id.clone(),
+                        sample_rate,
+                        source_sample_rate: sample_rate,
+                        channels: 1,
+                        encoding: AudioEncoding::PcmS16Le,
+                        frame_ms,
+                        voice: None,
+                        speed: 1.0,
+                        total_phoneme_chunks: 1,
+                    };
+                    let _ = request
+                        .event_tx
+                        .send(TtsStreamEvent::Started { metadata })
+                        .await;
+                    let mut packetizer =
+                        Packetizer::new(request.stream_id.clone(), sample_rate, frame_ms);
+                    for frame in packetizer.push_samples(0, &vec![0.0; samples]) {
+                        let _ = request.event_tx.send(TtsStreamEvent::Audio { frame }).await;
+                    }
+                    if let Some(frame) = packetizer.finish(0) {
+                        let _ = request.event_tx.send(TtsStreamEvent::Audio { frame }).await;
+                    }
+                    let ended = StreamEnded {
+                        stream_id: request.stream_id.clone(),
+                        frames: packetizer.frames_emitted(),
+                        samples: packetizer.samples_emitted(),
+                        duration_ms: packetizer.samples_emitted().saturating_mul(1_000)
+                            / sample_rate.max(1) as u64,
+                        elapsed_ms: words as u64,
+                    };
+                    let _ = request.event_tx.send(TtsStreamEvent::Ended(ended)).await;
+                    queue
+                        .complete(Some("simulated stream".to_string()), None)
+                        .await;
+                    sync_automerge(&queue, &automerge).await;
+                }
                 VoiceRequest::Listen { .. } => {
                     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
                     queue
@@ -605,6 +1029,16 @@ fn short(req: &VoiceRequest) -> String {
             let preview: String = text.chars().take(50).collect();
             format!("speak: {}", preview)
         }
+        VoiceRequest::Synthesize {
+            text, output_path, ..
+        } => {
+            let preview: String = text.chars().take(50).collect();
+            format!("synthesize: {} -> {}", preview, output_path)
+        }
+        VoiceRequest::StreamSpeak(request) => {
+            let preview: String = request.text.chars().take(50).collect();
+            format!("stream_speak: {}", preview)
+        }
         VoiceRequest::Listen { max_duration_ms } => {
             format!("listen ({}ms)", max_duration_ms.unwrap_or(30000))
         }
@@ -612,5 +1046,126 @@ fn short(req: &VoiceRequest) -> String {
             let preview: String = text.chars().take(50).collect();
             format!("converse: {}", preview)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::automerge_state::AutomergeState;
+    use crate::queue::CompletionResult;
+    use voice_protocol::rpc::ItemStatus;
+
+    async fn start_simulated_worker() -> (Arc<RequestQueue>, tokio::task::JoinHandle<()>) {
+        let queue = Arc::new(RequestQueue::new());
+        let automerge = Arc::new(tokio::sync::Mutex::new(AutomergeState::new()));
+        let handle = tokio::spawn(run_simulated(queue.clone(), automerge));
+        tokio::task::yield_now().await;
+        (queue, handle)
+    }
+
+    async fn await_completion(
+        rx: tokio::sync::oneshot::Receiver<CompletionResult>,
+    ) -> CompletionResult {
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .expect("simulated worker timed out")
+            .expect("completion channel closed")
+    }
+
+    #[tokio::test]
+    async fn simulated_synthesize_writes_wav_and_completes() {
+        let (queue, worker) = start_simulated_worker().await;
+        let output_path = std::env::temp_dir().join(format!(
+            "voice-daemon-simulated-synth-{}-{}.wav",
+            std::process::id(),
+            unique_suffix()
+        ));
+
+        let (_queue_id, rx) = queue
+            .enqueue_and_wait(
+                "test-client".to_string(),
+                VoiceRequest::Synthesize {
+                    text: "hello from simulated synthesis".to_string(),
+                    output_path: output_path.to_string_lossy().to_string(),
+                    voice: None,
+                    speed: None,
+                },
+            )
+            .await;
+
+        let result = await_completion(rx).await;
+        assert_eq!(result.status, ItemStatus::Completed);
+        let result_json: serde_json::Value =
+            serde_json::from_str(result.result.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            result_json.get("simulated").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(output_path.exists(), "simulated synth should create WAV");
+
+        let (_samples, sample_rate) = audio_recorder::read_wav(&output_path).unwrap();
+        assert_eq!(sample_rate, 24_000);
+
+        let _ = std::fs::remove_file(output_path);
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn simulated_stream_emits_started_audio_and_ended_events() {
+        let (queue, worker) = start_simulated_worker().await;
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+        let stream_id = format!("stream-{}", unique_suffix());
+
+        let (_queue_id, completion_rx) = queue
+            .enqueue_and_wait(
+                "test-client".to_string(),
+                VoiceRequest::StreamSpeak(crate::queue::StreamSpeakRequest {
+                    text: "hello from simulated stream".to_string(),
+                    stream_id: stream_id.clone(),
+                    voice: None,
+                    speed: None,
+                    sample_rate: 48_000,
+                    frame_ms: 20,
+                    event_tx,
+                }),
+            )
+            .await;
+
+        let mut event_names = Vec::new();
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+                .await
+                .expect("timed out waiting for stream event")
+                .expect("stream event channel closed");
+            let terminal = event.is_terminal();
+            if let TtsStreamEvent::Audio { frame } = &event {
+                assert_eq!(frame.sample_rate, 48_000);
+                assert_eq!(frame.frame_ms, 20);
+                assert_eq!(frame.sample_count, 960);
+                assert_eq!(frame.timestamp_ms, frame.sequence * 20);
+            }
+            event_names.push(event.event_name().to_string());
+            if terminal {
+                break;
+            }
+        }
+
+        assert_eq!(event_names.first().map(String::as_str), Some("tts.started"));
+        assert!(event_names.iter().any(|event| event == "tts.audio"));
+        assert_eq!(event_names.last().map(String::as_str), Some("tts.ended"));
+
+        let result = await_completion(completion_rx).await;
+        assert_eq!(result.status, ItemStatus::Completed);
+        assert_eq!(result.result.as_deref(), Some("simulated stream"));
+
+        worker.abort();
+    }
+
+    fn unique_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     }
 }

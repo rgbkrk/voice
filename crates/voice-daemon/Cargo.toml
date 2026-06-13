@@ -21,6 +21,7 @@ voice-protocol = { path = "../voice-protocol" }
 voice-tts = { path = "../voice-tts" }
 voice-stt = { path = "../voice-stt" }
 voice-g2p = { path = "../voice-g2p" }
+voice-stream = { path = "../voice-stream" }
 candle-core = { workspace = true }
 rodio = { version = "0.22", features = ["experimental"] }
 hound = { workspace = true }

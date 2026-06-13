@@ -7074,6 +7074,7 @@ dependencies = [
  "serde_json",
  "voice-g2p",
  "voice-protocol",
+ "voice-stream",
  "voice-stt",
  "voice-tts",
 ]
@@ -7094,6 +7095,7 @@ dependencies = [
  "uuid",
  "voice-g2p",
  "voice-protocol",
+ "voice-stream",
  "voice-stt",
  "voice-tts",
 ]
@@ -7135,6 +7137,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "voice-stream",
+]
+
+[[package]]
+name = "voice-stream"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

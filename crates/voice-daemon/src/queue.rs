@@ -1,11 +1,26 @@
 //! Request queue for serializing voice operations.
 
 use std::collections::{HashMap, VecDeque};
-use tokio::sync::{oneshot, Mutex, Notify};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use uuid::Uuid;
 use voice_protocol::rpc::{DaemonState, ItemStatus, QueueItem};
+use voice_stream::TtsStreamEvent;
 
 const CANCELLED_MESSAGE: &str = "Cancelled by user";
+
+/// Parameters for a daemon TTS stream request.
+#[derive(Debug, Clone)]
+pub struct StreamSpeakRequest {
+    pub text: String,
+    pub stream_id: String,
+    pub voice: Option<String>,
+    pub speed: Option<f64>,
+    pub sample_rate: u32,
+    pub frame_ms: u32,
+    pub event_tx: mpsc::Sender<TtsStreamEvent>,
+}
 
 /// What the worker will execute.
 #[derive(Debug, Clone)]
@@ -15,6 +30,15 @@ pub enum VoiceRequest {
         voice: Option<String>,
         speed: Option<f64>,
     },
+    /// Generate speech audio into a file without opening audio output.
+    Synthesize {
+        text: String,
+        output_path: String,
+        voice: Option<String>,
+        speed: Option<f64>,
+    },
+    /// Generate speech audio as ordered stream events.
+    StreamSpeak(StreamSpeakRequest),
     Listen {
         max_duration_ms: Option<u64>,
     },
@@ -28,6 +52,8 @@ impl VoiceRequest {
     pub fn method(&self) -> &str {
         match self {
             Self::Speak { .. } => "speak",
+            Self::Synthesize { .. } => "synthesize",
+            Self::StreamSpeak(_) => "stream_speak",
             Self::Listen { .. } => "listen",
             Self::Converse { .. } => "converse",
         }
@@ -35,11 +61,26 @@ impl VoiceRequest {
 
     pub fn text_preview(&self) -> Option<String> {
         match self {
-            Self::Speak { text, .. } | Self::Converse { text, .. } => {
+            Self::Speak { text, .. }
+            | Self::Synthesize { text, .. }
+            | Self::Converse { text, .. } => {
                 let preview: String = text.chars().take(80).collect();
                 Some(preview)
             }
+            Self::StreamSpeak(request) => {
+                let preview: String = request.text.chars().take(80).collect();
+                Some(preview)
+            }
             Self::Listen { .. } => None,
+        }
+    }
+
+    fn notify_cancelled(&self) {
+        if let Self::StreamSpeak(request) = self {
+            let _ = request.event_tx.try_send(TtsStreamEvent::cancelled(
+                request.stream_id.clone(),
+                CANCELLED_MESSAGE,
+            ));
         }
     }
 }
@@ -56,6 +97,7 @@ pub struct QueueEntry {
     pub completed_at: Option<u64>,
     pub repo: Option<String>,
     pub auto_clear_at: Option<u64>,
+    pub cancelled: Arc<AtomicBool>,
 }
 
 impl QueueEntry {
@@ -113,6 +155,35 @@ impl RequestQueue {
             .await
     }
 
+    pub async fn enqueue_synthesize(
+        &self,
+        client_id: String,
+        text: String,
+        output_path: String,
+        voice: Option<String>,
+        speed: Option<f64>,
+    ) -> String {
+        self.enqueue(
+            client_id,
+            VoiceRequest::Synthesize {
+                text,
+                output_path,
+                voice,
+                speed,
+            },
+        )
+        .await
+    }
+
+    pub async fn enqueue_stream_speak(
+        &self,
+        client_id: String,
+        request: StreamSpeakRequest,
+    ) -> String {
+        self.enqueue(client_id, VoiceRequest::StreamSpeak(request))
+            .await
+    }
+
     pub async fn enqueue_listen(&self, client_id: String, max_duration_ms: Option<u64>) -> String {
         self.enqueue(client_id, VoiceRequest::Listen { max_duration_ms })
             .await
@@ -140,6 +211,7 @@ impl RequestQueue {
             completed_at: None,
             repo: None,
             auto_clear_at: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
         };
         self.items.lock().await.push_back(entry);
         self.notify.notify_one();
@@ -170,6 +242,7 @@ impl RequestQueue {
             completed_at: None,
             repo: None,
             auto_clear_at: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
         };
         self.items.lock().await.push_back(entry);
         self.notify.notify_one();
@@ -231,6 +304,18 @@ impl RequestQueue {
 
     pub async fn cancel_client(&self, client_id: &str) -> usize {
         let mut cancelled = Vec::new();
+
+        {
+            let mut current = self.current.lock().await;
+            if current
+                .as_ref()
+                .is_some_and(|entry| entry.client_id == client_id)
+            {
+                if let Some(entry) = current.take() {
+                    cancelled.push(entry);
+                }
+            }
+        }
 
         {
             let mut items = self.items.lock().await;
@@ -309,6 +394,8 @@ impl RequestQueue {
         let status = match &current {
             Some(item) => match item.method.as_str() {
                 "speak" => "speaking",
+                "synthesize" => "synthesizing",
+                "stream_speak" => "streaming",
                 "listen" => "listening",
                 "converse" => "conversing",
                 _ => "idle",
@@ -341,6 +428,8 @@ impl RequestQueue {
 
     async fn cancel_entry(&self, mut entry: QueueEntry) {
         let id = entry.id.clone();
+        entry.cancelled.store(true, Ordering::SeqCst);
+        entry.request.notify_cancelled();
         entry.status = ItemStatus::Failed;
         entry.result = Some(CANCELLED_MESSAGE.to_string());
         self.push_recent(entry).await;
@@ -411,6 +500,31 @@ mod tests {
             .await;
 
         assert!(queue.cancel_item(&queue_id).await);
+
+        let result = rx.await.unwrap();
+        assert_eq!(result.status, ItemStatus::Failed);
+        assert_eq!(result.result.as_deref(), Some(CANCELLED_MESSAGE));
+    }
+
+    #[tokio::test]
+    async fn cancel_item_sets_current_cancellation_flag() {
+        let queue = RequestQueue::new();
+        let (queue_id, rx) = queue
+            .enqueue_and_wait(
+                "client-a".to_string(),
+                VoiceRequest::Speak {
+                    text: "hello".to_string(),
+                    voice: None,
+                    speed: None,
+                },
+            )
+            .await;
+
+        let entry = queue.dequeue().await.unwrap();
+        let cancelled = entry.cancelled.clone();
+
+        assert!(queue.cancel_item(&queue_id).await);
+        assert!(cancelled.load(Ordering::SeqCst));
 
         let result = rx.await.unwrap();
         assert_eq!(result.status, ItemStatus::Failed);

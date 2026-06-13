@@ -44,6 +44,7 @@ voice say -v am_michael "How are you today?"
 voice say -f script.txt -o output.wav
 echo "Hello" | voice say
 voice say --markdown -f post.mdx
+voice stream --sample-rate 48000 --frame-ms 20 --raw-output output.s16le "Hello"
 
 # Speech-to-text from microphone
 voice listen
@@ -65,6 +66,7 @@ Usage: voice [OPTIONS] [COMMAND] [TEXT]...
 
 Commands:
   say         Speak text aloud (default when no subcommand given)
+  stream      Stream TTS audio chunks from the voice daemon
   listen      Record from microphone and transcribe (speech-to-text)
   transcribe  Transcribe a WAV audio file
   serve       Run as a JSON-RPC 2.0 server on stdin/stdout
@@ -91,6 +93,27 @@ Options:
       --markdown                 Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>   Word substitution (repeatable)
       --sub-file <PATH>          Load substitutions from a file
+```
+
+### `voice stream`
+
+Requires a running `voiced` daemon. Emits ordered signed 16-bit little-endian
+mono PCM frames as compact summaries or full JSON events.
+
+```
+Usage: voice stream [OPTIONS] [TEXT]...
+
+Options:
+  -f, --input-file <FILE>          Read text from a file (use - for stdin)
+  -v, --voice <VOICE>              Voice name [default: af_heart]
+  -s, --speed <SPEED>              Speech speed factor [default: 1.0]
+      --sample-rate <SAMPLE_RATE>  Target stream sample rate [default: 24000]
+      --frame-ms <FRAME_MS>        Target frame duration in milliseconds [default: 20]
+  -o, --raw-output <PATH>          Write raw signed 16-bit little-endian mono PCM
+      --json                       Print full JSON stream events
+      --markdown                   Strip markdown/MDX formatting before speaking
+      --sub <WORD=REPLACEMENT>     Word substitution (repeatable)
+      --sub-file <PATH>            Load substitutions from a file
 ```
 
 ### `voice listen`

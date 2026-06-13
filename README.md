@@ -52,6 +52,9 @@ echo "The quick brown fox jumps over the lazy dog." | voice say
 # Save to file instead of playing
 voice say -o speech.wav "Good morning everyone."
 
+# Stream daemon TTS frames for bridge/WebRTC experiments
+voice stream --sample-rate 48000 --frame-ms 20 --raw-output speech.s16le "Good morning everyone."
+
 # Read from a file, strip markdown
 voice say --markdown -f blog-post.mdx
 
@@ -111,6 +114,28 @@ Options:
                      as you speak. Segments split on silence.
   -q, --quiet        Suppress progress output
   -h, --help         Print help
+```
+
+### `voice stream`
+
+Streams ordered PCM frames from a running `voiced` daemon. Use this for bridge
+and WebRTC experiments where clients need audio chunks instead of a completed
+WAV file.
+
+```
+Usage: voice stream [OPTIONS] [TEXT]...
+
+Options:
+  -f, --input-file <FILE>          Read text from a file (use - for stdin)
+  -v, --voice <VOICE>              Voice name [default: af_heart]
+  -s, --speed <SPEED>              Speech speed factor [default: 1.0]
+      --sample-rate <SAMPLE_RATE>  Target stream sample rate [default: 24000]
+      --frame-ms <FRAME_MS>        Target frame duration in milliseconds [default: 20]
+  -o, --raw-output <PATH>          Write raw signed 16-bit little-endian mono PCM
+      --json                       Print full JSON stream events
+      --markdown                   Strip markdown/MDX formatting before speaking
+      --sub <WORD=REPLACEMENT>     Word substitution (repeatable)
+      --sub-file <PATH>            Load substitutions from a file
 ```
 
 ### `voice transcribe`
@@ -187,6 +212,18 @@ When `detail` is `"full"`, `speak` emits `speak.progress` notifications with chu
 ```
 
 See [`examples/conversation.py`](examples/conversation.py) for a full speak/listen conversation loop.
+
+## Daemon TTS for Hermes and Streaming
+
+Run `voiced --tts-only` to keep Kokoro warm without eagerly loading STT. When the
+daemon is running, `voice say -o output.wav ...` uses the daemon `synthesize`
+RPC and waits until the WAV exists. This is the compatibility path for Hermes'
+command TTS provider and WhatsApp voice-note delivery.
+
+For lower-level streaming, `stream_speak` emits `tts.started`, `tts.audio`, and
+terminal `tts.ended` / `tts.error` / `tts.cancelled` events over the same daemon
+frame protocol. See [docs/streaming.md](docs/streaming.md) for the event schema
+and Hermes/WebRTC notes.
 
 ## LLM-friendly design
 

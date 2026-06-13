@@ -889,12 +889,12 @@ fn reflection_pad_1d(x: &Tensor, pad: usize) -> Result<Tensor> {
     // Left pad: reflect indices [pad, pad-1, ..., 1]
     let mut parts = Vec::new();
     if pad > 0 {
-        let left = x.narrow(1, 1, pad)?.flip(&[1])?;
+        let left = x.narrow(1, 1, pad)?.contiguous()?.flip(&[1])?;
         parts.push(left);
     }
     parts.push(x.clone());
     if pad > 0 {
-        let right = x.narrow(1, l - pad - 1, pad)?.flip(&[1])?;
+        let right = x.narrow(1, l - pad - 1, pad)?.contiguous()?.flip(&[1])?;
         parts.push(right);
     }
     Tensor::cat(&parts, 1)
@@ -906,12 +906,15 @@ fn reflection_pad_1d_channels(x: &Tensor, pad_left: usize, pad_right: usize) -> 
     let mut parts = Vec::new();
 
     if pad_left > 0 {
-        let left = x.narrow(2, 1, pad_left)?.flip(&[2])?;
+        let left = x.narrow(2, 1, pad_left)?.contiguous()?.flip(&[2])?;
         parts.push(left);
     }
     parts.push(x.clone());
     if pad_right > 0 {
-        let right = x.narrow(2, t - pad_right - 1, pad_right)?.flip(&[2])?;
+        let right = x
+            .narrow(2, t - pad_right - 1, pad_right)?
+            .contiguous()?
+            .flip(&[2])?;
         parts.push(right);
     }
     Tensor::cat(&parts, 2)

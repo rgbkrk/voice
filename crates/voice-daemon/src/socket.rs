@@ -4,13 +4,14 @@
 //! instead of newline-delimited JSON.
 
 use crate::config::DaemonConfig;
-use crate::queue::RequestQueue;
+use crate::queue::{RequestQueue, StreamSpeakRequest};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use uuid::Uuid;
 use voice_protocol::frames::{read_frame, write_frame, Frame, FrameType};
 use voice_protocol::rpc::{self, Response};
+use voice_stream::{TtsStreamEvent, DEFAULT_FRAME_MS};
 
 pub fn socket_path() -> PathBuf {
     let path = voice_protocol::client::daemon_socket_path();
@@ -82,22 +83,39 @@ async fn handle_client(
         };
 
         match frame.frame_type {
-            FrameType::Request => {
-                let response = match frame.json::<rpc::Request>() {
-                    Ok(req) => dispatch(req, &queue, &config, &client_id, &automerge).await,
-                    Err(e) => Response::error(
+            FrameType::Request => match frame.json::<rpc::Request>() {
+                Ok(req) if req.method == "stream_speak" => {
+                    if dispatch_stream_speak(
+                        req,
+                        &queue,
+                        &config,
+                        &client_id,
+                        &automerge,
+                        &mut writer,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(req) => {
+                    let response = dispatch(req, &queue, &config, &client_id, &automerge).await;
+                    if write_response(&mut writer, &response).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let response = Response::error(
                         None,
                         rpc::PARSE_ERROR,
                         format!("Invalid request JSON: {}", e),
-                    ),
-                };
-
-                let json = serde_json::to_vec(&response).unwrap();
-                let resp_frame = Frame::response(&json);
-                if write_frame(&mut writer, &resp_frame).await.is_err() {
-                    break;
+                    );
+                    if write_response(&mut writer, &response).await.is_err() {
+                        break;
+                    }
                 }
-            }
+            },
             other => {
                 eprintln!(
                     "voiced: unexpected frame type {:?} from {}",
@@ -108,6 +126,103 @@ async fn handle_client(
     }
 
     eprintln!("voiced: client disconnected ({})", client_id);
+}
+
+async fn write_response(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    response: &Response,
+) -> std::io::Result<()> {
+    let json = serde_json::to_vec(response).unwrap();
+    write_frame(writer, &Frame::response(&json)).await
+}
+
+async fn write_stream_event(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    event: &TtsStreamEvent,
+) -> std::io::Result<()> {
+    let envelope = rpc::Event::new(event.event_name(), serde_json::to_value(event).unwrap());
+    let json = serde_json::to_vec(&envelope).unwrap();
+    write_frame(writer, &Frame::event(&json)).await
+}
+
+async fn dispatch_stream_speak(
+    req: rpc::Request,
+    queue: &Arc<RequestQueue>,
+    config: &Arc<DaemonConfig>,
+    client_id: &str,
+    automerge: &Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+) -> std::io::Result<()> {
+    if !(req.params.is_null() || req.params.is_object()) {
+        let response = Response::error(req.id, rpc::INVALID_PARAMS, "params must be an object");
+        return write_response(writer, &response).await;
+    }
+
+    let text = match required_string_param(&req, "text") {
+        Ok(text) => text,
+        Err(resp) => return write_response(writer, &resp).await,
+    };
+    let voice = match optional_voice_param(&req) {
+        Ok(voice) => voice,
+        Err(resp) => return write_response(writer, &resp).await,
+    };
+    let speed = match optional_speed_param(&req) {
+        Ok(speed) => speed,
+        Err(resp) => return write_response(writer, &resp).await,
+    };
+    let sample_rate = match optional_u32_param(&req, "sample_rate", 8_000, 96_000) {
+        Ok(rate) => rate.unwrap_or(24_000),
+        Err(resp) => return write_response(writer, &resp).await,
+    };
+    let frame_ms = match optional_u32_param(&req, "frame_ms", 5, 100) {
+        Ok(frame_ms) => frame_ms.unwrap_or(DEFAULT_FRAME_MS),
+        Err(resp) => return write_response(writer, &resp).await,
+    };
+
+    let stream_id = Uuid::new_v4().to_string();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<TtsStreamEvent>(16);
+    let queue_id = queue
+        .enqueue_stream_speak(
+            client_id.to_string(),
+            StreamSpeakRequest {
+                text,
+                stream_id: stream_id.clone(),
+                voice: voice.or_else(|| Some(config.get_voice_name())),
+                speed: speed.or_else(|| Some(config.get_speed() as f64)),
+                sample_rate,
+                frame_ms,
+                event_tx,
+            },
+        )
+        .await;
+    sync_automerge(queue, automerge).await;
+
+    let response = Response::success(
+        req.id,
+        serde_json::json!({
+            "queue_id": queue_id,
+            "stream_id": stream_id,
+            "status": "queued",
+        }),
+    );
+    write_response(writer, &response).await?;
+
+    let mut saw_terminal = false;
+    while let Some(event) = event_rx.recv().await {
+        let terminal = event.is_terminal();
+        write_stream_event(writer, &event).await?;
+        if terminal {
+            saw_terminal = true;
+            break;
+        }
+    }
+
+    if !saw_terminal {
+        let event = TtsStreamEvent::error(stream_id, "stream closed before terminal event");
+        write_stream_event(writer, &event).await?;
+    }
+
+    Ok(())
 }
 
 async fn sync_automerge(
@@ -156,6 +271,30 @@ async fn dispatch(
                 Err(resp) => return resp,
             };
             VoiceRequest::Speak { text, voice, speed }
+        }
+        "synthesize" => {
+            let text = match required_string_param(&req, "text") {
+                Ok(text) => text,
+                Err(resp) => return resp,
+            };
+            let output_path = match required_string_param(&req, "output_path") {
+                Ok(output_path) => output_path,
+                Err(resp) => return resp,
+            };
+            let voice = match optional_voice_param(&req) {
+                Ok(voice) => voice,
+                Err(resp) => return resp,
+            };
+            let speed = match optional_speed_param(&req) {
+                Ok(speed) => speed,
+                Err(resp) => return resp,
+            };
+            VoiceRequest::Synthesize {
+                text,
+                output_path,
+                voice,
+                speed,
+            }
         }
         "listen" => {
             let max_duration_ms = match optional_duration_param(&req, "max_duration_ms") {
@@ -322,6 +461,19 @@ async fn dispatch(
                     .enqueue_speak(client_id.to_string(), text, voice, speed)
                     .await
             }
+            VoiceRequest::Synthesize {
+                text,
+                output_path,
+                voice,
+                speed,
+            } => {
+                queue
+                    .enqueue_synthesize(client_id.to_string(), text, output_path, voice, speed)
+                    .await
+            }
+            VoiceRequest::StreamSpeak(_) => {
+                unreachable!("stream_speak is handled before dispatch")
+            }
             VoiceRequest::Listen { max_duration_ms } => {
                 queue
                     .enqueue_listen(client_id.to_string(), max_duration_ms)
@@ -368,7 +520,7 @@ fn wait_param(req: &rpc::Request) -> Result<bool, Response> {
                 "param 'wait' must be a boolean",
             )
         }),
-        None => Ok(false),
+        None => Ok(req.method == "synthesize"),
     }
 }
 
@@ -467,6 +619,30 @@ fn optional_duration_param(req: &rpc::Request, name: &str) -> Result<Option<u64>
                 req.id.clone(),
                 rpc::INVALID_PARAMS,
                 format!("param '{}' must be greater than 0", name),
+            )),
+            None => Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                format!("param '{}' must be an unsigned integer", name),
+            )),
+        },
+        None => Ok(None),
+    }
+}
+
+fn optional_u32_param(
+    req: &rpc::Request,
+    name: &str,
+    min: u32,
+    max: u32,
+) -> Result<Option<u32>, Response> {
+    match req.params.get(name) {
+        Some(value) => match value.as_u64() {
+            Some(raw) if raw >= min as u64 && raw <= max as u64 => Ok(Some(raw as u32)),
+            Some(_) => Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                format!("param '{}' must be between {} and {}", name, min, max),
             )),
             None => Err(Response::error(
                 req.id.clone(),

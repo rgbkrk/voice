@@ -79,6 +79,7 @@ impl G2P {
             ("automerge", "ˈɔTO mˈɜɹʤ"),
             ("aws", "ˈA dˈʌbᵊlju ˈɛs"),
             ("bilstm", "bˈI ˈɛl ˈɛs tˈi ˈɛm"),
+            ("chatgpt", "ʧˈæt ʤˈi pˈi tˈi"),
             ("cli", "sˈi ˈɛl ˌI"),
             ("clis", "sˈi ˈɛl ˈIz"),
             ("cloudflare", "klˈWd flˈɛɹ"),
@@ -101,6 +102,7 @@ impl G2P {
             ("flac", "flˈæk"),
             ("gguf", "ʤˈi ʤˈi jˈu ˈɛf"),
             ("grpc", "ʤˈi ˈɑɹ pˈi sˈi"),
+            ("gpt", "ʤˈi pˈi tˈi"),
             ("http", "ˈAʧ tˈi tˈi pˈi"),
             ("https", "ˈAʧ tˈi tˈi pˈi ˈɛs"),
             ("ios", "ˈI ˈO ˈɛs"),
@@ -130,7 +132,11 @@ impl G2P {
             ("mmap", "ˈɛm mˌæp"),
             ("nbconvert", "ˈɛn bˈi kˌɑnvɜɹt"),
             ("nbformat", "ˈɛn bˈi fˌɔɹmæt"),
+            ("neuphonic", "nˈu fˌɑnɪk"),
+            ("neutts", "nˈu tˈi tˈi ˈɛs"),
             ("nginx", "ˈɛnʤən ˌɛks"),
+            ("node.js", "nˈOd ʤˈA ˈɛs"),
+            ("nodejs", "nˈOd ʤˈA ˈɛs"),
             ("nteract", "ˈɛntəɹˌækt"),
             ("numpy", "nˈʌm pˌI"),
             ("oauth", "ˌO ˈɔθ"),
@@ -147,6 +153,7 @@ impl G2P {
             ("pwa", "pˈi dˈʌbᵊlju ˈA"),
             ("pyodide", "pˈI ə dˌId"),
             ("pyo3", "pˈI ˈO θɹˈi"),
+            ("qqbot", "kjˈu kjˈu bˌɑt"),
             ("todo", "tˈudu"),
             // Developer acronyms and initialisms
             ("ipynb", "nˈOtbˌʊk fˈIl"),
@@ -196,6 +203,7 @@ impl G2P {
             ("websocket", "wˈɛb sˌɑkət"),
             ("websockets", "wˈɛb sˌɑkəts"),
             ("wifi", "wˈI fˌI"),
+            ("xai", "ˈɛks ˈA ˌI"),
             ("yaml", "jˈæmᵊl"),
             ("yjs", "wˈI ʤˈA ˈɛs"),
             ("zeromq", "zˈɪɹO ˈɛm kjˈu"),
@@ -963,6 +971,8 @@ mod tests {
         assert_eq!(pronounces("FLAC"), "flˈæk");
         assert_eq!(pronounces("GGUF"), "ʤˈi ʤˈi jˈu ˈɛf");
         assert_eq!(pronounces("gRPC"), "ʤˈi ˈɑɹ pˈi sˈi");
+        assert_eq!(pronounces("GPT"), "ʤˈi pˈi tˈi");
+        assert_eq!(pronounces("ChatGPT"), "ʧˈæt ʤˈi pˈi tˈi");
         assert_eq!(pronounces("HTTP"), "ˈAʧ tˈi tˈi pˈi");
         assert_eq!(pronounces("HTTPS"), "ˈAʧ tˈi tˈi pˈi ˈɛs");
         assert_eq!(pronounces("iOS"), "ˈI ˈO ˈɛs");
@@ -992,7 +1002,11 @@ mod tests {
         assert_eq!(pronounces("mmap"), "ˈɛm mˌæp");
         assert_eq!(pronounces("nbconvert"), "ˈɛn bˈi kˌɑnvɜɹt");
         assert_eq!(pronounces("nbformat"), "ˈɛn bˈi fˌɔɹmæt");
+        assert_eq!(pronounces("Neuphonic"), "nˈu fˌɑnɪk");
+        assert_eq!(pronounces("NeuTTS"), "nˈu tˈi tˈi ˈɛs");
         assert_eq!(pronounces("nginx"), "ˈɛnʤən ˌɛks");
+        assert_eq!(pronounces("Node.js"), "nˈOd ʤˈA ˈɛs");
+        assert_eq!(pronounces("NodeJS"), "nˈOd ʤˈA ˈɛs");
         assert_eq!(pronounces("nteract"), "ˈɛntəɹˌækt");
         assert_eq!(pronounces("NumPy"), "nˈʌm pˌI");
         assert_eq!(pronounces("OAuth"), "ˌO ˈɔθ");
@@ -1009,6 +1023,7 @@ mod tests {
         assert_eq!(pronounces("PWA"), "pˈi dˈʌbᵊlju ˈA");
         assert_eq!(pronounces("Pyodide"), "pˈI ə dˌId");
         assert_eq!(pronounces("PyO3"), "pˈI ˈO θɹˈi");
+        assert_eq!(pronounces("QQBot"), "kjˈu kjˈu bˌɑt");
         assert_eq!(pronounces("PyTorch"), "pˈI tˌɔɹʧ");
         assert_eq!(pronounces("vitest"), "vˈi tˌɛst");
         assert_eq!(pronounces("tsconfig"), "tˈi ˈɛs kˌɑnfˈɪɡ");
@@ -1056,6 +1071,7 @@ mod tests {
         assert_eq!(pronounces("WebSocket"), "wˈɛb sˌɑkət");
         assert_eq!(pronounces("WebSockets"), "wˈɛb sˌɑkəts");
         assert_eq!(pronounces("WiFi"), "wˈI fˌI");
+        assert_eq!(pronounces("xAI"), "ˈɛks ˈA ˌI");
         assert_eq!(pronounces("YAML"), "jˈæmᵊl");
         assert_eq!(pronounces("Yjs"), "wˈI ʤˈA ˈɛs");
         assert_eq!(pronounces("ZeroMQ"), "zˈɪɹO ˈɛm kjˈu");

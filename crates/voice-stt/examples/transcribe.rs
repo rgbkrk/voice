@@ -1,4 +1,4 @@
-//! Example: transcribe a WAV file using Moonshine.
+//! Example: transcribe a WAV file using Whisper.
 //!
 //! Usage:
 //!     cargo run -p voice-stt --example transcribe -- /path/to/audio.wav
@@ -25,15 +25,12 @@ fn main() {
     let audio_path = &args[1];
 
     let repo =
-        env::var("MOONSHINE_MODEL").unwrap_or_else(|_| "UsefulSensors/moonshine-tiny".to_string());
+        env::var("STT_MODEL").unwrap_or_else(|_| "distil-whisper/distil-medium.en".to_string());
 
     eprintln!("Loading model: {repo}");
     let t0 = Instant::now();
     let mut model = voice_stt::load_model(&repo).expect("Failed to load model");
     eprintln!("Model loaded in {:.2}s", t0.elapsed().as_secs_f64());
-
-    eprintln!("Loading tokenizer...");
-    let tokenizer = voice_stt::load_tokenizer(&repo).expect("Failed to load tokenizer");
 
     eprintln!("Transcribing: {audio_path}");
     let t1 = Instant::now();
@@ -48,8 +45,7 @@ fn main() {
     );
 
     let result =
-        voice_stt::transcribe_audio_with_tokenizer(&mut model, &samples, 16000, &tokenizer)
-            .expect("Transcription failed");
+        voice_stt::transcribe_audio(&mut model, &samples, 16000).expect("Transcription failed");
 
     let elapsed = t1.elapsed().as_secs_f64();
     let rtf = elapsed / duration_secs;

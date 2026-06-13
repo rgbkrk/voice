@@ -18,16 +18,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Homebrew's llvm@15 clang lacks __bf16 support, which breaks
-      # mlx-sys bindgen. Point bindgen to Xcode's clang instead.
-      - name: Fix clang for bindgen
-        run: |
-          brew unlink llvm@15 2>/dev/null || true
-          TOOLCHAIN=$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain
-          echo "LIBCLANG_PATH=${TOOLCHAIN}/usr/lib" >> "$GITHUB_ENV"
-          SDK_PATH=$(xcrun --show-sdk-path)
-          echo "BINDGEN_EXTRA_CLANG_ARGS=-isysroot ${SDK_PATH}" >> "$GITHUB_ENV"
-
       - name: Build release
         run: cargo build --release -p voice
 
@@ -39,15 +29,6 @@ jobs:
           cp target/release/voice dist/
           cd dist && tar czf voice-aarch64-apple-darwin.tar.gz voice && cd ..
 
-          # Metallib — needed at runtime for MLX Metal kernels
-          METALLIB=$(find target/release/build -name "mlx.metallib" -print -quit)
-          if [ -n "$METALLIB" ]; then
-            cp "$METALLIB" dist/mlx.metallib
-          else
-            echo "::error::mlx.metallib not found in build output"
-            exit 1
-          fi
-
       - name: Sign release assets
         if: env.MINISIGN_KEY != ''
         env:
@@ -56,7 +37,6 @@ jobs:
           brew install minisign
           echo "$MINISIGN_KEY" > /tmp/signing.key
           minisign -S -W -s /tmp/signing.key -x dist/voice-aarch64-apple-darwin.tar.gz.sig -m dist/voice-aarch64-apple-darwin.tar.gz
-          minisign -S -W -s /tmp/signing.key -x dist/mlx.metallib.sig -m dist/mlx.metallib
           rm -f /tmp/signing.key
 
       - name: Create release
@@ -65,8 +45,6 @@ jobs:
           files: |
             dist/voice-aarch64-apple-darwin.tar.gz
             dist/voice-aarch64-apple-darwin.tar.gz.sig
-            dist/mlx.metallib
-            dist/mlx.metallib.sig
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, '-rc.') || contains(github.ref, '-alpha.') || contains(github.ref, '-beta.') }}
           fail_on_unmatched_files: false
@@ -82,7 +60,7 @@ jobs:
 
       # Publish workspace crates in dependency order.
       # `--no-verify` skips the build step — we already verified in the build job,
-      # and these crates require macOS + Metal to compile.
+      # and the publish job should only package the already-checked sources.
       # Each publish is allowed to fail with "already exists" so we don't break
       # when only a subset of crates have version bumps.
       - name: Publish to crates.io
@@ -110,16 +88,16 @@ jobs:
             sleep 15
           }
 
-          # Leaf crates (no workspace deps)
-          publish voice-dsp
+          # Leaf crates and shared foundations
+          publish voice-stream
+          publish voice-protocol
           publish voice-g2p
+          publish voice-kokoro
+          publish voice-whisper
+
+          # Model-facing libraries
+          publish voice-tts
           publish voice-stt
 
-          # voice-nn depends on voice-dsp
-          publish voice-nn
-
-          # voice-tts depends on voice-dsp, voice-nn
-          publish voice-tts
-
-          # voice (CLI) depends on voice-tts, voice-g2p, voice-stt
+          # voice (CLI) depends on the libraries above
           publish voice

@@ -1,6 +1,6 @@
 # voice-tts
 
-Core TTS library for [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) model inference on Apple Silicon via [mlx-rs](https://github.com/oxiglade/mlx-rs).
+Core TTS library for [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) model inference on Candle, with Metal acceleration on Apple Silicon and CPU fallback elsewhere.
 
 ## Install
 
@@ -50,8 +50,8 @@ for phonemes in &chunks {
 
 ## Requirements
 
-- macOS with Apple Silicon (MLX requirement)
-- Xcode command line tools (for Metal compilation)
+- Rust 1.85+
+- macOS with Apple Silicon for fast Metal inference, or a CPU-only host for slower portable inference
 
 ## License
 

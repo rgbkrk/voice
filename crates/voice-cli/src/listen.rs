@@ -1014,10 +1014,10 @@ pub fn record_continuous(
 /// Consume segments from the recording queue and transcribe each one.
 ///
 /// Spawns a thread that pulls segments, trims silence, resamples, and
-/// runs Moonshine inference. Results are sent to the returned receiver.
+/// runs Whisper inference. Results are sent to the returned receiver.
 ///
-/// The model and tokenizer are moved into this thread — they're not
-/// thread-safe, so single-threaded access is correct.
+/// The model is moved into this thread because single-threaded access is
+/// required by the decoder state.
 pub fn transcribe_segments(
     mut model: voice_stt::WhisperModel,
     segments: mpsc::Receiver<Segment>,
@@ -1146,7 +1146,7 @@ pub fn listen_continuous_for_rpc(
 /// Trim leading and trailing silence from audio samples.
 ///
 /// Bluetooth microphones (e.g. AirPods) can take ~0.5-1s before audio
-/// actually flows, producing a block of zeros at the start. Moonshine
+/// actually flows, producing a block of zeros at the start. Whisper
 /// is sensitive to the silence-to-speech ratio, especially on short
 /// recordings — trimming silence dramatically improves accuracy.
 fn trim_silence(samples: &[f32], sample_rate: u32) -> Vec<f32> {

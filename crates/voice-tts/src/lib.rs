@@ -9,6 +9,7 @@ use candle_nn::VarBuilder;
 use hf_hub::api::sync::Api;
 
 pub use error::{Result, VoicersError};
+pub use voice_kokoro::SynthesisMode;
 
 const DEFAULT_REPO: &str = "prince-canuma/Kokoro-82M";
 
@@ -167,6 +168,20 @@ pub fn generate(
     voice: &Tensor,
     speed: f32,
 ) -> Result<Vec<f32>> {
+    generate_with_mode(model, phonemes, voice, speed, SynthesisMode::Stochastic)
+}
+
+/// Generate audio from phonemes with explicit synthesis-mode control.
+///
+/// Deterministic mode removes the Kokoro decoder's random phase and noise
+/// sources so repeated calls can produce byte-stable evaluation audio.
+pub fn generate_with_mode(
+    model: &mut KokoroModel,
+    phonemes: &str,
+    voice: &Tensor,
+    speed: f32,
+    mode: SynthesisMode,
+) -> Result<Vec<f32>> {
     let vocab = &model.config.vocab;
 
     // Convert phonemes to token IDs (character by character)
@@ -200,7 +215,7 @@ pub fn generate(
 
     let audio = model
         .model
-        .forward(&input_ids, &ref_s, speed, &model.device)
+        .forward_with_mode(&input_ids, &ref_s, speed, &model.device, mode)
         .map_err(|e| VoicersError::Model(e.to_string()))?;
 
     let samples = audio

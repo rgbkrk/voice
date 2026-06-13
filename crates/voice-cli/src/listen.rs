@@ -29,6 +29,7 @@ use std::time::Instant;
 
 use rodio::microphone::MicrophoneBuilder;
 use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
+use voice_stream::InterleavedMonoMixer;
 
 use crate::{INTERRUPTED, QUIET};
 
@@ -499,7 +500,7 @@ fn start_mic_drain(
     channels: u16,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let ch = channels.max(1) as usize;
+        let mut mixer = InterleavedMonoMixer::new(channels as usize);
         let mut chunk_peak: f32 = 0.0;
         let mut sample_count = 0usize;
 
@@ -512,13 +513,8 @@ fn start_mic_drain(
             chunk_peak = chunk_peak.max(abs);
             sample_count += 1;
 
-            // For multi-channel, mix to mono by averaging
-            if ch == 1 {
-                buffer.lock().unwrap().push(sample);
-            } else if sample_count % ch == 0 {
-                // We get interleaved samples — just take every ch-th sample
-                // (rodio's SampleTypeConverter already converts to f32)
-                buffer.lock().unwrap().push(sample);
+            if let Some(mono) = mixer.push(sample) {
+                buffer.lock().unwrap().push(mono);
             }
 
             // Update peak every ~100 samples to avoid atomic contention

@@ -211,6 +211,41 @@ impl Packetizer {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct InterleavedMonoMixer {
+    channels: usize,
+    pending_sum: f32,
+    pending_count: usize,
+}
+
+impl InterleavedMonoMixer {
+    pub fn new(channels: usize) -> Self {
+        Self {
+            channels: channels.max(1),
+            pending_sum: 0.0,
+            pending_count: 0,
+        }
+    }
+
+    pub fn push(&mut self, sample: f32) -> Option<f32> {
+        if self.channels == 1 {
+            return Some(sample);
+        }
+
+        self.pending_sum += sample;
+        self.pending_count += 1;
+
+        if self.pending_count == self.channels {
+            let mixed = self.pending_sum / self.channels as f32;
+            self.pending_sum = 0.0;
+            self.pending_count = 0;
+            Some(mixed)
+        } else {
+            None
+        }
+    }
+}
+
 pub fn f32_to_i16(sample: f32) -> i16 {
     let clamped = sample.clamp(-1.0, 1.0);
     if clamped >= 0.0 {
@@ -276,6 +311,37 @@ mod tests {
         assert_eq!(f32_to_i16(-1.0), -32768);
         assert_eq!(f32_to_i16(2.0), 32767);
         assert_eq!(f32_to_i16(-2.0), -32768);
+    }
+
+    #[test]
+    fn interleaved_mono_mixer_passes_mono_samples_through() {
+        let mut mixer = InterleavedMonoMixer::new(1);
+        assert_eq!(mixer.push(0.25), Some(0.25));
+        assert_eq!(mixer.push(-0.5), Some(-0.5));
+    }
+
+    #[test]
+    fn interleaved_mono_mixer_averages_stereo_frames() {
+        let mut mixer = InterleavedMonoMixer::new(2);
+        let input = [1.0, -1.0, 0.5, 0.25];
+        let output: Vec<f32> = input
+            .into_iter()
+            .filter_map(|sample| mixer.push(sample))
+            .collect();
+
+        assert_eq!(output, vec![0.0, 0.375]);
+    }
+
+    #[test]
+    fn interleaved_mono_mixer_treats_zero_channels_as_mono() {
+        let mut mixer = InterleavedMonoMixer::new(0);
+        assert_eq!(mixer.push(0.75), Some(0.75));
+    }
+
+    #[test]
+    fn interleaved_mono_mixer_holds_incomplete_frame() {
+        let mut mixer = InterleavedMonoMixer::new(2);
+        assert_eq!(mixer.push(1.0), None);
     }
 
     #[test]

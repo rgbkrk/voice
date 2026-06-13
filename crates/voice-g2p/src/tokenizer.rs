@@ -314,7 +314,7 @@ fn subtokenize_regex() -> &'static Regex {
         Regex::new(
             r"(?x)
             ^[''']+ |
-            \p{Lu}(?=\p{Lu}\p{Ll}) |
+            \p{Lu}+(?=\p{Lu}\p{Ll}) |
             (?:^-)?(?:\d?[,.]?\d)+ |
             [-_]+ |
             [''']{2,} |
@@ -357,7 +357,7 @@ pub fn subtokenize(word: &str) -> Vec<String> {
 }
 
 fn is_subtoken_boundary_junk(text: &str) -> bool {
-    !text.is_empty() && text.chars().all(|c| matches!(c, '-' | '_' | '/'))
+    !text.is_empty() && text.chars().all(|c| matches!(c, '-' | '_' | '/' | '.'))
 }
 
 // ---------------------------------------------------------------------------
@@ -501,6 +501,11 @@ pub fn retokenize(tokens: Vec<MToken>) -> Vec<TokenOrGroup> {
                         sub_tok.underscore.prespace = true;
                     }
                     if prev.chars().last().is_some_and(|c| c.is_lowercase())
+                        && sub_text.chars().next().is_some_and(|c| c.is_uppercase())
+                    {
+                        sub_tok.underscore.prespace = true;
+                    }
+                    if prev.chars().all(|c| c.is_uppercase())
                         && sub_text.chars().next().is_some_and(|c| c.is_uppercase())
                     {
                         sub_tok.underscore.prespace = true;
@@ -836,6 +841,15 @@ mod tests {
             result.len() >= 2,
             "Expected split for camelCase: {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn subtokenize_acronym_prefix_before_word() {
+        assert_eq!(subtokenize("HTMLElement"), vec!["HTML", "Element"]);
+        assert_eq!(
+            subtokenize("URLSearchParams"),
+            vec!["URL", "Search", "Params"]
         );
     }
 

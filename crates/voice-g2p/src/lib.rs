@@ -74,12 +74,15 @@ impl G2P {
     /// Words whose default lexicon/espeak phonemes are wrong or misleading.
     fn builtin_overrides() -> HashMap<String, String> {
         const ENTRIES: &[(&str, &str)] = &[
+            ("acl", "ˈA sˈi ˈɛl"),
             ("api", "ˈA pˈi ˌI"),
             ("apis", "ˈA pˈi ˈIz"),
             ("automerge", "ˈɔTO mˈɜɹʤ"),
+            ("automunge", "ˈɔTO mˈʌnʤ"),
             ("aws", "ˈA dˈʌbᵊlju ˈɛs"),
             ("anywidget", "ˈɛni wˌɪʤət"),
             ("bilstm", "bˈI ˈɛl ˈɛs tˈi ˈɛm"),
+            ("byoc", "bˈi wˈI ˈO sˈi"),
             ("chatgpt", "ʧˈæt ʤˈi pˈi tˈi"),
             ("cli", "sˈi ˈɛl ˌI"),
             ("clis", "sˈi ˈɛl ˈIz"),
@@ -92,6 +95,7 @@ impl G2P {
             ("csr", "sˈi ˈɛs ˈɑɹ"),
             ("css", "sˈi ˈɛs ˈɛs"),
             ("cuda", "kˈudə"),
+            ("d1", "dˈi wˈʌn"),
             ("deno", "dˈinO"),
             ("demo", "dˈɛmO"),
             ("demos", "dˈɛmOz"),
@@ -113,10 +117,14 @@ impl G2P {
             ("http", "ˈAʧ tˈi tˈi pˈi"),
             ("https", "ˈAʧ tˈi tˈi pˈi ˈɛs"),
             ("html", "ˈAʧ tˈi ˈɛm ˈɛl"),
+            ("htmliframeelement", "ˈAʧ tˈi ˈɛm ˈɛl ˌI fɹˌAm ˈɛləmənt"),
+            ("id", "ˈI dˈi"),
+            ("ids", "ˈI dˈiz"),
             ("idb", "ˌI dˈi bˈi"),
             ("iframe", "ˌI fɹˌAm"),
             ("ios", "ˈI ˈO ˈɛs"),
             ("indexeddb", "ˈɪndɛkst dˈi bˈi"),
+            ("ipc", "ˌI pˈi sˈi"),
             ("ipykernel", "ˈI pˈI kˌɜɹnᵊl"),
             ("ipython", "ˌI pˈIθˌɑn"),
             ("ipywidgets", "ˌI pˈI wˌɪʤəts"),
@@ -160,6 +168,7 @@ impl G2P {
             ("node.js", "nˈOd ʤˈA ˈɛs"),
             ("nodejs", "nˈOd ʤˈA ˈɛs"),
             ("nteract", "ˈɛntəɹˌækt"),
+            ("nteract-dev", "ˈɛntəɹˌækt dˈɛv"),
             ("numpy", "nˈʌm pˌI"),
             ("oauth", "ˌO ˈɔθ"),
             ("ogg", "ˈɑɡ"),
@@ -168,18 +177,24 @@ impl G2P {
             ("openai-codex", "ˌOpᵊn ˈAˌI kˈOdˌɛks"),
             ("openapi", "ˈOpᵊn ˈA pˈi ˌI"),
             ("opfs", "ˈO pˈi ˈɛf ˈɛs"),
+            ("outerbounds", "ˈWTəɹ bˈWndz"),
+            ("outputidchanges", "ˈWtpˌʊt ˌI dˌi ʧˈAnʤᵻz"),
             ("pnpm", "pˈi ˈɛn pˈi ˈɛm"),
             ("postgres", "pˈOstɡɹɛs"),
             ("postgresql", "pˈOst ɡɹˈɛs kjˈu ˈɛl"),
             ("pcm", "pˈi sˈi ˈɛm"),
             ("protobuf", "pɹˈOTO bˌʌf"),
             ("pwa", "pˈi dˈʌbᵊlju ˈA"),
+            ("put_blob", "pˌʊt blˈɑb"),
+            ("putblob", "pˌʊt blˈɑb"),
             ("pyodide", "pˈI ə dˌId"),
             ("pyarrow", "pˈI ˈɛɹO"),
             ("pypi", "pˈI pˈi ˌI"),
             ("pyo3", "pˈI ˈO θɹˈi"),
             ("pytest", "pˈI tˌɛst"),
             ("qqbot", "kjˈu kjˈu bˌɑt"),
+            ("r2", "ˈɑɹ tˈu"),
+            ("js", "ʤˈA ˈɛs"),
             ("todo", "tˈudu"),
             // Developer acronyms and initialisms
             ("ipynb", "nˈOtbˌʊk fˈIl"),
@@ -192,7 +207,12 @@ impl G2P {
             ("rtcp", "ˈɑɹ tˈi sˈi pˈi"),
             ("rtp", "ˈɑɹ tˈi pˈi"),
             ("rxjs", "ˈɑɹ ˈɛks ʤˈA ˈɛs"),
+            ("repr-llm", "ɹˈɛpəɹ ˈɛl ˈɛl ˈɛm"),
+            ("runt-nightly", "ɹˈʌnt nˈItli"),
             ("runtimed", "ɹˈʌntIm dˈi"),
+            ("runtimed-wasm", "ɹˈʌntIm dˈi wˈæzəm"),
+            ("runtime_peer", "ɹˈʌntIm pˈɪɹ"),
+            ("runtime-peer", "ɹˈʌntIm pˈɪɹ"),
             ("s3", "ˈɛs θɹˈi"),
             ("safetensors", "sˈAf tˌɛnsəɹz"),
             ("scikit-learn", "sˈɪkɪt lˌɜɹn"),
@@ -220,11 +240,14 @@ impl G2P {
             ("tsx", "tˈi ˈɛs ˈɛks"),
             ("tts", "tˈi tˈi ˈɛs"),
             ("typescript", "tˈIp skɹˌɪpt"),
+            ("ui", "jˈu ˈI"),
             ("ulid", "jˈu lˌɪd"),
             ("url", "jˈu ˈɑɹ ˈɛl"),
             ("urls", "jˈu ˈɑɹ ˈɛlz"),
             ("uri", "jˈu ˈɑɹ ˌI"),
             ("uris", "jˈu ˈɑɹ ˈIz"),
+            ("utf8view", "jˈu tˈi ˈɛf ˈAt vjˈu"),
+            ("ux", "jˈu ˈɛks"),
             ("uuid", "jˈu jˈu ˌI dˈi"),
             ("uuids", "jˈu jˈu ˌI dˈiz"),
             ("vad", "vˈi ˈA dˈi"),
@@ -382,16 +405,20 @@ impl G2P {
                 (None, None)
             } else {
                 let merged = merge_tokens(&group[left..right], None);
-                self.lexicon.call(
-                    &merged.text,
-                    merged.underscore.alias.as_deref(),
-                    &merged.tag,
-                    merged.underscore.stress,
-                    merged.underscore.currency,
-                    merged.underscore.is_head,
-                    &merged.underscore.num_flags,
-                    ctx,
-                )
+                if let Some(ps) = self.overrides.get(&merged.text.to_lowercase()) {
+                    (Some(ps.clone()), Some(5))
+                } else {
+                    self.lexicon.call(
+                        &merged.text,
+                        merged.underscore.alias.as_deref(),
+                        &merged.tag,
+                        merged.underscore.stress,
+                        merged.underscore.currency,
+                        merged.underscore.is_head,
+                        &merged.underscore.num_flags,
+                        ctx,
+                    )
+                }
             };
 
             if let Some(ps) = ps {
@@ -980,12 +1007,15 @@ mod tests {
     fn test_builtin_overrides() {
         let g2p = G2P::new();
         let pronounces = |text: &str| g2p.convert(text).unwrap().trim().to_string();
+        assert_eq!(pronounces("ACL"), "ˈA sˈi ˈɛl");
         assert_eq!(pronounces("API"), "ˈA pˈi ˌI");
         assert_eq!(pronounces("APIs"), "ˈA pˈi ˈIz");
         assert_eq!(pronounces("anywidget"), "ˈɛni wˌɪʤət");
         assert_eq!(pronounces("Automerge"), "ˈɔTO mˈɜɹʤ");
+        assert_eq!(pronounces("automunge"), "ˈɔTO mˈʌnʤ");
         assert_eq!(pronounces("AWS"), "ˈA dˈʌbᵊlju ˈɛs");
         assert_eq!(pronounces("BiLSTM"), "bˈI ˈɛl ˈɛs tˈi ˈɛm");
+        assert_eq!(pronounces("BYOC"), "bˈi wˈI ˈO sˈi");
         assert_eq!(pronounces("CLI"), "sˈi ˈɛl ˌI");
         assert_eq!(pronounces("CLIs"), "sˈi ˈɛl ˈIz");
         assert_eq!(pronounces("Cloudflare"), "klˈWd flˈɛɹ");
@@ -997,6 +1027,7 @@ mod tests {
         assert_eq!(pronounces("CSR"), "sˈi ˈɛs ˈɑɹ");
         assert_eq!(pronounces("CSS"), "sˈi ˈɛs ˈɛs");
         assert_eq!(pronounces("CUDA"), "kˈudə");
+        assert_eq!(pronounces("D1"), "dˈi wˈʌn");
         assert_eq!(pronounces("Deno"), "dˈinO");
         assert_eq!(pronounces("demos"), "dˈɛmOz");
         assert_eq!(pronounces("demo"), "dˈɛmO");
@@ -1020,10 +1051,17 @@ mod tests {
         assert_eq!(pronounces("HTTP"), "ˈAʧ tˈi tˈi pˈi");
         assert_eq!(pronounces("HTTPS"), "ˈAʧ tˈi tˈi pˈi ˈɛs");
         assert_eq!(pronounces("HTML"), "ˈAʧ tˈi ˈɛm ˈɛl");
+        assert_eq!(
+            pronounces("HTMLIFrameElement"),
+            "ˈAʧ tˈi ˈɛm ˈɛl ˌI fɹˌAm ˈɛləmənt"
+        );
+        assert_eq!(pronounces("ID"), "ˈI dˈi");
+        assert_eq!(pronounces("IDs"), "ˈI dˈiz");
         assert_eq!(pronounces("IDB"), "ˌI dˈi bˈi");
         assert_eq!(pronounces("iframe"), "ˌI fɹˌAm");
         assert_eq!(pronounces("iOS"), "ˈI ˈO ˈɛs");
         assert_eq!(pronounces("IndexedDB"), "ˈɪndɛkst dˈi bˈi");
+        assert_eq!(pronounces("IPC"), "ˌI pˈi sˈi");
         assert_eq!(pronounces("ipykernel"), "ˈI pˈI kˌɜɹnᵊl");
         assert_eq!(pronounces("IPython"), "ˌI pˈIθˌɑn");
         assert_eq!(pronounces("ipywidgets"), "ˌI pˈI wˌɪʤəts");
@@ -1032,6 +1070,7 @@ mod tests {
         assert_eq!(pronounces("JAX"), "ʤˈæks");
         assert_eq!(pronounces("JSON"), "ʤˌA sˈæhn");
         assert_eq!(pronounces("JSONRPC"), "ʤˌA sˈæhn ˈɑɹ pˈi sˈi");
+        assert_eq!(pronounces("JS"), "ʤˈA ˈɛs");
         assert_eq!(pronounces("JSX"), "ʤˈA ˈɛs ˈɛks");
         assert_eq!(pronounces("Jupyter"), "ʤˈupɪTəɹ");
         assert_eq!(pronounces("JWT"), "ʤˈA dˈʌbᵊlju tˈi");
@@ -1067,6 +1106,7 @@ mod tests {
         assert_eq!(pronounces("Node.js"), "nˈOd ʤˈA ˈɛs");
         assert_eq!(pronounces("NodeJS"), "nˈOd ʤˈA ˈɛs");
         assert_eq!(pronounces("nteract"), "ˈɛntəɹˌækt");
+        assert_eq!(pronounces("nteract-dev"), "ˈɛntəɹˌækt dˈɛv");
         assert_eq!(pronounces("NumPy"), "nˈʌm pˌI");
         assert_eq!(pronounces("OAuth"), "ˌO ˈɔθ");
         assert_eq!(pronounces("OGG"), "ˈɑɡ");
@@ -1075,18 +1115,23 @@ mod tests {
         assert_eq!(pronounces("openai-codex"), "ˌOpᵊn ˈAˌI kˈOdˌɛks");
         assert_eq!(pronounces("OpenAPI"), "ˈOpᵊn ˈA pˈi ˌI");
         assert_eq!(pronounces("OPFS"), "ˈO pˈi ˈɛf ˈɛs");
+        assert_eq!(pronounces("Outerbounds"), "ˈWTəɹ bˈWndz");
+        assert_eq!(pronounces("outputIdChanges"), "ˈWtpˌʊt ˌI dˌi ʧˈAnʤᵻz");
         assert_eq!(pronounces("pnpm"), "pˈi ˈɛn pˈi ˈɛm");
         assert_eq!(pronounces("Postgres"), "pˈOstɡɹɛs");
         assert_eq!(pronounces("PostgreSQL"), "pˈOst ɡɹˈɛs kjˈu ˈɛl");
         assert_eq!(pronounces("PCM"), "pˈi sˈi ˈɛm");
         assert_eq!(pronounces("Protobuf"), "pɹˈOTO bˌʌf");
         assert_eq!(pronounces("PWA"), "pˈi dˈʌbᵊlju ˈA");
+        assert_eq!(pronounces("PUT_BLOB"), "pˌʊt blˈɑb");
+        assert_eq!(pronounces("PutBlob"), "pˌʊt blˈɑb");
         assert_eq!(pronounces("PyArrow"), "pˈI ˈɛɹO");
         assert_eq!(pronounces("Pyodide"), "pˈI ə dˌId");
         assert_eq!(pronounces("PyPI"), "pˈI pˈi ˌI");
         assert_eq!(pronounces("PyO3"), "pˈI ˈO θɹˈi");
         assert_eq!(pronounces("pytest"), "pˈI tˌɛst");
         assert_eq!(pronounces("QQBot"), "kjˈu kjˈu bˌɑt");
+        assert_eq!(pronounces("R2"), "ˈɑɹ tˈu");
         assert_eq!(pronounces("PyTorch"), "pˈI tˌɔɹʧ");
         assert_eq!(pronounces("vitest"), "vˈi tˌɛst");
         assert_eq!(pronounces("tsconfig"), "tˈi ˈɛs kˌɑnfˈɪɡ");
@@ -1098,7 +1143,12 @@ mod tests {
         assert_eq!(pronounces("Rodio"), "ɹˈOdiˌO");
         assert_eq!(pronounces("RTCP"), "ˈɑɹ tˈi sˈi pˈi");
         assert_eq!(pronounces("RTP"), "ˈɑɹ tˈi pˈi");
+        assert_eq!(pronounces("repr-llm"), "ɹˈɛpəɹ ˈɛl ˈɛl ˈɛm");
+        assert_eq!(pronounces("runt-nightly"), "ɹˈʌnt nˈItli");
         assert_eq!(pronounces("runtimed"), "ɹˈʌntIm dˈi");
+        assert_eq!(pronounces("runtimed-wasm"), "ɹˈʌntIm dˈi wˈæzəm");
+        assert_eq!(pronounces("runtime-peer"), "ɹˈʌntIm pˈɪɹ");
+        assert_eq!(pronounces("runtime_peer"), "ɹˈʌntIm pˈɪɹ");
         assert_eq!(pronounces("S3"), "ˈɛs θɹˈi");
         assert_eq!(pronounces("safetensors"), "sˈAf tˌɛnsəɹz");
         assert_eq!(pronounces("scikit-learn"), "sˈɪkɪt lˌɜɹn");
@@ -1124,11 +1174,14 @@ mod tests {
         assert_eq!(pronounces("TTS"), "tˈi tˈi ˈɛs");
         assert_eq!(pronounces("TSX"), "tˈi ˈɛs ˈɛks");
         assert_eq!(pronounces("TypeScript"), "tˈIp skɹˌɪpt");
+        assert_eq!(pronounces("UI"), "jˈu ˈI");
         assert_eq!(pronounces("ULID"), "jˈu lˌɪd");
         assert_eq!(pronounces("URL"), "jˈu ˈɑɹ ˈɛl");
         assert_eq!(pronounces("URLs"), "jˈu ˈɑɹ ˈɛlz");
         assert_eq!(pronounces("URI"), "jˈu ˈɑɹ ˌI");
         assert_eq!(pronounces("URIs"), "jˈu ˈɑɹ ˈIz");
+        assert_eq!(pronounces("Utf8View"), "jˈu tˈi ˈɛf ˈAt vjˈu");
+        assert_eq!(pronounces("UX"), "jˈu ˈɛks");
         assert_eq!(pronounces("UUID"), "jˈu jˈu ˌI dˈi");
         assert_eq!(pronounces("UUIDs"), "jˈu jˈu ˌI dˈiz");
         assert_eq!(pronounces("VAD"), "vˈi ˈA dˈi");
@@ -1149,6 +1202,60 @@ mod tests {
         assert_eq!(pronounces("Yjs"), "wˈI ʤˈA ˈɛs");
         assert_eq!(pronounces("ZeroMQ"), "zˈɪɹO ˈɛm kjˈu");
         assert_eq!(pronounces("ZMQ"), "zˈi ˈɛm kjˈu");
+    }
+
+    #[test]
+    fn test_nteract_identifier_phrases() {
+        let g2p = G2P::new();
+        let assert_contains = |text: &str, expected: &[&str]| {
+            let result = g2p.convert(text).unwrap();
+            for part in expected {
+                assert!(
+                    result.contains(part),
+                    "expected {text:?} to contain {part:?}, got {result:?}"
+                );
+            }
+        };
+
+        assert_contains(
+            "runtime_peer writes RuntimeStateDoc and CommsDoc",
+            &["ɹˈʌntIm pˈɪɹ", "ɹˈʌntIm stˈAt dˌɑk", "kˈɑmz dˌɑk"],
+        );
+        assert_contains(
+            "ACL checks gate PUT_BLOB in Cloudflare D1 and R2",
+            &[
+                "ˈA sˈi ˈɛl",
+                "pˌʊt blˈɑb",
+                "klˈWd flˈɛɹ",
+                "dˈi wˈʌn",
+                "ˈɑɹ tˈu",
+            ],
+        );
+        assert_contains(
+            "nteract.dx.blob uses SyncEngine and CommBridgeManager",
+            &[
+                "ˈɛntəɹˌækt dˈi ˈɛks blˌɑb",
+                "sˌɪŋk ˈɛnʤən",
+                "kˌɑm bɹˈɪʤ mˈænɪʤəɹ",
+            ],
+        );
+        assert_contains(
+            "runt-nightly starts runtimed-wasm for nteract-dev",
+            &["ɹˈʌnt nˈItli", "ɹˈʌntIm dˈi wˈæzəm", "ˈɛntəɹˌækt dˈɛv"],
+        );
+        assert_contains(
+            "Arrow IPC uses Utf8View in Sift",
+            &["ˈɛɹO", "ˌI pˈi sˈi", "jˈu tˈi ˈɛf ˈAt vjˈu", "sˈɪft"],
+        );
+        assert_contains(
+            "HTMLElement reads URLSearchParams and cell_id in NotebookUI",
+            &[
+                "ˈAʧ tˈi ˈɛm ˈɛl ˌɛləmənt",
+                "jˈu ˈɑɹ ˈɛl sˌɜɹʧ pˈɑɹæms",
+                "sˌɛl ˈI dˈi",
+                "nˈOtbˌʊk jˌu ˌI",
+            ],
+        );
     }
 
     // -- camelCase tests ------------------------------------------------------

@@ -58,6 +58,9 @@ voice stream --sample-rate 48000 --frame-ms 20 --raw-output speech.s16le "Good m
 # Read from a file, strip markdown
 voice say --markdown -f blog-post.mdx
 
+# Inspect G2P output without synthesis
+voice phonemes "ChatGPT uses RuntimeStateDoc"
+
 # Adjust speed
 voice say -s 0.8 "Take it slow."
 
@@ -98,6 +101,26 @@ Options:
       --markdown                 Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>   Word substitution (repeatable)
       --sub-file <PATH>          Load substitutions from a file
+  -q, --quiet                    Suppress progress output
+  -h, --help                     Print help
+```
+
+### `voice phonemes`
+
+```
+Convert text to phoneme chunks without synthesis
+
+Usage: voice phonemes [OPTIONS] [TEXT]...
+
+Arguments:
+  [TEXT]...                       Text to convert
+
+Options:
+  -f, --input-file <FILE>        Read text from a file (use - for stdin)
+      --markdown                 Strip markdown/MDX formatting before conversion
+      --sub <WORD=REPLACEMENT>   Word substitution (repeatable)
+      --sub-file <PATH>          Load substitutions from a file
+      --json                     Print a JSON object with preprocessed text and phoneme chunks
   -q, --quiet                    Suppress progress output
   -h, --help                     Print help
 ```
@@ -229,7 +252,8 @@ and Hermes/WebRTC notes.
 
 `voice` is built to work well with AI agents and coding assistants:
 
-- **Phoneme output**: The CLI emits phoneme chunks to stderr, so agents can see the IPA representation of what's being spoken
+- **Phoneme inspection**: `voice phonemes` emits the exact G2P chunks without loading the TTS model or playing audio
+- **Phoneme output**: `voice say` emits phoneme chunks to stderr, so agents can see the IPA representation of what's being spoken
 - **Phoneme input**: `--phonemes` accepts raw IPA strings, giving agents precise control over pronunciation without going through G2P
 - **Stdin pipe**: `echo "text" | voice say` lets agents speak from any script or tool
 - **Markdown stripping**: `--markdown` cleans up LLM-generated markdown before speaking

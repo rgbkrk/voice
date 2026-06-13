@@ -44,6 +44,7 @@ voice say -v am_michael "How are you today?"
 voice say -f script.txt -o output.wav
 echo "Hello" | voice say
 voice say --markdown -f post.mdx
+voice phonemes "ChatGPT uses RuntimeStateDoc"
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output output.s16le "Hello"
 
 # Speech-to-text from microphone
@@ -66,10 +67,14 @@ Usage: voice [OPTIONS] [COMMAND] [TEXT]...
 
 Commands:
   say         Speak text aloud (default when no subcommand given)
+  phonemes    Convert text to phoneme chunks without synthesis
   stream      Stream TTS audio chunks from the voice daemon
+  converse    Speak text aloud, then listen for a response
   listen      Record from microphone and transcribe (speech-to-text)
   transcribe  Transcribe a WAV audio file
   serve       Run as a JSON-RPC 2.0 server on stdin/stdout
+  mcp         Run as an MCP server on stdin/stdout
+  daemon      Inspect and control a running voice daemon
 
 Arguments:
   [TEXT]...  Text to speak (shorthand for `voice say <text>`)
@@ -93,6 +98,19 @@ Options:
       --markdown                 Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>   Word substitution (repeatable)
       --sub-file <PATH>          Load substitutions from a file
+```
+
+### `voice phonemes`
+
+```
+Usage: voice phonemes [OPTIONS] [TEXT]...
+
+Options:
+  -f, --input-file <FILE>        Read text from a file (use - for stdin)
+      --markdown                 Strip markdown/MDX formatting before conversion
+      --sub <WORD=REPLACEMENT>   Word substitution (repeatable)
+      --sub-file <PATH>          Load substitutions from a file
+      --json                     Print a JSON object with preprocessed text and phoneme chunks
 ```
 
 ### `voice stream`

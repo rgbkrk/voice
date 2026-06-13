@@ -39,6 +39,7 @@ macro_rules! info {
                   voice say -f speech.txt -o output.wav\n  \
                   voice say --phonemes \"hɛloʊ wɜːld\"\n  \
                   voice say --markdown -f post.mdx\n  \
+                  voice phonemes \"ChatGPT uses RuntimeStateDoc\"\n  \
                   voice stream --json \"Hello world\"\n  \
                   voice listen\n  \
                   voice listen --continuous\n  \
@@ -65,6 +66,9 @@ enum Command {
     /// Speak text aloud (default when no subcommand given)
     Say(SayArgs),
 
+    /// Convert text to phoneme chunks without synthesis
+    Phonemes(PhonemesArgs),
+
     /// Stream TTS audio chunks from the voice daemon
     Stream(StreamArgs),
 
@@ -85,6 +89,34 @@ enum Command {
 
     /// Inspect and control a running voice daemon
     Daemon(DaemonArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct PhonemesArgs {
+    /// Text to convert
+    #[arg(trailing_var_arg = true)]
+    text: Vec<String>,
+
+    /// Read text from a file (use - for stdin)
+    #[arg(short = 'f', long = "input-file")]
+    input_file: Option<PathBuf>,
+
+    /// Strip markdown/MDX formatting before conversion
+    #[arg(long)]
+    markdown: bool,
+
+    /// Word substitutions (pre-processing), e.g. --sub nteract=enteract
+    #[arg(long = "sub", value_name = "WORD=REPLACEMENT")]
+    subs: Vec<String>,
+
+    /// Load substitutions from a file (one WORD=REPLACEMENT per line, # comments).
+    /// If not set, .voice-subs is auto-discovered from the working directory upward.
+    #[arg(long = "sub-file", value_name = "PATH")]
+    sub_file: Option<PathBuf>,
+
+    /// Print a JSON object with preprocessed text and phoneme chunks
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -402,6 +434,44 @@ fn resolve_stream_text(stream: &StreamArgs) -> Result<String, String> {
     Ok(text)
 }
 
+fn resolve_phonemes_text(args: &PhonemesArgs) -> Result<String, String> {
+    if let Some(path) = &args.input_file {
+        let text = if path.to_str() == Some("-") {
+            let mut buf = String::new();
+            io::stdin()
+                .read_to_string(&mut buf)
+                .map_err(|e| format!("Failed to read stdin: {e}"))?;
+            buf
+        } else {
+            std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read {}: {e}", path.display()))?
+        };
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return Err("Input file is empty".into());
+        }
+        return Ok(text);
+    }
+
+    if !args.text.is_empty() {
+        return Ok(args.text.join(" "));
+    }
+
+    if io::stdin().is_terminal() {
+        return Err("No text provided. Pass text as arguments, use -f, or pipe to stdin.".into());
+    }
+
+    let mut buf = String::new();
+    io::stdin()
+        .read_to_string(&mut buf)
+        .map_err(|e| format!("Failed to read stdin: {e}"))?;
+    let text = buf.trim().to_string();
+    if text.is_empty() {
+        return Err("No text provided on stdin".into());
+    }
+    Ok(text)
+}
+
 /// Strip markdown/MDX to clean prose for TTS using pulldown-cmark.
 ///
 /// Keeps text content from paragraphs, headings, list items, and block quotes.
@@ -666,6 +736,9 @@ fn main() {
         Some(Command::Say(say_args)) => {
             run_say(say_args);
         }
+        Some(Command::Phonemes(phonemes_args)) => {
+            run_phonemes(phonemes_args);
+        }
         Some(Command::Stream(stream_args)) => {
             run_stream(stream_args);
         }
@@ -916,6 +989,58 @@ fn run_mcp(serve_args: ServeArgs) {
         sub_file_path: sub_file,
         mem_stats: serve_args.mem,
     });
+}
+
+fn run_phonemes(args: PhonemesArgs) {
+    let text = match resolve_phonemes_text(&args) {
+        Ok(text) => text,
+        Err(msg) => {
+            eprintln!("Error: {msg}");
+            std::process::exit(1);
+        }
+    };
+
+    let text = if args.markdown {
+        strip_markdown(&text)
+    } else {
+        text
+    };
+    let sub_file = args.sub_file.clone().or_else(find_sub_file);
+    if let Some(ref path) = sub_file {
+        info!("Using substitutions from {}", path.display());
+    }
+    let (subs, phoneme_overrides) = collect_subs(&args.subs, sub_file.as_deref());
+    let text = apply_tech_subs(&text);
+    let text = if subs.is_empty() {
+        text
+    } else {
+        apply_substitutions(&text, &subs)
+    };
+
+    let chunks = if phoneme_overrides.is_empty() {
+        voice_g2p::text_to_phoneme_chunks(&text)
+    } else {
+        voice_g2p::text_to_phoneme_chunks_with_overrides(&text, &phoneme_overrides)
+    };
+    let chunks = match chunks {
+        Ok(chunks) => chunks,
+        Err(e) => {
+            eprintln!("G2P error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if args.json {
+        let output = serde_json::json!({
+            "text": text,
+            "chunks": chunks,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        for chunk in chunks {
+            println!("{chunk}");
+        }
+    }
 }
 
 fn run_say(say_args: SayArgs) {

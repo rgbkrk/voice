@@ -270,6 +270,34 @@ pub async fn run(
                         }
                     }
                 }
+                VoiceRequest::StreamTranscribe(request) => {
+                    let stream_id = request.stream_id.clone();
+                    let samples = request.samples.clone();
+                    let sample_rate = request.sample_rate;
+                    let stt = stt.clone();
+
+                    let result = tokio::task::spawn_blocking(move || {
+                        transcribe_stream(&stt, &stream_id, &samples, sample_rate)
+                    })
+                    .await;
+
+                    match result {
+                        Ok(Ok(msg)) => {
+                            queue.complete(Some(msg), None).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("voiced: stream_transcribe error: {}", e);
+                            queue.fail(e).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
+                        Err(e) => {
+                            eprintln!("voiced: stream_transcribe panicked: {}", e);
+                            queue.fail(format!("panic: {}", e)).await;
+                            sync_automerge(&queue, &automerge).await;
+                        }
+                    }
+                }
                 VoiceRequest::Listen { max_duration_ms } => {
                     let max_ms = *max_duration_ms;
                     let stt = stt.clone();
@@ -877,6 +905,54 @@ fn listen(
     .to_string())
 }
 
+fn transcribe_stream(
+    stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
+    stream_id: &str,
+    samples: &[f32],
+    sample_rate: u32,
+) -> Result<String, String> {
+    let audio_duration_ms = samples.len().saturating_mul(1_000) as u64 / sample_rate.max(1) as u64;
+    if samples.is_empty() {
+        return Ok(serde_json::json!({
+            "stream_id": stream_id,
+            "text": "",
+            "tokens": 0,
+            "sample_rate": sample_rate,
+            "audio_duration_ms": 0,
+            "elapsed_ms": 0,
+        })
+        .to_string());
+    }
+
+    ensure_stt(stt)?;
+
+    let started = Instant::now();
+    eprintln!(
+        "voiced: transcribing stream {} ({:.1}s @ {} Hz)...",
+        stream_id,
+        audio_duration_ms as f32 / 1_000.0,
+        sample_rate
+    );
+
+    let mut guard = stt.lock().map_err(|e| format!("stt lock: {}", e))?;
+    let model = guard.as_mut().ok_or("STT model not loaded")?;
+    let result = voice_stt::transcribe_audio(model, samples, sample_rate)
+        .map_err(|e| format!("transcribe: {}", e))?;
+
+    let text = result.text.trim().to_string();
+    eprintln!("voiced: stream {} heard: {}", stream_id, text);
+
+    Ok(serde_json::json!({
+        "stream_id": stream_id,
+        "text": text,
+        "tokens": result.tokens.len(),
+        "sample_rate": sample_rate,
+        "audio_duration_ms": audio_duration_ms,
+        "elapsed_ms": started.elapsed().as_millis() as u64,
+    })
+    .to_string())
+}
+
 /// Play a simple sine tone (for ding/dong feedback).
 fn play_tone(freq: f32, duration_secs: f32) {
     let sample_rate = 24000u32;
@@ -1015,6 +1091,28 @@ async fn run_simulated(
                         .await;
                     sync_automerge(&queue, &automerge).await;
                 }
+                VoiceRequest::StreamTranscribe(request) => {
+                    let audio_duration_ms = request.samples.len().saturating_mul(1_000) as u64
+                        / request.sample_rate.max(1) as u64;
+                    queue
+                        .complete(
+                            Some(
+                                serde_json::json!({
+                                    "stream_id": &request.stream_id,
+                                    "text": "(simulated stream transcription)",
+                                    "tokens": 3,
+                                    "sample_rate": request.sample_rate,
+                                    "audio_duration_ms": audio_duration_ms,
+                                    "elapsed_ms": 0,
+                                    "simulated": true,
+                                })
+                                .to_string(),
+                            ),
+                            None,
+                        )
+                        .await;
+                    sync_automerge(&queue, &automerge).await;
+                }
                 VoiceRequest::Listen { .. } => {
                     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
                     queue
@@ -1052,6 +1150,11 @@ fn short(req: &VoiceRequest) -> String {
             let preview: String = request.text.chars().take(50).collect();
             format!("stream_speak: {}", preview)
         }
+        VoiceRequest::StreamTranscribe(request) => format!(
+            "stream_transcribe: {} samples @ {} Hz",
+            request.samples.len(),
+            request.sample_rate
+        ),
         VoiceRequest::Listen { max_duration_ms } => {
             format!("listen ({}ms)", max_duration_ms.unwrap_or(30000))
         }
@@ -1224,6 +1327,34 @@ mod tests {
         let result = await_completion(completion_rx).await;
         assert_eq!(result.status, ItemStatus::Completed);
         assert_eq!(result.result.as_deref(), Some("simulated stream"));
+
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn simulated_stream_transcribe_completes_with_metadata() {
+        let (queue, worker) = start_simulated_worker().await;
+        let stream_id = format!("stt-{}", unique_suffix());
+
+        let (_queue_id, completion_rx) = queue
+            .enqueue_and_wait(
+                "test-client".to_string(),
+                VoiceRequest::StreamTranscribe(crate::queue::StreamTranscribeRequest {
+                    stream_id: stream_id.clone(),
+                    samples: vec![0.0; 48_000],
+                    sample_rate: 48_000,
+                }),
+            )
+            .await;
+
+        let result = await_completion(completion_rx).await;
+        assert_eq!(result.status, ItemStatus::Completed);
+        let result_json: serde_json::Value =
+            serde_json::from_str(result.result.as_deref().unwrap()).unwrap();
+        assert_eq!(result_json["stream_id"], stream_id);
+        assert_eq!(result_json["sample_rate"], 48_000);
+        assert_eq!(result_json["audio_duration_ms"], 1_000);
+        assert_eq!(result_json["simulated"], true);
 
         worker.abort();
     }

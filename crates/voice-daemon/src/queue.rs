@@ -23,6 +23,14 @@ pub struct StreamSpeakRequest {
     pub event_tx: mpsc::Sender<TtsStreamEvent>,
 }
 
+/// Parameters for a daemon STT stream after the socket layer has collected PCM.
+#[derive(Debug, Clone)]
+pub struct StreamTranscribeRequest {
+    pub stream_id: String,
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+}
+
 /// What the worker will execute.
 #[derive(Debug, Clone)]
 pub enum VoiceRequest {
@@ -41,6 +49,8 @@ pub enum VoiceRequest {
     },
     /// Generate speech audio as ordered stream events.
     StreamSpeak(StreamSpeakRequest),
+    /// Transcribe caller-supplied PCM frames.
+    StreamTranscribe(StreamTranscribeRequest),
     Listen {
         max_duration_ms: Option<u64>,
     },
@@ -56,6 +66,7 @@ impl VoiceRequest {
             Self::Speak { .. } => "speak",
             Self::Synthesize { .. } => "synthesize",
             Self::StreamSpeak(_) => "stream_speak",
+            Self::StreamTranscribe(_) => "stream_transcribe",
             Self::Listen { .. } => "listen",
             Self::Converse { .. } => "converse",
         }
@@ -73,6 +84,11 @@ impl VoiceRequest {
                 let preview: String = request.text.chars().take(80).collect();
                 Some(preview)
             }
+            Self::StreamTranscribe(request) => Some(format!(
+                "{} samples @ {} Hz",
+                request.samples.len(),
+                request.sample_rate
+            )),
             Self::Listen { .. } => None,
         }
     }

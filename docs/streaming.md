@@ -1,6 +1,6 @@
 # Streaming TTS
 
-`voice` exposes three TTS surfaces relevant to integrations:
+`voice` exposes file and streaming surfaces relevant to integrations:
 
 - `say --output`: write a completed audio file. `.wav` writes float WAV, while
   `.ogg` / `.opus` or `--format ogg-opus` writes real
@@ -11,6 +11,10 @@
 - `stream_speak`: emit ordered audio events over the daemon socket. This is the
   transport-neutral path for WebRTC, voice bridges, or any client that wants
   audio before a final file exists.
+- `stream_transcribe`: ingest ordered PCM events over the daemon socket and
+  return a transcript after the client sends `stt.end`. This is the first
+  inbound-audio contract for WebRTC sidecars. Partial transcripts are a later
+  layer.
 
 ## Hermes / WhatsApp
 
@@ -83,6 +87,8 @@ progress lines move to stderr.
 
 ## Daemon Protocol
 
+### TTS Output
+
 Send a JSON-RPC request in a `Request` frame:
 
 ```json
@@ -128,3 +134,98 @@ It then emits `Event` frames until a terminal event:
 Audio frames are fixed-duration PCM packets. The last frame is padded with
 silence when needed so clients can feed frames directly into an Opus encoder.
 Use `sample_rate: 48000` and `frame_ms: 20` for a WebRTC-friendly stream.
+
+### STT Input
+
+Start a client-to-daemon transcription stream with a `Request` frame:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "stream_transcribe",
+  "params": {
+    "sample_rate": 48000,
+    "channels": 1,
+    "encoding": "pcm_s16le",
+    "frame_ms": 20,
+    "max_duration_ms": 300000
+  },
+  "id": 1
+}
+```
+
+The daemon replies with the stream metadata:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "stream_id": "...",
+    "status": "receiving",
+    "sample_rate": 48000,
+    "channels": 1,
+    "encoding": "pcm_s16le",
+    "frame_ms": 20,
+    "max_duration_ms": 300000
+  },
+  "id": 1
+}
+```
+
+The client then sends `Event` frames with `stt.audio` payloads. The frame shape
+matches `tts.audio` closely, but only `stream_id`, `sample_rate`, `channels`,
+`encoding`, and `samples` are required today:
+
+```json
+{
+  "event": "stt.audio",
+  "data": {
+    "frame": {
+      "stream_id": "...",
+      "sequence": 0,
+      "sample_rate": 48000,
+      "channels": 1,
+      "encoding": "pcm_s16le",
+      "frame_ms": 20,
+      "sample_count": 960,
+      "samples": [0, 12, -8]
+    }
+  }
+}
+```
+
+End the stream with:
+
+```json
+{
+  "event": "stt.end",
+  "data": {
+    "stream_id": "..."
+  }
+}
+```
+
+The daemon enqueues one STT job and emits one terminal event:
+
+```json
+{
+  "event": "stt.transcribed",
+  "data": {
+    "stream_id": "...",
+    "queue_id": "...",
+    "frames": 42,
+    "text": "hello",
+    "tokens": 8,
+    "sample_rate": 48000,
+    "audio_duration_ms": 840,
+    "elapsed_ms": 120
+  }
+}
+```
+
+If validation or transcription fails, the terminal event is `stt.error` with a
+`message` field.
+
+`max_duration_ms` defaults to 60 seconds and is capped at 300 seconds. Treat
+each `stream_transcribe` session as one utterance or segment from the WebRTC
+sidecar rather than a whole call.

@@ -100,7 +100,7 @@ Owns real-time media concerns:
 Owns speech model concerns:
 
 - TTS: emit 48 kHz 20 ms PCM frames from `stream_speak`
-- STT: consume 16 kHz or 48 kHz PCM frames through a future streaming STT API
+- STT: consume 16 kHz or 48 kHz PCM frames through `stream_transcribe`
 - cancellation: stop current TTS on barge-in or call termination
 - backpressure: avoid unbounded audio buffering
 
@@ -229,9 +229,8 @@ timing behavior is proven.
   calling target.
 - Which sidecar runtime should own the first spike: `aiortc`, Pipecat, Node, or
   Rust `webrtc-rs`?
-- Should streaming STT live in `voice-daemon` as a first-class RPC, or should
-  Hermes feed buffered call audio into the existing file transcribe path until
-  latency forces the daemon API?
+- Should `stream_transcribe` grow partial transcript events, or should the first
+  sidecar keep one transcript per completed utterance?
 - How much silence should the sidecar send before the agent's first TTS frame
   is ready? WebRTC calls should have media flowing immediately after accept.
 - What barge-in policy should Hermes use: immediate cancel on VAD, cancel after

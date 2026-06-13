@@ -295,8 +295,10 @@ with Hermes converting to OGG/Opus when needed.
 
 For lower-level streaming, `stream_speak` emits `tts.started`, `tts.audio`, and
 terminal `tts.ended` / `tts.error` / `tts.cancelled` events over the same daemon
-frame protocol. See [docs/streaming.md](docs/streaming.md) for the event schema
-and Hermes/WebRTC notes. See
+frame protocol. `stream_transcribe` accepts client-sent `stt.audio` frames and
+returns a terminal `stt.transcribed` event. See
+[docs/streaming.md](docs/streaming.md) for the event schema and Hermes/WebRTC
+notes. See
 [docs/whatsapp-calling-webrtc.md](docs/whatsapp-calling-webrtc.md) for the
 WhatsApp Calling architecture.
 

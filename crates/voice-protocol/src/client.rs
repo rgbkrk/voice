@@ -222,6 +222,109 @@ impl DaemonClient {
         Ok(response)
     }
 
+    /// Stream caller-supplied PCM frames into the daemon for transcription.
+    ///
+    /// This is an ingestion contract for WebRTC/bridge clients. The daemon
+    /// receives `stt.audio` event frames, then transcribes after `stt.end` and
+    /// emits either `stt.transcribed` or `stt.error`.
+    pub fn stream_transcribe<F>(
+        &mut self,
+        frames: &[Vec<i16>],
+        sample_rate: u32,
+        frame_ms: u32,
+        mut on_event: F,
+    ) -> Result<Response, String>
+    where
+        F: FnMut(rpc::Event) -> Result<(), String>,
+    {
+        let params = serde_json::json!({
+            "sample_rate": sample_rate,
+            "channels": 1,
+            "encoding": "pcm_s16le",
+            "frame_ms": frame_ms,
+        });
+        let req = rpc::Request::new("stream_transcribe", params).with_id(1);
+        let json = serde_json::to_vec(&req).map_err(|e| format!("serialize: {}", e))?;
+
+        write_frame_sync(&mut self.stream, &Frame::request(&json))
+            .map_err(|e| format!("write frame: {}", e))?;
+
+        let frame = read_frame_sync(&mut self.stream)
+            .map_err(|e| format!("read frame: {}", e))?
+            .ok_or_else(|| "connection closed before stream_transcribe response".to_string())?;
+        if frame.frame_type != FrameType::Response {
+            return Err(format!(
+                "unexpected frame type {:?}; expected stream_transcribe response",
+                frame.frame_type
+            ));
+        }
+
+        let response = frame
+            .json::<Response>()
+            .map_err(|e| format!("parse response: {}", e))?;
+        if response.error.is_some() {
+            return Ok(response);
+        }
+        let stream_id = response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("stream_id"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "stream_transcribe response missing stream_id".to_string())?
+            .to_string();
+
+        for (sequence, samples) in frames.iter().enumerate() {
+            let envelope = rpc::Event::new(
+                "stt.audio",
+                serde_json::json!({
+                    "frame": {
+                        "stream_id": &stream_id,
+                        "sequence": sequence as u64,
+                        "sample_rate": sample_rate,
+                        "channels": 1,
+                        "encoding": "pcm_s16le",
+                        "frame_ms": frame_ms,
+                        "sample_count": samples.len(),
+                        "samples": samples,
+                    }
+                }),
+            );
+            let json =
+                serde_json::to_vec(&envelope).map_err(|e| format!("serialize event: {e}"))?;
+            write_frame_sync(&mut self.stream, &Frame::event(&json))
+                .map_err(|e| format!("write stt.audio: {e}"))?;
+        }
+
+        let envelope = rpc::Event::new("stt.end", serde_json::json!({ "stream_id": &stream_id }));
+        let json = serde_json::to_vec(&envelope).map_err(|e| format!("serialize end: {e}"))?;
+        write_frame_sync(&mut self.stream, &Frame::event(&json))
+            .map_err(|e| format!("write stt.end: {e}"))?;
+
+        loop {
+            let frame = read_frame_sync(&mut self.stream)
+                .map_err(|e| format!("read stream_transcribe frame: {}", e))?
+                .ok_or_else(|| "connection closed before stream_transcribe finished".to_string())?;
+
+            if frame.frame_type != FrameType::Event {
+                return Err(format!(
+                    "unexpected frame type {:?}; expected stream_transcribe event",
+                    frame.frame_type
+                ));
+            }
+
+            let event = frame
+                .json::<rpc::Event>()
+                .map_err(|e| format!("parse event envelope: {}", e))?;
+            let terminal = matches!(event.event.as_str(), "stt.transcribed" | "stt.error");
+            on_event(event)?;
+            if terminal {
+                break;
+            }
+        }
+
+        Ok(response)
+    }
+
     /// Convenience: send a listen request. Blocks until transcription completes.
     pub fn listen(&mut self, max_duration_ms: Option<u64>) -> Result<Response, String> {
         let mut params = serde_json::json!({"wait": true});
@@ -448,6 +551,97 @@ mod tests {
 
         assert!(response.error.is_none());
         assert_eq!(events, vec!["tts.started", "tts.ended"]);
+
+        match old {
+            Some(value) => std::env::set_var(SOCKET_ENV, value),
+            None => std::env::remove_var(SOCKET_ENV),
+        }
+        let _ = std::fs::remove_file(path);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn stream_transcribe_writes_audio_events_and_reads_terminal_event() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "voice-protocol-stream-transcribe-test-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request_frame = read_frame_sync(&mut stream).unwrap().unwrap();
+            let request = request_frame.json::<rpc::Request>().unwrap();
+            assert_eq!(request.method, "stream_transcribe");
+            assert_eq!(request.params["sample_rate"], 48_000);
+
+            let response = Response::success(
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "stream_id": "stt-stream",
+                    "status": "receiving",
+                    "sample_rate": 48_000,
+                    "channels": 1,
+                    "encoding": "pcm_s16le",
+                    "frame_ms": 20,
+                }),
+            );
+            write_frame_sync(
+                &mut stream,
+                &Frame::response(&serde_json::to_vec(&response).unwrap()),
+            )
+            .unwrap();
+
+            let audio_frame = read_frame_sync(&mut stream).unwrap().unwrap();
+            assert_eq!(audio_frame.frame_type, FrameType::Event);
+            let audio_event = audio_frame.json::<Event>().unwrap();
+            assert_eq!(audio_event.event, "stt.audio");
+            assert_eq!(audio_event.data["frame"]["stream_id"], "stt-stream");
+            assert_eq!(
+                audio_event.data["frame"]["samples"],
+                serde_json::json!([0, 1, -1])
+            );
+
+            let end_frame = read_frame_sync(&mut stream).unwrap().unwrap();
+            assert_eq!(end_frame.frame_type, FrameType::Event);
+            let end_event = end_frame.json::<Event>().unwrap();
+            assert_eq!(end_event.event, "stt.end");
+            assert_eq!(end_event.data["stream_id"], "stt-stream");
+
+            let terminal = Event::new(
+                "stt.transcribed",
+                serde_json::json!({
+                    "stream_id": "stt-stream",
+                    "text": "hello",
+                    "tokens": 1,
+                }),
+            );
+            write_frame_sync(
+                &mut stream,
+                &Frame::event(&serde_json::to_vec(&terminal).unwrap()),
+            )
+            .unwrap();
+        });
+
+        let old = std::env::var(SOCKET_ENV).ok();
+        std::env::set_var(SOCKET_ENV, &path);
+
+        let mut client = DaemonClient::connect().unwrap();
+        let mut events = Vec::new();
+        let response = client
+            .stream_transcribe(&[vec![0, 1, -1]], 48_000, 20, |event| {
+                events.push(event);
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(response.error.is_none());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "stt.transcribed");
+        assert_eq!(events[0].data["text"], "hello");
 
         match old {
             Some(value) => std::env::set_var(SOCKET_ENV, value),

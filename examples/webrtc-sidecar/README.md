@@ -37,8 +37,25 @@ voice stream --sample-rate 48000 --frame-ms 20 \
   "Hello from the WebRTC sidecar."
 ```
 
-If `--tx-pcm` is omitted, the sidecar sends silence. That is useful for checking
-SDP, ICE, and call timing before TTS is wired in.
+You can also omit `--tx-pcm` and POST outbound frames over local HTTP once a
+call session exists. This is the shape Hermes can use when it receives
+`stream_speak` frames from the voice daemon:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8787/calls/local-test/audio \
+  -H 'content-type: application/json' \
+  -d '{
+    "sample_rate": 48000,
+    "channels": 1,
+    "frame_ms": 20,
+    "encoding": "pcm_s16le",
+    "pcm_s16le_base64": "AAAAAA=="
+  }'
+```
+
+Each 20 ms frame is 1920 bytes before base64 encoding. If both `--tx-pcm` and
+HTTP input are idle, the sidecar sends silence. That is useful for checking SDP,
+ICE, and call timing before TTS is wired in.
 
 ## SDP API
 
@@ -76,6 +93,14 @@ Inspect a live session:
 
 ```bash
 curl -sS http://127.0.0.1:8787/calls/local-test
+```
+
+Queue outbound PCM for a live session:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8787/calls/local-test/audio \
+  -H 'content-type: application/json' \
+  -d '{"sample_rate":48000,"channels":1,"frame_ms":20,"encoding":"pcm_s16le","pcm_s16le_base64":"AAAAAA=="}'
 ```
 
 Close a session:

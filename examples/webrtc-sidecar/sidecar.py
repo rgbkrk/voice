@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import binascii
 from fractions import Fraction
 import json
 import logging
@@ -64,6 +66,14 @@ class PcmSource:
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
+
+    @property
+    def queued_bytes(self) -> int:
+        return len(self.buffer)
+
+    def write_frame(self, pcm_s16le: bytes) -> int:
+        self.buffer.extend(pcm_s16le)
+        return len(pcm_s16le)
 
     def read_frame(self) -> bytes:
         if self.fd is not None:
@@ -186,6 +196,7 @@ class CallSession:
             "ice_gathering_state": self.pc.iceGatheringState,
             "signaling_state": self.pc.signalingState,
             "tasks": len(self.tasks),
+            "queued_tx_bytes": self.source.queued_bytes,
             "audio": audio_contract(),
         }
 
@@ -231,6 +242,43 @@ def audio_contract() -> dict[str, Any]:
         "frame_ms": FRAME_MS,
         "encoding": "pcm_s16le",
     }
+
+
+def required_int(body: dict[str, Any], key: str, default: int | None = None) -> int:
+    value = body.get(key, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be an integer") from exc
+
+
+def decode_pcm_payload(body: dict[str, Any]) -> bytes:
+    sample_rate = required_int(body, "sample_rate")
+    channels = required_int(body, "channels", CHANNELS)
+    frame_ms = required_int(body, "frame_ms", FRAME_MS)
+    encoding = str(body.get("encoding") or "").strip().lower()
+    payload = str(body.get("pcm_s16le_base64") or "").strip()
+
+    if sample_rate != SAMPLE_RATE:
+        raise ValueError(f"sample_rate must be {SAMPLE_RATE}")
+    if channels != CHANNELS:
+        raise ValueError(f"channels must be {CHANNELS}")
+    if frame_ms != FRAME_MS:
+        raise ValueError(f"frame_ms must be {FRAME_MS}")
+    if encoding not in {"pcm_s16le", "pcm_s16_le"}:
+        raise ValueError("encoding must be pcm_s16le")
+    if not payload:
+        raise ValueError("pcm_s16le_base64 is required")
+
+    try:
+        pcm = base64.b64decode(payload, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("pcm_s16le_base64 is not valid base64") from exc
+    if not pcm:
+        raise ValueError("decoded PCM payload is empty")
+    if len(pcm) % BYTES_PER_SAMPLE != 0:
+        raise ValueError("decoded PCM payload must contain whole s16le samples")
+    return pcm
 
 
 def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
@@ -293,6 +341,30 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
             return json_error("unknown call_id", status=404)
         return web.json_response(session.snapshot())
 
+    async def send_audio(request: web.Request) -> web.Response:
+        call_id = request.match_info["call_id"]
+        session = sessions.get(call_id)
+        if session is None:
+            return json_error("unknown call_id", status=404)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return json_error("request body must be JSON")
+        try:
+            pcm = decode_pcm_payload(body)
+        except ValueError as exc:
+            return json_error(str(exc))
+
+        accepted_bytes = session.source.write_frame(pcm)
+        return web.json_response(
+            {
+                "call_id": call_id,
+                "accepted_bytes": accepted_bytes,
+                "queued_tx_bytes": session.source.queued_bytes,
+                "audio": audio_contract(),
+            }
+        )
+
     async def close_call(request: web.Request) -> web.Response:
         call_id = request.match_info["call_id"]
         session = sessions.pop(call_id, None)
@@ -309,6 +381,7 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
     app.router.add_get("/health", health)
     app.router.add_post("/offer", offer)
     app.router.add_get("/calls/{call_id}", call_status)
+    app.router.add_post("/calls/{call_id}/audio", send_audio)
     app.router.add_post("/calls/{call_id}/close", close_call)
     app.on_cleanup.append(cleanup)
     return app

@@ -171,8 +171,9 @@ Response:
 }
 ```
 
-Debug a live session with `GET /calls/{call_id}`. Terminate a local session
-with `POST /calls/{call_id}/close`.
+Debug a live session with `GET /calls/{call_id}`. Queue outbound audio for the
+WebRTC track with `POST /calls/{call_id}/audio`. Terminate a local session with
+`POST /calls/{call_id}/close`.
 
 Runtime events:
 
@@ -183,20 +184,41 @@ Runtime events:
 {"type": "ended", "reason": "remote_hangup"}
 ```
 
-Outbound audio command:
+Outbound audio:
 
-```json
+```http
+POST /calls/{call_id}/audio
 {
-  "type": "outbound_audio",
   "sequence": 17,
   "sample_rate": 48000,
+  "channels": 1,
   "frame_ms": 20,
+  "encoding": "pcm_s16le",
   "pcm_s16le_base64": "..."
 }
 ```
 
-This mirrors the current `voice` daemon stream shape closely enough that the
-bridge can be mostly mechanical.
+Response:
+
+```json
+{
+  "call_id": "wamid-call-id",
+  "accepted_bytes": 1920,
+  "queued_tx_bytes": 3840,
+  "audio": {
+    "sample_rate": 48000,
+    "channels": 1,
+    "frame_ms": 20,
+    "encoding": "pcm_s16le"
+  }
+}
+```
+
+Each 20 ms frame is 1920 bytes: 960 signed 16-bit little-endian mono samples at
+48 kHz. This mirrors the current `voice` daemon stream shape closely enough
+that the bridge can be mostly mechanical: Hermes can receive `stream_speak` raw
+frames, base64-encode each frame, and POST them to the sidecar while the WebRTC
+track sends queued audio or silence.
 
 ## Implementation Options
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 from pathlib import Path
 
@@ -109,5 +110,89 @@ def test_call_status_and_close_use_session_snapshot():
             assert missing_response.status == 404
             missing_body = await missing_response.json()
             assert missing_body == {"error": "unknown call_id"}
+
+    asyncio.run(run())
+
+
+def test_audio_endpoint_queues_pcm_for_call():
+    sidecar = load_sidecar()
+
+    class FakeSession:
+        def __init__(self, source) -> None:
+            self.source = source
+
+        def snapshot(self):
+            return {
+                "call_id": "call-1",
+                "queued_tx_bytes": self.source.queued_bytes,
+                "audio": sidecar.audio_contract(),
+            }
+
+        async def close(self) -> None:
+            pass
+
+    async def run():
+        from aiohttp.test_utils import TestClient, TestServer
+
+        source = sidecar.PcmSource(None)
+        app = sidecar.create_app(source, None)
+        app[sidecar.SESSIONS_KEY]["call-1"] = FakeSession(source)
+
+        payload = {
+            "sample_rate": 48000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+            "pcm_s16le_base64": base64.b64encode(b"\x01\x00\xff\xff").decode("ascii"),
+        }
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/calls/call-1/audio", json=payload)
+            assert response.status == 200
+            body = await response.json()
+            assert body["accepted_bytes"] == 4
+            assert body["queued_tx_bytes"] == 4
+
+            frame = source.read_frame()
+            assert frame.startswith(b"\x01\x00\xff\xff")
+            assert frame[4:] == b"\x00" * (sidecar.FRAME_BYTES - 4)
+
+    asyncio.run(run())
+
+
+def test_audio_endpoint_rejects_mismatched_contract():
+    sidecar = load_sidecar()
+
+    class FakeSession:
+        def __init__(self, source) -> None:
+            self.source = source
+
+        def snapshot(self):
+            return {"call_id": "call-1"}
+
+        async def close(self) -> None:
+            pass
+
+    async def run():
+        from aiohttp.test_utils import TestClient, TestServer
+
+        source = sidecar.PcmSource(None)
+        app = sidecar.create_app(source, None)
+        app[sidecar.SESSIONS_KEY]["call-1"] = FakeSession(source)
+
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/calls/call-1/audio",
+                json={
+                    "sample_rate": 16000,
+                    "channels": 1,
+                    "frame_ms": 20,
+                    "encoding": "pcm_s16le",
+                    "pcm_s16le_base64": base64.b64encode(b"\x00\x00").decode("ascii"),
+                },
+            )
+            assert response.status == 400
+            body = await response.json()
+            assert body == {"error": "sample_rate must be 48000"}
+            assert source.queued_bytes == 0
 
     asyncio.run(run())

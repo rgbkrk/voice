@@ -5,10 +5,12 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 voice_bin="${VOICE_BIN:-}"
 hermes_config="${HERMES_CONFIG:-${HOME:-}/.hermes/config.yaml}"
+hermes_home="${HERMES_HOME:-${HOME:-}/.hermes}"
 sidecar_url="${SIDECAR_URL:-http://127.0.0.1:8787}"
 text="${TEXT:-Local Hermes voice stack smoke test.}"
 skip_hermes_config="${SKIP_HERMES_CONFIG:-0}"
 skip_hermes_tts_smoke="${SKIP_HERMES_TTS_SMOKE:-0}"
+skip_hermes_gateway="${SKIP_HERMES_GATEWAY:-0}"
 skip_sidecar="${SKIP_SIDECAR:-0}"
 skip_systemd="${SKIP_SYSTEMD:-0}"
 skip_cli_mcp="${SKIP_CLI_MCP:-0}"
@@ -20,6 +22,7 @@ webrtc_timeout="${VOICE_WEBRTC_TIMEOUT:-60}"
 max_queued_tx_ms="${MAX_QUEUED_TX_MS:-1000}"
 
 hermes_config_verify_script="${HERMES_CONFIG_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_voice_config.py}"
+hermes_gateway_verify_script="${HERMES_GATEWAY_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_gateway_service.py}"
 cli_mcp_surface_verify_script="${CLI_MCP_SURFACE_VERIFY_SCRIPT:-$repo_root/scripts/verify_cli_mcp_surface.py}"
 whatsapp_contract_verify_script="${WHATSAPP_CONTRACT_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_voice_contract.sh}"
 sidecar_service_verify_script="${SIDECAR_SERVICE_VERIFY_SCRIPT:-$repo_root/scripts/verify_webrtc_sidecar_service.py}"
@@ -38,13 +41,15 @@ checks the WebRTC sidecar HTTP contract plus Linux systemd user services.
 Options:
   --voice-bin PATH             installed voice binary to verify
   --hermes-config PATH         Hermes config file (default: ~/.hermes/config.yaml)
+  --hermes-home PATH           Hermes home directory (default: ~/.hermes)
   --sidecar-url URL            sidecar base URL (default: http://127.0.0.1:8787)
   --text TEXT                  smoke text used by TTS checks
   --skip-hermes-config         skip Hermes config validation and TTS command smoke
   --skip-hermes-tts-smoke      validate Hermes config without executing TTS
+  --skip-hermes-gateway        skip running Hermes gateway service verification
   --skip-cli-mcp               skip plain CLI/MCP daemon surface verification
   --skip-sidecar               skip WebRTC sidecar service verification
-  --skip-systemd               skip sidecar/daemon systemd service checks
+  --skip-systemd               skip Hermes gateway, sidecar, and daemon systemd service checks
   --skip-daemon                skip daemon-backed stream checks
   --skip-stt-smoke             skip stream-transcribe smoke
   --run-webrtc-loopback-smoke  run one local full-duplex WebRTC media turn
@@ -56,8 +61,9 @@ Options:
 Environment aliases:
   VOICE_BIN, HERMES_CONFIG, SIDECAR_URL, TEXT
   SKIP_HERMES_CONFIG=1, SKIP_HERMES_TTS_SMOKE=1, SKIP_SIDECAR=1
-  SKIP_SYSTEMD=1, SKIP_CLI_MCP=1, SKIP_DAEMON=1, SKIP_STT_SMOKE=1
-  RUN_WEBRTC_LOOPBACK_SMOKE=1, VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
+  SKIP_HERMES_GATEWAY=1, SKIP_SYSTEMD=1, SKIP_CLI_MCP=1
+  SKIP_DAEMON=1, SKIP_STT_SMOKE=1, RUN_WEBRTC_LOOPBACK_SMOKE=1
+  VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
 EOF
 }
 
@@ -110,6 +116,11 @@ while [[ $# -gt 0 ]]; do
       hermes_config="$2"
       shift 2
       ;;
+    --hermes-home)
+      [[ $# -ge 2 ]] || fail "--hermes-home requires a path"
+      hermes_home="$2"
+      shift 2
+      ;;
     --sidecar-url)
       [[ $# -ge 2 ]] || fail "--sidecar-url requires a URL"
       sidecar_url="$2"
@@ -126,6 +137,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-hermes-tts-smoke)
       skip_hermes_tts_smoke=1
+      shift
+      ;;
+    --skip-hermes-gateway)
+      skip_hermes_gateway=1
       shift
       ;;
     --skip-sidecar)
@@ -192,6 +207,9 @@ fi
 if [[ "$skip_cli_mcp" != "1" ]]; then
   require_executable "$cli_mcp_surface_verify_script" "CLI/MCP surface verifier"
 fi
+if [[ "$skip_hermes_gateway" != "1" && "$skip_systemd" != "1" ]]; then
+  require_executable "$hermes_gateway_verify_script" "Hermes gateway service verifier"
+fi
 if [[ "$skip_sidecar" != "1" ]]; then
   require_executable "$sidecar_service_verify_script" "WebRTC sidecar verifier"
 fi
@@ -218,6 +236,19 @@ if [[ "$skip_hermes_config" != "1" ]]; then
   hermes_status="checked"
 else
   hermes_status="skipped"
+fi
+
+if [[ "$skip_hermes_gateway" != "1" && "$skip_systemd" != "1" ]]; then
+  gateway_args=(
+    "$hermes_gateway_verify_script"
+    --voice-bin "$voice_bin"
+    --hermes-home "$hermes_home"
+    --sidecar-url "$sidecar_url"
+  )
+  run_step "Hermes gateway voice stream service" "${gateway_args[@]}"
+  hermes_gateway_status="checked"
+else
+  hermes_gateway_status="skipped"
 fi
 
 if [[ "$skip_cli_mcp" != "1" ]]; then
@@ -282,6 +313,7 @@ echo
 echo "ok: local Hermes voice stack verifier passed"
 echo "voice_bin=$voice_bin"
 echo "hermes_config=$hermes_status"
+echo "hermes_gateway=$hermes_gateway_status"
 echo "cli_mcp=$cli_mcp_status"
 echo "whatsapp_contract=checked"
 echo "sidecar_service=$sidecar_status"

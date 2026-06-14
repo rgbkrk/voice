@@ -76,6 +76,19 @@ scripts/install_webrtc_sidecar_service.sh --uninstall
 scripts/verify_webrtc_sidecar_service.py --skip-systemd
 ```
 
+If Hermes is installed locally for WhatsApp, verify the running gateway service
+is using the same voice stream contract and sidecar URL:
+
+```bash
+scripts/verify_hermes_gateway_service.py --voice-bin "$(command -v voice)"
+scripts/verify_local_hermes_voice_stack.sh --voice-bin "$(command -v voice)"
+```
+
+The aggregate stack verifier checks the Hermes config, the running
+`hermes-gateway.service` drop-in, CLI/MCP daemon behavior, Ogg/Opus voice-note
+output, raw stream frames, stream STT, and the WebRTC sidecar service. Use
+`--skip-systemd` only for non-service CI-style runs.
+
 ---
 
 The sections below document the manual setup steps performed by

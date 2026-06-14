@@ -101,6 +101,18 @@ Inspect the returned file with `ffprobe`; a voice-compatible WhatsApp path
 should return `.ogg` / Opus audio and should not need another Hermes-side
 conversion.
 
+On a Linux host that has the Hermes gateway installed as a user service, also
+check the live service drop-in:
+
+```bash
+VOICE_BIN=/path/to/voice scripts/verify_hermes_gateway_service.py
+VOICE_BIN=/path/to/voice scripts/verify_local_hermes_voice_stack.sh
+```
+
+The gateway verifier confirms `hermes-gateway.service` is active, points at the
+expected Hermes home, exports `WHATSAPP_CLOUD_CALLING_SIDECAR_URL`, and uses a
+`voice stream --raw-output -` command for the WhatsApp Calling sidecar path.
+
 ## CLI Smoke Test
 
 Use `voice stream` to inspect the streaming event flow:

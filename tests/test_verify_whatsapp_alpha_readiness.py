@@ -356,7 +356,11 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "--check-whatsapp-cloud-api",
             calling_handoff["verify_command"],
         )
-        self.assertIn("--require-complete", calling_handoff["complete_verification_command"])
+        complete_command = calling_handoff["complete_verification_command"]
+        self.assertIn("--require-whatsapp-cloud", complete_command)
+        self.assertIn("--require-whatsapp-calling", complete_command)
+        self.assertIn("--check-whatsapp-cloud-api", complete_command)
+        self.assertIn("--require-complete", complete_command)
         self.assertEqual(len(calling_handoff["steps"]), 5)
         summary = payload["readiness_summary"]
         self.assertEqual(summary["status"], "local_ready_pending_gates")
@@ -419,6 +423,14 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         )
         self.assertIn(
             "--require-complete",
+            meta_action["complete_verification_command"],
+        )
+        self.assertIn(
+            "--require-whatsapp-calling",
+            meta_action["complete_verification_command"],
+        )
+        self.assertIn(
+            "--check-whatsapp-cloud-api",
             meta_action["complete_verification_command"],
         )
 
@@ -616,6 +628,9 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "whatsapp_calling_complete_command=scripts/verify_whatsapp_alpha_readiness.py",
             result.stdout,
         )
+        self.assertIn("--require-whatsapp-cloud", result.stdout)
+        self.assertIn("--require-whatsapp-calling", result.stdout)
+        self.assertIn("--check-whatsapp-cloud-api", result.stdout)
         self.assertIn("--require-complete", result.stdout)
         self.assertIn(
             "whatsapp_calling_step[1]=Complete WhatsApp Cloud setup first",

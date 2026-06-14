@@ -184,6 +184,9 @@ and Calling setup are all expected to pass:
 scripts/verify_whatsapp_alpha_readiness.py \
   --hermes-home ~/.hermes \
   --profile attended-cache-receive \
+  --require-whatsapp-cloud \
+  --require-whatsapp-calling \
+  --check-whatsapp-cloud-api \
   --require-complete
 ```
 

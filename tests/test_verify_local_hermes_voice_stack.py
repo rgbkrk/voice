@@ -977,6 +977,9 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                               "/home/ubuntu/.hermes",
                               "--profile",
                               "attended-cache-receive",
+                              "--require-whatsapp-cloud",
+                              "--require-whatsapp-calling",
+                              "--check-whatsapp-cloud-api",
                               "--require-complete"
                             ]
                           }}
@@ -1075,6 +1078,8 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             "whatsapp_alpha_json_calling_complete_command="
             "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
             "/home/ubuntu/.hermes --profile attended-cache-receive "
+            "--require-whatsapp-cloud --require-whatsapp-calling "
+            "--check-whatsapp-cloud-api "
             "--require-complete",
             result.stdout,
         )
@@ -1257,6 +1262,9 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                               "/home/ubuntu/.hermes",
                               "--profile",
                               "attended-cache-receive",
+                              "--require-whatsapp-cloud",
+                              "--require-whatsapp-calling",
+                              "--check-whatsapp-cloud-api",
                               "--require-complete"
                             ]
                           }}

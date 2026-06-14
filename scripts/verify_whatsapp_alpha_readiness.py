@@ -732,6 +732,9 @@ def calling_setup_handoff(
         str(hermes_home),
         "--profile",
         "attended-cache-receive",
+        "--require-whatsapp-cloud",
+        "--require-whatsapp-calling",
+        "--check-whatsapp-cloud-api",
         "--require-complete",
     ]
     steps = [] if ready else [

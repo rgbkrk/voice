@@ -40,6 +40,8 @@ def audio_contract():
         frame_ms=20,
         encoding="pcm_s16le",
         frame_bytes=1_920,
+        default_drain_bytes=96_000,
+        max_drain_wait_ms=5_000,
     )
 
 
@@ -74,6 +76,16 @@ def test_validate_drain_shape_requires_whole_webrtc_frames():
         assert "non-negative" in str(exc)
     else:
         raise AssertionError("expected negative wait_ms to be rejected")
+
+
+def test_drain_defaults_use_contract_window_and_cap_wait():
+    drain = load_drain()
+    contract = audio_contract()
+
+    assert drain.default_max_bytes(contract, None) == 96_000
+    assert drain.default_max_bytes(contract, 1_920) == 1_920
+    assert drain.capped_wait_ms(contract, 250) == 250
+    assert drain.capped_wait_ms(contract, 10_000) == 5_000
 
 
 def test_decode_audio_response_validates_returned_bytes():

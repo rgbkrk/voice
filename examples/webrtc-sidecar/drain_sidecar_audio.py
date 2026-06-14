@@ -43,6 +43,18 @@ def validate_drain_shape(contract: AudioContract, max_bytes: int, wait_ms: int) 
         raise ValueError("wait_ms must be non-negative")
 
 
+def default_max_bytes(contract: AudioContract, configured_max_bytes: int | None) -> int:
+    if configured_max_bytes is not None:
+        return configured_max_bytes
+    return contract.default_drain_bytes
+
+
+def capped_wait_ms(contract: AudioContract, wait_ms: int) -> int:
+    if contract.max_drain_wait_ms <= 0:
+        return wait_ms
+    return min(wait_ms, contract.max_drain_wait_ms)
+
+
 def decode_audio_response(body: dict[str, object]) -> bytes:
     payload = str(body.get("pcm_s16le_base64") or "")
     try:
@@ -104,12 +116,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     contract = load_audio_contract()
-    max_bytes = args.max_bytes or contract.frame_bytes
-    validate_drain_shape(contract, max_bytes, args.wait_ms)
+    max_bytes = default_max_bytes(contract, args.max_bytes)
+    wait_ms = capped_wait_ms(contract, args.wait_ms)
+    validate_drain_shape(contract, max_bytes, wait_ms)
     if args.duration_ms is not None and args.duration_ms < 0:
         raise ValueError("duration_ms must be non-negative")
 
-    url = drain_url(args.sidecar_url, args.call_id, max_bytes, args.wait_ms)
+    url = drain_url(args.sidecar_url, args.call_id, max_bytes, wait_ms)
     deadline = (
         time.monotonic() + (args.duration_ms / 1_000)
         if args.duration_ms is not None

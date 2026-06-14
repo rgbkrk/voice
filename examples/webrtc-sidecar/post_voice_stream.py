@@ -34,6 +34,8 @@ class AudioContract:
     frame_ms: int
     encoding: str
     frame_bytes: int
+    default_drain_bytes: int = 0
+    max_drain_wait_ms: int = 0
 
 
 def load_audio_contract(path: Path = CONTRACT_PATH) -> AudioContract:
@@ -50,6 +52,10 @@ def load_audio_contract(path: Path = CONTRACT_PATH) -> AudioContract:
         frame_ms=int(audio["frame_ms"]),
         encoding=str(audio["encoding"]),
         frame_bytes=int(audio["frame_bytes"]),
+        default_drain_bytes=int(
+            audio.get("default_drain_bytes") or audio["frame_bytes"]
+        ),
+        max_drain_wait_ms=int(audio.get("max_drain_wait_ms") or 0),
     )
 
     if parsed.sample_rate <= 0:
@@ -62,6 +68,12 @@ def load_audio_contract(path: Path = CONTRACT_PATH) -> AudioContract:
         raise ValueError("sidecar currently expects pcm_s16le audio")
     if parsed.frame_bytes <= 0 or parsed.frame_bytes % 2 != 0:
         raise ValueError("contract frame_bytes must contain whole s16le samples")
+    if parsed.default_drain_bytes <= 0:
+        raise ValueError("contract default_drain_bytes must be positive")
+    if parsed.default_drain_bytes % parsed.frame_bytes != 0:
+        raise ValueError("contract default_drain_bytes must align to WebRTC frames")
+    if parsed.max_drain_wait_ms < 0:
+        raise ValueError("contract max_drain_wait_ms must be non-negative")
 
     return parsed
 

@@ -121,7 +121,7 @@ curl -sS http://127.0.0.1:8787/calls/local-test
 Drain decoded inbound PCM for a live session:
 
 ```bash
-curl -sS 'http://127.0.0.1:8787/calls/local-test/audio?max_bytes=1920&wait_ms=500'
+curl -sS 'http://127.0.0.1:8787/calls/local-test/audio?wait_ms=500'
 ```
 
 For raw PCM output that can be piped into STT tooling:
@@ -132,6 +132,10 @@ python examples/webrtc-sidecar/drain_sidecar_audio.py local-test \
   --stop-after-empty 3 \
   --output /tmp/voice-webrtc-in.s16le
 ```
+
+By default the drain helper requests the contract's `default_drain_bytes`
+window, currently 96000 bytes or about one second of mono 48 kHz s16le audio.
+Pass `--max-bytes 1920` for exact frame-by-frame polling.
 
 Queue outbound PCM for a live session:
 

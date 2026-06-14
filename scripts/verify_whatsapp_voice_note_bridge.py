@@ -302,6 +302,17 @@ def get_json(url: str, *, timeout: float) -> Any:
     return json.loads(response_body.decode("utf-8"))
 
 
+def summarize_inbound_event(event: dict[str, Any]) -> dict[str, Any]:
+    media_urls = event.get("mediaUrls")
+    return {
+        "chat_id_present": bool(event.get("chatId")),
+        "sender_id_present": bool(event.get("senderId")),
+        "hasMedia": event.get("hasMedia"),
+        "mediaType": event.get("mediaType"),
+        "media_url_count": len(media_urls) if isinstance(media_urls, list) else 0,
+    }
+
+
 def poll_inbound_audio(
     bridge_url: str,
     *,
@@ -319,15 +330,7 @@ def poll_inbound_audio(
             for event in payload:
                 if not isinstance(event, dict):
                     continue
-                seen.append(
-                    {
-                        "chatId": event.get("chatId"),
-                        "senderId": event.get("senderId"),
-                        "hasMedia": event.get("hasMedia"),
-                        "mediaType": event.get("mediaType"),
-                        "mediaUrls": event.get("mediaUrls"),
-                    }
-                )
+                seen.append(summarize_inbound_event(event))
                 if event.get("hasMedia") and event.get("mediaType") in {"audio", "ptt"}:
                     audio_events.append(seen[-1])
         if audio_events:

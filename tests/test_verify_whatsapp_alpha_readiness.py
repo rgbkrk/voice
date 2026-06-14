@@ -748,7 +748,15 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "checks": {
                 "inbound_audio": {
                     "drains_bridge_messages": True,
-                    "audio_events": [{"mediaType": "ptt"}],
+                    "audio_events": [
+                        {
+                            "chat_id_present": True,
+                            "sender_id_present": True,
+                            "hasMedia": True,
+                            "mediaType": "ptt",
+                            "media_url_count": 1,
+                        }
+                    ],
                 }
             },
             "failures": [],
@@ -899,7 +907,15 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "checks": {
                 "inbound_audio": {
                     "drains_bridge_messages": True,
-                    "audio_events": [{"mediaType": "ptt"}],
+                    "audio_events": [
+                        {
+                            "chat_id_present": True,
+                            "sender_id_present": True,
+                            "hasMedia": True,
+                            "mediaType": "ptt",
+                            "media_url_count": 1,
+                        }
+                    ],
                 }
             },
             "failures": [],
@@ -927,6 +943,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertTrue(evidence["drains_bridge_messages"])
         self.assertEqual(evidence["audio_event_count"], 1)
         self.assertEqual(evidence["media_types"], ["ptt"])
+        self.assertEqual(evidence["media_url_count"], 1)
 
     def test_readiness_summary_is_complete_when_all_gates_are_verified(self):
         inbound_cache_payload = {

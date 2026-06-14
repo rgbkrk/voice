@@ -2,6 +2,7 @@
 
 import argparse
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -186,6 +187,15 @@ class WhatsAppVoiceNoteBridgeSmokeTests(unittest.TestCase):
         self.assertTrue(inbound["drains_bridge_messages"])
         self.assertEqual(len(inbound["seen_events"]), 1)
         self.assertEqual(len(inbound["audio_events"]), 1)
+        event = inbound["audio_events"][0]
+        self.assertTrue(event["chat_id_present"])
+        self.assertTrue(event["sender_id_present"])
+        self.assertEqual(event["mediaType"], "ptt")
+        self.assertEqual(event["media_url_count"], 1)
+        serialized = json.dumps(inbound)
+        self.assertNotIn("20530681934008@lid", serialized)
+        self.assertNotIn("13236478455@s.whatsapp.net", serialized)
+        self.assertNotIn("aud_test.ogg", serialized)
 
 
 if __name__ == "__main__":

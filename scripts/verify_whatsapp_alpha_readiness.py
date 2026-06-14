@@ -488,6 +488,11 @@ def bridge_audio_event_evidence(inbound: dict[str, Any]) -> dict[str, Any]:
         media_urls = event.get("mediaUrls")
         if isinstance(media_urls, list):
             media_url_count += len(media_urls)
+        else:
+            try:
+                media_url_count += int(event.get("media_url_count") or 0)
+            except (TypeError, ValueError):
+                pass
     return {
         "kind": "bridge_messages",
         "fresh": bool(audio_events),

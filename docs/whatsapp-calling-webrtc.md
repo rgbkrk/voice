@@ -138,7 +138,9 @@ window. When the attended receive gate is verified, the same object includes a
 compact `evidence` summary. The non-draining cache path records fresh-file
 count, codec, sample rate, audio duration, frame count, token count, and
 redacted transcript length. The draining bridge fallback records audio-event
-count, observed media types, and whether `/messages` was drained.
+count, observed media types, media URL count, and whether `/messages` was
+drained; chat IDs, sender IDs, and media URL paths are reduced to presence or
+count fields.
 
 For the external Meta gates, the JSON report includes safe setup handoffs under
 `pending_gates.whatsapp_cloud.setup_handoff` and

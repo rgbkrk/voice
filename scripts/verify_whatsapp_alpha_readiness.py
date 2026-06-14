@@ -374,17 +374,21 @@ def attended_receive_gate(
         "component": None,
         "cached_receive_verified": cached_receive_verified,
         "requires_operator": True,
-        "drains_bridge_messages": True,
+        "drains_bridge_messages": False,
         "reason": "fresh WhatsApp inbound voice-note receive has not been run",
         "command": [
             "scripts/verify_whatsapp_alpha_readiness.py",
             "--hermes-home",
             str(hermes_home),
-            "--send-voice-note",
-            "--wait-inbound-seconds",
-            "60",
-            "--require-inbound-audio",
-            "--drain-bridge-messages",
+            "--profile",
+            "attended-cache-receive",
+        ],
+        "fallback_draining_command": [
+            "scripts/verify_whatsapp_alpha_readiness.py",
+            "--hermes-home",
+            str(hermes_home),
+            "--profile",
+            "attended-send-receive",
         ],
     }
 

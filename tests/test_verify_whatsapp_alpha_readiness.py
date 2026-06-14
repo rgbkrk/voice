@@ -156,6 +156,15 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             gates["attended_fresh_receive"]["status"],
             "pending_attended",
         )
+        self.assertFalse(gates["attended_fresh_receive"]["drains_bridge_messages"])
+        self.assertIn(
+            "attended-cache-receive",
+            gates["attended_fresh_receive"]["command"],
+        )
+        self.assertIn(
+            "attended-send-receive",
+            gates["attended_fresh_receive"]["fallback_draining_command"],
+        )
         self.assertEqual(
             gates["whatsapp_cloud_calling"]["status"],
             "external_setup_required",

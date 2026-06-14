@@ -134,7 +134,11 @@ part of unattended local readiness: fresh attended inbound receive, WhatsApp
 Cloud API credentials, and WhatsApp Cloud Calling. A default local pass can
 still report `pending_gates.attended_fresh_receive.status=pending_attended`
 until someone sends a fresh WhatsApp voice note during the guarded receive
-window.
+window. When the attended receive gate is verified, the same object includes a
+compact `evidence` summary. The non-draining cache path records fresh-file
+count, codec, sample rate, audio duration, frame count, token count, and
+redacted transcript length. The draining bridge fallback records audio-event
+count, observed media types, and whether `/messages` was drained.
 
 For the external Meta gates, the JSON report includes safe setup handoffs under
 `pending_gates.whatsapp_cloud.setup_handoff` and

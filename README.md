@@ -457,7 +457,9 @@ agent should consume the same structured `readiness_summary.next_actions`
 without rerunning the full stack gate. The stack verifier also echoes compact
 `whatsapp_alpha_json_*` summary lines after saving the artifact, including
 readiness status, completion state, next actions, attended receive status, and
-Cloud/Calling missing or invalid key groups.
+Cloud/Calling missing or invalid key groups. A verified attended receive also
+stores compact redacted proof under
+`pending_gates.attended_fresh_receive.evidence`.
 
 When the WebRTC Python dependencies are installed, add
 `--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`

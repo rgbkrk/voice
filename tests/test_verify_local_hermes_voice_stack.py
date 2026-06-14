@@ -596,18 +596,35 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                         "status": "local_ready_pending_gates",
                         "complete": false,
                         "local_checks_passed": true,
-                        "attended_fresh_receive_verified": false,
+                        "attended_fresh_receive_verified": true,
                         "external_meta_setup_required": true,
                         "operator_action_required": true,
                         "next_actions": [
-                          {{"id": "run_attended_fresh_receive"}},
                           {{"id": "configure_whatsapp_cloud_calling"}}
                         ]
                       }},
                       "pending_gates": {{
                         "attended_fresh_receive": {{
-                          "status": "not_verified",
-                          "cached_receive_verified": true
+                          "status": "verified",
+                          "cached_receive_verified": true,
+                          "evidence": {{
+                            "kind": "audio_cache",
+                            "fresh": true,
+                            "fresh_count": 1,
+                            "drains_bridge_messages": false,
+                            "audio": [
+                              {{
+                                "codec": "opus",
+                                "stt": {{
+                                  "frames": 210,
+                                  "audio_duration_ms": 4200,
+                                  "tokens": 6,
+                                  "text_redacted": true,
+                                  "text_chars": 42
+                                }}
+                              }}
+                            ]
+                          }}
                         }},
                         "whatsapp_cloud": {{
                           "status": "external_setup_required",
@@ -678,18 +695,22 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("whatsapp_alpha_json_profile=cached-receive", result.stdout)
         self.assertIn(
             "whatsapp_alpha_json_readiness=local_ready_pending_gates complete=False "
-            "local_checks_passed=True attended_fresh_receive_verified=False "
+            "local_checks_passed=True attended_fresh_receive_verified=True "
             "external_meta_setup_required=True operator_action_required=True",
             result.stdout,
         )
         self.assertIn(
-            "whatsapp_alpha_json_next_actions=run_attended_fresh_receive,"
-            "configure_whatsapp_cloud_calling",
+            "whatsapp_alpha_json_next_actions=configure_whatsapp_cloud_calling",
             result.stdout,
         )
         self.assertIn(
-            "whatsapp_alpha_json_attended_fresh_receive=not_verified "
+            "whatsapp_alpha_json_attended_fresh_receive=verified "
             "cached_receive_verified=True",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_attended_evidence=kind=audio_cache fresh=True "
+            "drains_messages=False audio_events=1 codec=opus text_chars=42",
             result.stdout,
         )
         self.assertIn(

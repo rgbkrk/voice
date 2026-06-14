@@ -210,6 +210,20 @@ if attended:
         f"{attended.get('status')} "
         f"cached_receive_verified={attended.get('cached_receive_verified')}"
     )
+    evidence = attended.get("evidence") or {}
+    if evidence:
+        first_audio = (evidence.get("audio") or [{}])[0]
+        stt = first_audio.get("stt") or {}
+        print(
+            "whatsapp_alpha_json_attended_evidence="
+            f"kind={evidence.get('kind')} "
+            f"fresh={evidence.get('fresh')} "
+            f"drains_messages={evidence.get('drains_bridge_messages')} "
+            "audio_events="
+            f"{evidence.get('audio_event_count', evidence.get('fresh_count'))} "
+            f"codec={first_audio.get('codec') or '<unknown>'} "
+            f"text_chars={stt.get('text_chars', 0)}"
+        )
 if cloud:
     print(
         "whatsapp_alpha_json_cloud="

@@ -424,6 +424,82 @@ def cached_inbound_audio_verified(components: list[dict[str, Any]]) -> bool:
     return False
 
 
+def stt_evidence(stt: dict[str, Any]) -> dict[str, Any]:
+    terminal = stt.get("terminal_event") if isinstance(stt, dict) else None
+    terminal = terminal if isinstance(terminal, dict) else {}
+    data = terminal.get("data") if isinstance(terminal.get("data"), dict) else {}
+    return {
+        "terminal_event": terminal.get("event"),
+        "frames": data.get("frames"),
+        "audio_duration_ms": data.get("audio_duration_ms"),
+        "tokens": data.get("tokens"),
+        "text_redacted": bool(data.get("text_redacted")),
+        "text_chars": data.get("text_chars"),
+    }
+
+
+def cache_audio_evidence(checks: dict[str, Any]) -> dict[str, Any]:
+    fresh_watch = checks.get("fresh_watch") if isinstance(checks, dict) else {}
+    fresh_watch = fresh_watch if isinstance(fresh_watch, dict) else {}
+    evidence: dict[str, Any] = {
+        "kind": "audio_cache",
+        "fresh": bool((fresh_watch.get("fresh_files") or [])),
+        "fresh_count": fresh_watch.get("fresh_count"),
+        "wait_seconds": fresh_watch.get("wait_seconds"),
+        "drains_bridge_messages": bool(fresh_watch.get("drains_bridge_messages")),
+        "selected_files_count": len(checks.get("selected_files") or []),
+        "audio": [],
+    }
+    for item in checks.get("audio") or []:
+        if not isinstance(item, dict):
+            continue
+        probe = item.get("probe") if isinstance(item.get("probe"), dict) else {}
+        ffprobe = probe.get("ffprobe") if isinstance(probe.get("ffprobe"), dict) else {}
+        stream = ffprobe.get("stream") if isinstance(ffprobe.get("stream"), dict) else {}
+        evidence["audio"].append(
+            {
+                "path": probe.get("path") or item.get("path"),
+                "name": probe.get("name"),
+                "size_bytes": probe.get("size_bytes"),
+                "magic": probe.get("magic"),
+                "codec": stream.get("codec_name"),
+                "sample_rate": stream.get("sample_rate"),
+                "channels": stream.get("channels"),
+                "duration": stream.get("duration"),
+                "stt": stt_evidence(item.get("stt") or {}),
+            }
+        )
+    return evidence
+
+
+def bridge_audio_event_evidence(inbound: dict[str, Any]) -> dict[str, Any]:
+    audio_events = [
+        event for event in (inbound.get("audio_events") or []) if isinstance(event, dict)
+    ]
+    media_types = sorted(
+        {
+            str(event.get("mediaType"))
+            for event in audio_events
+            if event.get("mediaType")
+        }
+    )
+    media_url_count = 0
+    for event in audio_events:
+        media_urls = event.get("mediaUrls")
+        if isinstance(media_urls, list):
+            media_url_count += len(media_urls)
+    return {
+        "kind": "bridge_messages",
+        "fresh": bool(audio_events),
+        "audio_event_count": len(audio_events),
+        "seen_event_count": len(inbound.get("seen_events") or []),
+        "wait_seconds": inbound.get("wait_seconds"),
+        "drains_bridge_messages": bool(inbound.get("drains_bridge_messages")),
+        "media_types": media_types,
+        "media_url_count": media_url_count,
+    }
+
+
 def attended_receive_gate(
     components: list[dict[str, Any]],
     *,
@@ -499,6 +575,7 @@ def attended_receive_gate(
             gate["requires_operator"] = False
             gate["reason"] = "fresh WhatsApp inbound audio event observed"
             gate["audio_events"] = len(audio_events)
+            gate["evidence"] = bridge_audio_event_evidence(inbound)
         elif item.get("success"):
             gate["status"] = "not_verified"
             gate["reason"] = "receive polling completed without fresh audio-event evidence"
@@ -523,6 +600,7 @@ def attended_receive_gate(
                 gate["requires_operator"] = False
                 gate["reason"] = "fresh WhatsApp inbound audio cache artifact observed"
                 gate["fresh_files"] = len(fresh_files)
+                gate["evidence"] = cache_audio_evidence(checks)
             elif item.get("success"):
                 gate["status"] = "not_verified"
                 gate["reason"] = "audio cache watch completed without fresh audio evidence"
@@ -1174,6 +1252,20 @@ def human_summary(result: dict[str, Any]) -> None:
             f"{attended.get('status')} cached_receive_verified="
             f"{attended.get('cached_receive_verified')}"
         )
+        evidence = attended.get("evidence") or {}
+        if evidence:
+            first_audio = (evidence.get("audio") or [{}])[0]
+            stt = first_audio.get("stt") or {}
+            print(
+                "attended_fresh_receive_evidence="
+                f"kind={evidence.get('kind')} "
+                f"fresh={evidence.get('fresh')} "
+                f"drains_messages={evidence.get('drains_bridge_messages')} "
+                "audio_events="
+                f"{evidence.get('audio_event_count', evidence.get('fresh_count'))} "
+                f"codec={first_audio.get('codec') or '<unknown>'} "
+                f"text_chars={stt.get('text_chars', 0)}"
+            )
         if attended.get("status") != "verified":
             command = attended.get("command") or []
             fallback = attended.get("fallback_draining_command") or []

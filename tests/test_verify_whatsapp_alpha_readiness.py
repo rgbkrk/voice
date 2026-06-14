@@ -776,7 +776,37 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "success": True,
             "checks": {
                 "selected_files": ["/tmp/aud_fresh.ogg"],
-                "audio": [{"path": "/tmp/aud_fresh.ogg"}],
+                "audio": [
+                    {
+                        "path": "/tmp/aud_fresh.ogg",
+                        "probe": {
+                            "path": "/tmp/aud_fresh.ogg",
+                            "name": "aud_fresh.ogg",
+                            "size_bytes": 12345,
+                            "magic": "OggS",
+                            "ffprobe": {
+                                "stream": {
+                                    "codec_name": "opus",
+                                    "sample_rate": "48000",
+                                    "channels": 1,
+                                    "duration": "4.2",
+                                },
+                            },
+                        },
+                        "stt": {
+                            "terminal_event": {
+                                "event": "stt.transcribed",
+                                "data": {
+                                    "frames": 210,
+                                    "audio_duration_ms": 4200,
+                                    "tokens": 6,
+                                    "text_redacted": True,
+                                    "text_chars": 42,
+                                },
+                            },
+                        },
+                    },
+                ],
                 "fresh_watch": {
                     "drains_bridge_messages": False,
                     "fresh_files": ["/tmp/aud_fresh.ogg"],
@@ -807,6 +837,17 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertEqual(gate["component"], "whatsapp_inbound_cache_fresh_stt")
         self.assertFalse(gate["drains_bridge_messages"])
         self.assertFalse(gate["requires_operator"])
+        evidence = gate["evidence"]
+        self.assertEqual(evidence["kind"], "audio_cache")
+        self.assertTrue(evidence["fresh"])
+        self.assertFalse(evidence["drains_bridge_messages"])
+        self.assertEqual(evidence["fresh_count"], 1)
+        self.assertEqual(evidence["audio"][0]["name"], "aud_fresh.ogg")
+        self.assertEqual(evidence["audio"][0]["codec"], "opus")
+        self.assertEqual(evidence["audio"][0]["stt"]["frames"], 210)
+        self.assertEqual(evidence["audio"][0]["stt"]["text_chars"], 42)
+        self.assertTrue(evidence["audio"][0]["stt"]["text_redacted"])
+        self.assertNotIn("hello from whatsapp", json.dumps(evidence))
         summary = payload["readiness_summary"]
         self.assertFalse(summary["complete"])
         self.assertTrue(summary["attended_fresh_receive_verified"])
@@ -880,6 +921,12 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertEqual(gate["component"], "whatsapp_voice_note_send_receive")
         self.assertEqual(gate["audio_events"], 1)
         self.assertFalse(gate["requires_operator"])
+        evidence = gate["evidence"]
+        self.assertEqual(evidence["kind"], "bridge_messages")
+        self.assertTrue(evidence["fresh"])
+        self.assertTrue(evidence["drains_bridge_messages"])
+        self.assertEqual(evidence["audio_event_count"], 1)
+        self.assertEqual(evidence["media_types"], ["ptt"])
 
     def test_readiness_summary_is_complete_when_all_gates_are_verified(self):
         inbound_cache_payload = {

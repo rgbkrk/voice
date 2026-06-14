@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import BinaryIO
 from urllib import error, parse, request
 
@@ -54,6 +55,35 @@ class SidecarAudioPostError(RuntimeError):
         super().__init__(
             f"sidecar rejected audio frame ({status_code}): {body}"
         )
+
+
+class FramePacer:
+    """Pace fixed-size PCM frames at the sidecar audio contract interval."""
+
+    def __init__(
+        self,
+        frame_ms: int,
+        *,
+        monotonic=time.monotonic,
+        sleep=time.sleep,
+    ) -> None:
+        if frame_ms <= 0:
+            raise ValueError("frame_ms must be positive")
+        self.interval_s = frame_ms / 1_000
+        self.monotonic = monotonic
+        self.sleep = sleep
+        self.next_frame_at: float | None = None
+
+    def wait(self) -> None:
+        now = self.monotonic()
+        if self.next_frame_at is None:
+            self.next_frame_at = now + self.interval_s
+            return
+
+        if now < self.next_frame_at:
+            self.sleep(self.next_frame_at - now)
+            now = self.monotonic()
+        self.next_frame_at = max(self.next_frame_at, now) + self.interval_s
 
 
 def load_audio_contract(
@@ -359,8 +389,10 @@ def main() -> int:
     frame_count = 0
     byte_count = 0
     post_error: Exception | None = None
+    pacer = FramePacer(contract.frame_ms)
     try:
         for frame in iter_pcm_frames(process.stdout, contract.frame_bytes):
+            pacer.wait()
             try:
                 post_audio_frame(url, contract, frame, args.timeout)
             except Exception as exc:

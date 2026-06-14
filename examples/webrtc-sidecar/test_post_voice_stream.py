@@ -170,6 +170,59 @@ def test_iter_pcm_frames_reads_exact_frames_and_pads_final():
     assert frames == [b"aaaaa", b"bb\x00\x00\x00"]
 
 
+def test_frame_pacer_sends_first_frame_immediately_then_waits():
+    bridge = load_bridge()
+    now = [100.0]
+    sleeps: list[float] = []
+
+    def monotonic():
+        return now[0]
+
+    def sleep(delay: float):
+        sleeps.append(delay)
+        now[0] += delay
+
+    pacer = bridge.FramePacer(20, monotonic=monotonic, sleep=sleep)
+
+    pacer.wait()
+    pacer.wait()
+
+    assert len(sleeps) == 1
+    assert abs(sleeps[0] - 0.02) < 0.000001
+
+
+def test_frame_pacer_catches_up_after_slow_post_without_extra_sleep():
+    bridge = load_bridge()
+    now = [100.0]
+    sleeps: list[float] = []
+
+    def monotonic():
+        return now[0]
+
+    def sleep(delay: float):
+        sleeps.append(delay)
+        now[0] += delay
+
+    pacer = bridge.FramePacer(20, monotonic=monotonic, sleep=sleep)
+
+    pacer.wait()
+    now[0] += 0.050
+    pacer.wait()
+
+    assert sleeps == []
+
+
+def test_frame_pacer_rejects_invalid_frame_duration():
+    bridge = load_bridge()
+
+    try:
+        bridge.FramePacer(0)
+    except ValueError as exc:
+        assert "frame_ms" in str(exc)
+    else:
+        raise AssertionError("expected invalid frame duration to be rejected")
+
+
 def test_build_audio_payload_uses_contract_shape():
     bridge = load_bridge()
     contract = bridge.AudioContract(

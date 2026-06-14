@@ -51,9 +51,9 @@ DEFAULT_OUTBOUND_TEXT = "Hello from a full duplex WebRTC sidecar turn."
 DEFAULT_MAX_QUEUED_TX_MS = 1_000
 
 
-def queued_tx_ms(queued_tx_bytes: object, audio: dict[str, Any]) -> int:
+def pcm_bytes_to_ms(byte_count: object, audio: dict[str, Any]) -> int:
     try:
-        queued_bytes = int(queued_tx_bytes or 0)
+        pcm_bytes = int(byte_count or 0)
         sample_rate = int(audio.get("sample_rate") or 0)
         channels = int(audio.get("channels") or 0)
         bytes_per_sample = int(audio.get("bytes_per_sample") or 0)
@@ -61,9 +61,26 @@ def queued_tx_ms(queued_tx_bytes: object, audio: dict[str, Any]) -> int:
         return 0
 
     bytes_per_second = sample_rate * channels * bytes_per_sample
-    if queued_bytes <= 0 or bytes_per_second <= 0:
+    if pcm_bytes <= 0 or bytes_per_second <= 0:
         return 0
-    return round(queued_bytes * 1_000 / bytes_per_second)
+    return (pcm_bytes * 1_000 + bytes_per_second - 1) // bytes_per_second
+
+
+def queue_ms_from_status(
+    call: dict[str, Any],
+    field_prefix: str,
+    audio: dict[str, Any],
+) -> int:
+    reported_ms = call.get(f"{field_prefix}_ms")
+    if reported_ms is not None:
+        try:
+            parsed_ms = int(reported_ms)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"{field_prefix}_ms must be an integer") from exc
+        if parsed_ms < 0:
+            raise RuntimeError(f"{field_prefix}_ms must be non-negative")
+        return parsed_ms
+    return pcm_bytes_to_ms(call.get(f"{field_prefix}_bytes"), audio)
 
 
 def validate_queued_tx_budget(call: dict[str, Any], max_queued_tx_ms: int) -> int:
@@ -72,7 +89,7 @@ def validate_queued_tx_budget(call: dict[str, Any], max_queued_tx_ms: int) -> in
     audio = call.get("audio")
     if not isinstance(audio, dict):
         raise RuntimeError("full-duplex sidecar status did not include audio contract")
-    queued_ms = queued_tx_ms(call.get("queued_tx_bytes"), audio)
+    queued_ms = queue_ms_from_status(call, "queued_tx", audio)
     if queued_ms > max_queued_tx_ms:
         raise RuntimeError(
             "sidecar outbound audio queue exceeded budget "
@@ -189,7 +206,12 @@ async def verify_full_duplex_call(
                 "decoded_pcm": decoded_pcm,
                 "outbound_webrtc_bytes": outbound_webrtc_bytes,
                 "queued_tx_bytes": status.get("queued_tx_bytes"),
+                "queued_tx_ms": status.get("queued_tx_ms"),
                 "queued_rx_bytes": status.get("queued_rx_bytes"),
+                "queued_rx_ms": status.get("queued_rx_ms"),
+                "max_tx_queue_ms": status.get("max_tx_queue_ms"),
+                "max_rx_queue_bytes": status.get("max_rx_queue_bytes"),
+                "max_rx_queue_ms": status.get("max_rx_queue_ms"),
                 "audio": sidecar.audio_contract(),
             }
     finally:
@@ -246,6 +268,8 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             call,
             args.max_queued_tx_ms,
         )
+        audio = call["audio"]
+        queued_rx_ms_value = queue_ms_from_status(call, "queued_rx", audio)
 
         retained = not remove_workdir
         return {
@@ -262,8 +286,9 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "decoded_path": str(decoded_path) if retained else "<temporary>",
             "retained": retained,
             "max_queued_tx_ms": args.max_queued_tx_ms,
-            "queued_tx_ms": queued_tx_ms_value,
             **call,
+            "queued_tx_ms": queued_tx_ms_value,
+            "queued_rx_ms": queued_rx_ms_value,
             "stt": transcript_event["data"],
         }
     finally:

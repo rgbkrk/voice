@@ -301,4 +301,6 @@ local WebRTC audio drains through `voice stream-transcribe`, while
 WebRTC peer. It is the closest local smoke to a single WhatsApp call turn. It
 also fails when the sidecar still has more than one second of outbound audio
 queued at the end of the turn; use `--max-queued-tx-ms` to tighten or loosen
-that local latency budget.
+that local latency budget. When available, it uses the sidecar-reported
+`queued_tx_ms` field; older sidecars fall back to deriving the duration from
+`queued_tx_bytes` and the audio contract.

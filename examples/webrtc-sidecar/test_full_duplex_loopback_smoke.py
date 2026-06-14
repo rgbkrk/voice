@@ -76,7 +76,7 @@ def test_parse_args_rejects_negative_queue_budget(monkeypatch):
         raise AssertionError("expected negative queue budget to be rejected")
 
 
-def test_queued_tx_ms_converts_bytes_to_audio_duration():
+def test_pcm_bytes_to_ms_converts_bytes_to_ceiled_audio_duration():
     smoke = load_smoke()
     audio = {
         "sample_rate": 48_000,
@@ -84,14 +84,57 @@ def test_queued_tx_ms_converts_bytes_to_audio_duration():
         "bytes_per_sample": 2,
     }
 
-    assert smoke.queued_tx_ms(1_920, audio) == 20
-    assert smoke.queued_tx_ms(96_000, audio) == 1_000
+    assert smoke.pcm_bytes_to_ms(0, audio) == 0
+    assert smoke.pcm_bytes_to_ms(2, audio) == 1
+    assert smoke.pcm_bytes_to_ms(1_920, audio) == 20
+    assert smoke.pcm_bytes_to_ms(96_000, audio) == 1_000
+
+
+def test_queue_ms_from_status_prefers_sidecar_reported_duration():
+    smoke = load_smoke()
+    audio = {
+        "sample_rate": 48_000,
+        "channels": 1,
+        "bytes_per_sample": 2,
+    }
+    call = {
+        "queued_tx_bytes": 1_920,
+        "queued_tx_ms": 21,
+    }
+
+    assert smoke.queue_ms_from_status(call, "queued_tx", audio) == 21
+
+
+def test_queue_ms_from_status_falls_back_to_byte_duration():
+    smoke = load_smoke()
+    audio = {
+        "sample_rate": 48_000,
+        "channels": 1,
+        "bytes_per_sample": 2,
+    }
+    call = {
+        "queued_rx_bytes": 3_840,
+    }
+
+    assert smoke.queue_ms_from_status(call, "queued_rx", audio) == 40
+
+
+def test_queue_ms_from_status_rejects_invalid_sidecar_duration():
+    smoke = load_smoke()
+
+    try:
+        smoke.queue_ms_from_status({"queued_tx_ms": "soon"}, "queued_tx", {})
+    except RuntimeError as exc:
+        assert "queued_tx_ms must be an integer" in str(exc)
+    else:
+        raise AssertionError("expected invalid sidecar duration to be rejected")
 
 
 def test_validate_queued_tx_budget_returns_duration_when_within_budget():
     smoke = load_smoke()
     call = {
         "queued_tx_bytes": 1_920,
+        "queued_tx_ms": 20,
         "audio": {
             "sample_rate": 48_000,
             "channels": 1,

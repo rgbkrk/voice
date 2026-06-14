@@ -94,6 +94,9 @@ command: /path/to/voice stream-transcribe --quiet {input_path}
 
 Both forms are accepted by `scripts/verify_hermes_voice_config.py`; arbitrary
 wrappers are rejected so config drift is visible before restarting Hermes.
+Pass `--stt-audio ~/.hermes/audio_cache/aud_...ogg` to execute the configured
+STT command against a cached inbound WhatsApp voice note; the verifier only
+reports transcript size, not transcript text.
 
 Validate the command-provider shape locally before wiring or restarting
 Hermes:

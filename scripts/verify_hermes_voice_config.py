@@ -389,6 +389,65 @@ def run_tts_smoke(
         return probe_ogg_opus(output_path)
 
 
+def substitute_stt_command(
+    args: list[str],
+    *,
+    input_path: Path,
+    voice_bin: str | None,
+    override_first_token: bool,
+) -> list[str]:
+    resolved = []
+    for index, arg in enumerate(args):
+        if index == 0 and voice_bin is not None and override_first_token:
+            resolved.append(voice_bin)
+            continue
+        resolved.append(arg.replace("{input_path}", str(input_path)))
+    return resolved
+
+
+def run_stt_smoke(
+    provider_config: dict[str, Any],
+    command_args: list[str],
+    *,
+    command_kind: str,
+    voice_bin: str | None,
+    audio_path: Path,
+    timeout: float | None,
+) -> dict[str, int]:
+    if not audio_path.is_file():
+        raise ConfigError(f"STT smoke audio not found: {audio_path}")
+
+    command_timeout = timeout
+    if command_timeout is None:
+        command_timeout = float(provider_config.get("timeout") or 180)
+
+    args = substitute_stt_command(
+        command_args,
+        input_path=audio_path,
+        voice_bin=voice_bin,
+        override_first_token=command_kind == "direct_voice",
+    )
+    env = None
+    if voice_bin is not None and command_kind != "direct_voice":
+        env = {**os.environ, "VOICE_BIN": voice_bin}
+    completed = subprocess.run(
+        args,
+        check=True,
+        timeout=command_timeout,
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    transcript = completed.stdout.strip()
+    if not transcript:
+        raise ConfigError("STT smoke command produced an empty transcript")
+    return {
+        "chars": len(transcript),
+        "lines": len(transcript.splitlines()),
+    }
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Verify that ~/.hermes/config.yaml uses voice-native TTS/STT.",
@@ -409,6 +468,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="skip STT command-provider validation",
     )
     parser.add_argument(
+        "--stt-audio",
+        type=Path,
+        default=None,
+        help="execute the configured STT command against this audio file",
+    )
+    parser.add_argument(
+        "--stt-timeout",
+        type=float,
+        default=None,
+        help="timeout for --stt-audio execution; defaults to provider timeout",
+    )
+    parser.add_argument(
         "--text",
         default="Hermes voice-native configuration smoke test.",
         help="text to synthesize when running the TTS smoke",
@@ -426,8 +497,12 @@ def main(argv: list[str]) -> int:
     tts_provider, tts_config, tts_args, tts_command_kind = validate_tts(config)
     stt_provider = None
     stt_command_kind = None
+    stt_config = None
+    stt_args = None
+    if args.skip_stt_config and args.stt_audio is not None:
+        raise ConfigError("--stt-audio requires STT config validation")
     if not args.skip_stt_config:
-        stt_provider, _stt_config, _stt_args, stt_command_kind = validate_stt(config)
+        stt_provider, stt_config, stt_args, stt_command_kind = validate_stt(config)
 
     smoke = "skipped"
     probe = None
@@ -440,6 +515,21 @@ def main(argv: list[str]) -> int:
             text=args.text,
         )
         smoke = "checked"
+
+    stt_smoke = "skipped"
+    stt_probe = None
+    if args.stt_audio is not None:
+        if stt_config is None or stt_args is None or stt_command_kind is None:
+            raise ConfigError("--stt-audio requires STT config validation")
+        stt_probe = run_stt_smoke(
+            stt_config,
+            stt_args,
+            command_kind=stt_command_kind,
+            voice_bin=args.voice_bin,
+            audio_path=args.stt_audio.expanduser(),
+            timeout=args.stt_timeout,
+        )
+        stt_smoke = "checked"
 
     print("ok: Hermes voice config verifier passed")
     print(f"config={config_path}")
@@ -462,6 +552,12 @@ def main(argv: list[str]) -> int:
             print("stt.command=voice stream-transcribe --quiet")
         else:
             print("stt.command=hermes-command-stt.sh")
+        print(f"stt_smoke={stt_smoke}")
+        if stt_probe is not None:
+            print(
+                "stt_probe="
+                f"chars={stt_probe['chars']},lines={stt_probe['lines']}"
+            )
     else:
         print("stt_config=skipped")
     return 0

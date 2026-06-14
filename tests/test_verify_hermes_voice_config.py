@@ -53,6 +53,10 @@ def write_fake_voice(directory: Path) -> Path:
             #!/usr/bin/env bash
             set -euo pipefail
             printf '%s\\n' "$@" > {str(log_path)!r}
+            if [[ "${{1:-}}" == "stream-transcribe" ]]; then
+              echo 'hello from stt'
+              exit 0
+            fi
             out=''
             while [[ $# -gt 0 ]]; do
               if [[ "$1" == "--output" ]]; then
@@ -144,6 +148,41 @@ class HermesVoiceConfigVerifierTests(unittest.TestCase):
         self.assertIn("say\n", voice_args)
         self.assertIn("--format\nogg-opus\n", voice_args)
         self.assertIn("--voice\naf_heart\n", voice_args)
+
+    def test_verifier_executes_configured_stt_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            voice_bin = write_fake_voice(bin_dir)
+            config = tmp_path / "config.yaml"
+            audio = tmp_path / "aud_cached.ogg"
+            config.write_text(hermes_config(), encoding="utf-8")
+            audio.write_bytes(b"OggSfake")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--config",
+                    str(config),
+                    "--voice-bin",
+                    str(voice_bin),
+                    "--skip-tts-smoke",
+                    "--stt-audio",
+                    str(audio),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            voice_args = (bin_dir / "voice-args.txt").read_text(encoding="utf-8")
+
+        self.assertIn("stt_smoke=checked", result.stdout)
+        self.assertIn("stt_probe=chars=14,lines=1", result.stdout)
+        self.assertIn("stream-transcribe\n", voice_args)
+        self.assertIn("--quiet\n", voice_args)
+        self.assertIn(f"{audio}\n", voice_args)
 
     def test_verifier_rejects_wav_output_format(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -285,6 +324,77 @@ class HermesVoiceConfigVerifierTests(unittest.TestCase):
         self.assertIn("tts.command=hermes-command-tts.sh", result.stdout)
         self.assertIn("say\n", voice_args)
         self.assertIn("--format\nogg-opus\n", voice_args)
+
+    def test_verifier_executes_stt_command_shim_with_voice_bin_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            voice_bin = write_fake_voice(bin_dir)
+            config = tmp_path / "config.yaml"
+            audio = tmp_path / "aud_cached.ogg"
+            config.write_text(
+                hermes_config(
+                    command=(
+                        f"{REPO_ROOT}/examples/hermes-command-tts.sh "
+                        "{input_path} {output_path} {voice} {speed}"
+                    ),
+                    stt_command=f"{REPO_ROOT}/examples/hermes-command-stt.sh {{input_path}}",
+                ),
+                encoding="utf-8",
+            )
+            audio.write_bytes(b"OggSfake")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--config",
+                    str(config),
+                    "--voice-bin",
+                    str(voice_bin),
+                    "--skip-tts-smoke",
+                    "--stt-audio",
+                    str(audio),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={"PATH": f"{bin_dir}:{os_path()}"},
+            )
+
+            voice_args = (bin_dir / "voice-args.txt").read_text(encoding="utf-8")
+
+        self.assertIn("stt.command=hermes-command-stt.sh", result.stdout)
+        self.assertIn("stt_smoke=checked", result.stdout)
+        self.assertIn("stream-transcribe\n", voice_args)
+        self.assertIn("--quiet\n", voice_args)
+        self.assertIn(f"{audio}\n", voice_args)
+
+    def test_stt_audio_requires_stt_config_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config = tmp_path / "config.yaml"
+            audio = tmp_path / "aud_cached.ogg"
+            config.write_text(hermes_config(), encoding="utf-8")
+            audio.write_bytes(b"OggSfake")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--config",
+                    str(config),
+                    "--skip-tts-smoke",
+                    "--skip-stt-config",
+                    "--stt-audio",
+                    str(audio),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--stt-audio requires STT config validation", result.stderr)
 
     def test_verifier_rejects_arbitrary_command_wrapper(self):
         with tempfile.TemporaryDirectory() as tmp:

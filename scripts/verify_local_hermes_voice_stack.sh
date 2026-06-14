@@ -11,6 +11,7 @@ text="${TEXT:-Local Hermes voice stack smoke test.}"
 default_stack_text="Local Hermes voice stack smoke test."
 default_attended_alpha_text="Please reply with a fresh WhatsApp voice note so I can verify the voice runtime."
 skip_hermes_config="${SKIP_HERMES_CONFIG:-0}"
+skip_hermes_install_dry_run="${SKIP_HERMES_INSTALL_DRY_RUN:-0}"
 skip_hermes_tts_smoke="${SKIP_HERMES_TTS_SMOKE:-0}"
 skip_hermes_stt_smoke="${SKIP_HERMES_STT_SMOKE:-0}"
 skip_hermes_gateway="${SKIP_HERMES_GATEWAY:-0}"
@@ -44,6 +45,7 @@ check_whatsapp_cloud_api="${CHECK_WHATSAPP_CLOUD_API:-0}"
 overall_status=0
 
 hermes_config_verify_script="${HERMES_CONFIG_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_voice_config.py}"
+hermes_config_install_script="${HERMES_CONFIG_INSTALL_SCRIPT:-$repo_root/scripts/install_hermes_voice_config.py}"
 hermes_gateway_verify_script="${HERMES_GATEWAY_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_gateway_service.py}"
 cli_mcp_surface_verify_script="${CLI_MCP_SURFACE_VERIFY_SCRIPT:-$repo_root/scripts/verify_cli_mcp_surface.py}"
 whatsapp_contract_verify_script="${WHATSAPP_CONTRACT_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_voice_contract.sh}"
@@ -70,6 +72,8 @@ Options:
   --sidecar-url URL            sidecar base URL (default: http://127.0.0.1:8787)
   --text TEXT                  smoke text used by TTS checks
   --skip-hermes-config         skip Hermes config validation and TTS command smoke
+  --skip-hermes-install-dry-run
+                               skip dry-run validation of the config repair installer
   --skip-hermes-tts-smoke      validate Hermes config without executing TTS
   --skip-hermes-stt-smoke      keep alpha cached-receive Hermes STT validation shape-only
   --skip-hermes-gateway        skip running Hermes gateway service verification
@@ -118,7 +122,8 @@ Options:
 
 Environment aliases:
   VOICE_BIN, HERMES_CONFIG, SIDECAR_URL, TEXT
-  SKIP_HERMES_CONFIG=1, SKIP_HERMES_TTS_SMOKE=1, SKIP_HERMES_STT_SMOKE=1
+  SKIP_HERMES_CONFIG=1, SKIP_HERMES_INSTALL_DRY_RUN=1
+  SKIP_HERMES_TTS_SMOKE=1, SKIP_HERMES_STT_SMOKE=1
   SKIP_SIDECAR=1, SKIP_HERMES_GATEWAY=1, SKIP_WHATSAPP_BRIDGE=1
   SKIP_SYSTEMD=1, SKIP_CLI_MCP=1, SKIP_DAEMON=1, SKIP_STT_SMOKE=1
   RUN_WEBRTC_LOOPBACK_SMOKE=1
@@ -307,6 +312,10 @@ while [[ $# -gt 0 ]]; do
       skip_hermes_config=1
       shift
       ;;
+    --skip-hermes-install-dry-run)
+      skip_hermes_install_dry_run=1
+      shift
+      ;;
     --skip-hermes-tts-smoke)
       skip_hermes_tts_smoke=1
       shift
@@ -487,6 +496,9 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
 fi
 if [[ "$skip_hermes_config" != "1" ]]; then
   require_executable "$hermes_config_verify_script" "Hermes voice config verifier"
+  if [[ "$skip_hermes_install_dry_run" != "1" ]]; then
+    require_executable "$hermes_config_install_script" "Hermes voice config installer"
+  fi
   require_file "$hermes_config" "Hermes config"
 fi
 if [[ "$skip_cli_mcp" != "1" ]]; then
@@ -519,8 +531,20 @@ if [[ "$skip_hermes_config" != "1" ]]; then
   fi
   run_step "Hermes voice-native config" "${hermes_args[@]}"
   hermes_status="checked"
+  if [[ "$skip_hermes_install_dry_run" != "1" ]]; then
+    hermes_install_args=(
+      "$hermes_config_install_script"
+      --config "$hermes_config"
+      --voice-bin "$voice_bin"
+    )
+    run_step "Hermes voice config installer dry run" "${hermes_install_args[@]}"
+    hermes_install_status="dry_run"
+  else
+    hermes_install_status="skipped"
+  fi
 else
   hermes_status="skipped"
+  hermes_install_status="skipped"
 fi
 
 if [[ "$skip_hermes_gateway" != "1" && "$skip_systemd" != "1" ]]; then
@@ -753,6 +777,7 @@ else
 fi
 echo "voice_bin=$voice_bin"
 echo "hermes_config=$hermes_status"
+echo "hermes_config_install=$hermes_install_status"
 echo "hermes_gateway=$hermes_gateway_status"
 echo "cli_mcp=$cli_mcp_status"
 echo "whatsapp_contract=checked"

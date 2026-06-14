@@ -152,6 +152,9 @@ VOICE_BIN=/path/to/voice scripts/verify_local_hermes_voice_stack.sh
 The gateway verifier confirms `hermes-gateway.service` is active, points at the
 expected Hermes home, exports `WHATSAPP_CLOUD_CALLING_SIDECAR_URL`, and uses a
 `voice stream --raw-output -` command for the WhatsApp Calling sidecar path.
+The aggregate stack verifier also dry-runs `install_hermes_voice_config.py`
+against the active config, so one command now checks both config drift
+detection and the voice-owned repair path.
 
 ## CLI Smoke Test
 

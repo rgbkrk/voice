@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -683,6 +684,19 @@ def human_summary(result: dict[str, Any]) -> None:
             f"{attended.get('status')} cached_receive_verified="
             f"{attended.get('cached_receive_verified')}"
         )
+        if attended.get("status") != "verified":
+            command = attended.get("command") or []
+            fallback = attended.get("fallback_draining_command") or []
+            if command:
+                print(
+                    "attended_fresh_receive_command="
+                    f"{shlex.join([str(part) for part in command])}"
+                )
+            if fallback:
+                print(
+                    "attended_fresh_receive_fallback_draining_command="
+                    f"{shlex.join([str(part) for part in fallback])}"
+                )
     print(
         "whatsapp_cloud="
         + ("configured" if external["cloud_configured"] else "not_configured")

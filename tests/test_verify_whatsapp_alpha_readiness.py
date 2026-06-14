@@ -174,6 +174,52 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             gates["whatsapp_cloud_calling"]["missing"],
         )
 
+    def test_human_summary_prints_non_draining_attended_next_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            helpers = tmp_path / "helpers"
+            helpers.mkdir()
+            write_fake_helpers(helpers)
+            voice = tmp_path / "voice"
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+            config = tmp_path / "config.yaml"
+            config.write_text("tts: {}\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-home",
+                    str(tmp_path / "hermes"),
+                    "--hermes-config",
+                    str(config),
+                    "--skip-systemd",
+                    "--skip-daemon",
+                    "--skip-sidecar",
+                    "--skip-voice-note-smoke",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "VOICE_READINESS_SCRIPT_DIR": str(helpers),
+                },
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "attended_fresh_receive_command=scripts/verify_whatsapp_alpha_readiness.py",
+            result.stdout,
+        )
+        self.assertIn("--profile attended-cache-receive", result.stdout)
+        self.assertIn(
+            "attended_fresh_receive_fallback_draining_command=",
+            result.stdout,
+        )
+        self.assertIn("--profile attended-send-receive", result.stdout)
+
     def test_inbound_cache_smoke_adds_receive_component(self):
         with tempfile.TemporaryDirectory() as tmp:
             payload = self.run_readiness(

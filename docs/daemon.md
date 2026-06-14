@@ -17,6 +17,8 @@ voice daemon install
 `voice daemon install` auto-detects the platform and writes the appropriate
 service file (macOS LaunchAgent or Linux systemd user unit), loads it, and
 starts the daemon. It also prints `voice daemon status` output on success.
+On Linux, it disables the older `voice-daemon.service` unit if one exists so
+only the current `voiced.service` registration owns the daemon socket.
 
 To install the service file without starting immediately:
 

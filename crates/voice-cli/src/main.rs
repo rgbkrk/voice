@@ -2162,6 +2162,7 @@ fn run_daemon_install(no_start: bool) {
     });
 
     let unit_path = systemd_dir.join("voiced.service");
+    let legacy_unit_path = systemd_dir.join("voice-daemon.service");
     let voice_str = voice_path.display().to_string();
 
     let unit = format!(
@@ -2178,6 +2179,24 @@ fn run_daemon_install(no_start: bool) {
     println!("Installing voice daemon as a systemd user service...");
     println!("  voice:   {voice_str}");
     println!("  unit:    {}", unit_path.display());
+
+    if legacy_unit_path.exists() {
+        println!("  legacy: disabling voice-daemon.service");
+        let legacy_disable = std::process::Command::new("systemctl")
+            .args(["--user", "disable", "--now", "voice-daemon.service"])
+            .output();
+        match legacy_disable {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => eprintln!(
+                "warning: systemctl disable legacy voice-daemon.service exited {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            Err(e) => {
+                eprintln!("warning: systemctl disable legacy voice-daemon.service failed: {e}")
+            }
+        }
+    }
 
     let reload = std::process::Command::new("systemctl")
         .args(["--user", "daemon-reload"])
@@ -2268,28 +2287,45 @@ fn run_daemon_uninstall() {
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
             .join(".config")
     });
-    let unit_path = config_dir.join("systemd/user/voiced.service");
+    let systemd_dir = config_dir.join("systemd/user");
+    let unit_path = systemd_dir.join("voiced.service");
+    let legacy_unit_path = systemd_dir.join("voice-daemon.service");
 
-    if !unit_path.exists() {
+    if !unit_path.exists() && !legacy_unit_path.exists() {
         eprintln!("voice daemon service not installed (unit file not found)");
         std::process::exit(1);
     }
 
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "disable", "--now", "voiced.service"])
-        .output();
+    if unit_path.exists() {
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "disable", "--now", "voiced.service"])
+            .output();
+    }
+    if legacy_unit_path.exists() {
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "disable", "--now", "voice-daemon.service"])
+            .output();
+    }
 
     let _ = std::process::Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .output();
 
-    std::fs::remove_file(&unit_path).unwrap_or_else(|e| {
-        eprintln!("error: could not remove {}: {e}", unit_path.display());
-        std::process::exit(1);
-    });
+    let mut removed = Vec::new();
+    for path in [&unit_path, &legacy_unit_path] {
+        if path.exists() {
+            std::fs::remove_file(path).unwrap_or_else(|e| {
+                eprintln!("error: could not remove {}: {e}", path.display());
+                std::process::exit(1);
+            });
+            removed.push(path.display().to_string());
+        }
+    }
 
     println!("Uninstalled voice daemon systemd user service.");
-    println!("  removed: {}", unit_path.display());
+    for path in removed {
+        println!("  removed: {path}");
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]

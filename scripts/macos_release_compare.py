@@ -25,6 +25,17 @@ import time
 import wave
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from verify_cli_mcp_surface import (
+    mcp_connected_to_daemon,
+    mcp_initialized,
+    verify_daemon_surfaces,
+    verify_no_daemon_surfaces,
+)
+
 
 DEFAULT_PHRASES = [
     "Hermes is checking whether voice synthesis still starts quickly.",
@@ -34,10 +45,6 @@ DEFAULT_PHRASES = [
 
 DEFAULT_ARTICULATION_PHRASE = "Wait, what. Wait what?"
 DEFAULT_ARTICULATION_EXPECTED_WORDS = ["wait", "wait", "what", "what"]
-MCP_SMOKE_INPUT = (
-    '{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}\n'
-    '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}\n'
-)
 
 
 def parse_args() -> argparse.Namespace:
@@ -377,17 +384,6 @@ def missing_expected_words(transcript: str, expected_words: list[str]) -> list[s
     return missing
 
 
-def mcp_initialized(stdout: str) -> bool:
-    return '"serverInfo"' in stdout and '"tools"' in stdout
-
-
-def mcp_connected_to_daemon(stderr: str) -> bool:
-    return (
-        "voice mcp: connected to voice daemon" in stderr
-        or "voice mcp: reconnected to voice daemon" in stderr
-    )
-
-
 def articulation_smoke_check(
     new_voice: Path,
     work_dir: Path,
@@ -462,19 +458,7 @@ def smoke_checks(
         }
     )
 
-    mcp = run(
-        [str(new_voice), "mcp", "-q"],
-        env=env,
-        input_text=MCP_SMOKE_INPUT,
-        capture=True,
-        timeout=240,
-    )
-    checks.append(
-        {
-            "name": "mcp_no_daemon_initializes",
-            "ok": mcp_initialized(mcp.stdout),
-        }
-    )
+    checks.extend(verify_no_daemon_surfaces(new_voice, timeout=240))
 
     stream = run(
         [str(new_voice), "stream", "-o", str(work_dir / "no-daemon-stream.pcm"), "No daemon."],
@@ -510,39 +494,19 @@ def smoke_checks(
             )
         )
 
-    daemon = subprocess.run(
-        [str(new_voice), "daemon", "status", "--json"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+    daemon_checks = verify_daemon_surfaces(
+        new_voice,
+        require_daemon=require_daemon,
+        skip_daemon=False,
+        timeout=240,
     )
-    daemon_available = daemon.returncode == 0
-    checks.append(
-        {
-            "name": "daemon_detected",
-            "ok": daemon_available or not require_daemon,
-            "detected": daemon_available,
-            "note": "daemon stream check runs only when a daemon is detected",
-        }
+    checks.extend(daemon_checks)
+    daemon_available = any(
+        check.get("name") == "daemon_detected" and check.get("detected")
+        for check in daemon_checks
     )
 
     if daemon_available:
-        mcp_daemon = run(
-            [str(new_voice), "mcp"],
-            input_text=MCP_SMOKE_INPUT,
-            capture=True,
-            timeout=240,
-        )
-        checks.append(
-            {
-                "name": "mcp_with_daemon_detects_daemon",
-                "ok": (
-                    mcp_initialized(mcp_daemon.stdout)
-                    and mcp_connected_to_daemon(mcp_daemon.stderr)
-                ),
-            }
-        )
-
         pcm = work_dir / "stream-daemon.pcm"
         run(
             [str(new_voice), "stream", "-o", str(pcm), "Daemon streaming smoke test."],

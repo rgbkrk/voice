@@ -33,6 +33,10 @@ jobs:
 
       - run: cargo test --workspace
 
+      - run: cargo build -p voice
+
+      - run: scripts/verify_cli_mcp_surface.py --voice-bin target/debug/voice --skip-daemon
+
   sidecar-python:
     runs-on: ubuntu-latest
     steps:

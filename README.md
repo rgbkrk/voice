@@ -284,10 +284,12 @@ scripts/macos_release_compare.py --keep
 
 This builds the current CLI, downloads the latest stable release binary, forces
 the benchmark path to run without a daemon, and reports TTS timing plus optional
-STT timing if `eval/recordings/*.wav` fixtures are present. It also synthesizes
-and transcribes `Wait, what. Wait what?` as a file-based articulation smoke for
-issue #110; pass `--skip-articulation-smoke` only when you intentionally want a
-timing-only run.
+STT timing if `eval/recordings/*.wav` fixtures are present. It also verifies
+plain `voice say` and `voice mcp` startup with the daemon deliberately hidden,
+checks that `voice mcp` reports a daemon connection when one is actually
+running, and synthesizes/transcribes `Wait, what. Wait what?` as a file-based
+articulation smoke for issue #110. Pass `--skip-articulation-smoke` only when
+you intentionally want a timing-only run.
 
 ## JSON-RPC server
 

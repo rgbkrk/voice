@@ -3,8 +3,8 @@
 
 The script intentionally forces `VOICE_DAEMON_SOCKET` to a missing path for the
 core benchmarks so it measures the plain CLI/local model path instead of an
-already-running daemon. It also runs separate smoke checks for daemon-backed
-streaming when a daemon is available.
+already-running daemon. It also runs separate smoke checks for MCP daemon
+detection and daemon-backed streaming when a daemon is available.
 """
 
 from __future__ import annotations
@@ -34,6 +34,10 @@ DEFAULT_PHRASES = [
 
 DEFAULT_ARTICULATION_PHRASE = "Wait, what. Wait what?"
 DEFAULT_ARTICULATION_EXPECTED_WORDS = ["wait", "wait", "what", "what"]
+MCP_SMOKE_INPUT = (
+    '{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}\n'
+    '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}\n'
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -373,6 +377,17 @@ def missing_expected_words(transcript: str, expected_words: list[str]) -> list[s
     return missing
 
 
+def mcp_initialized(stdout: str) -> bool:
+    return '"serverInfo"' in stdout and '"tools"' in stdout
+
+
+def mcp_connected_to_daemon(stderr: str) -> bool:
+    return (
+        "voice mcp: connected to voice daemon" in stderr
+        or "voice mcp: reconnected to voice daemon" in stderr
+    )
+
+
 def articulation_smoke_check(
     new_voice: Path,
     work_dir: Path,
@@ -447,21 +462,17 @@ def smoke_checks(
         }
     )
 
-    mcp_input = (
-        '{"jsonrpc":"2.0","method":"initialize","params":{},"id":1}\n'
-        '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":2}\n'
-    )
     mcp = run(
         [str(new_voice), "mcp", "-q"],
         env=env,
-        input_text=mcp_input,
+        input_text=MCP_SMOKE_INPUT,
         capture=True,
         timeout=240,
     )
     checks.append(
         {
             "name": "mcp_no_daemon_initializes",
-            "ok": '"serverInfo"' in mcp.stdout and '"tools"' in mcp.stdout,
+            "ok": mcp_initialized(mcp.stdout),
         }
     )
 
@@ -516,6 +527,22 @@ def smoke_checks(
     )
 
     if daemon_available:
+        mcp_daemon = run(
+            [str(new_voice), "mcp"],
+            input_text=MCP_SMOKE_INPUT,
+            capture=True,
+            timeout=240,
+        )
+        checks.append(
+            {
+                "name": "mcp_with_daemon_detects_daemon",
+                "ok": (
+                    mcp_initialized(mcp_daemon.stdout)
+                    and mcp_connected_to_daemon(mcp_daemon.stderr)
+                ),
+            }
+        )
+
         pcm = work_dir / "stream-daemon.pcm"
         run(
             [str(new_voice), "stream", "-o", str(pcm), "Daemon streaming smoke test."],
@@ -530,6 +557,14 @@ def smoke_checks(
             }
         )
     else:
+        checks.append(
+            {
+                "name": "mcp_with_daemon_detects_daemon",
+                "ok": not require_daemon,
+                "skipped": True,
+                "note": "daemon not detected",
+            }
+        )
         checks.append(
             {
                 "name": "stream_with_daemon_writes_pcm",

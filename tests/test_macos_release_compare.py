@@ -48,6 +48,28 @@ class ArticulationSmokeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "normalize to one token"):
             self.script.missing_expected_words("Wait what", ["wait what"])
 
+    def test_mcp_initialized_requires_initialize_and_tools_output(self):
+        self.assertTrue(
+            self.script.mcp_initialized(
+                '{"result":{"serverInfo":{"name":"voice"}},"id":1}\n'
+                '{"result":{"tools":[]},"id":2}\n'
+            )
+        )
+        self.assertFalse(self.script.mcp_initialized('{"result":{"serverInfo":{}}}'))
+
+    def test_mcp_connected_to_daemon_accepts_startup_and_reconnect_logs(self):
+        self.assertTrue(
+            self.script.mcp_connected_to_daemon(
+                "voice mcp: connected to voice daemon\nvoice mcp server ready\n"
+            )
+        )
+        self.assertTrue(
+            self.script.mcp_connected_to_daemon(
+                "voice mcp: reconnected to voice daemon\n"
+            )
+        )
+        self.assertFalse(self.script.mcp_connected_to_daemon("voice mcp server ready\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

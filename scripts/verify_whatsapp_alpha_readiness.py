@@ -449,8 +449,12 @@ def cache_audio_evidence(checks: dict[str, Any]) -> dict[str, Any]:
         "kind": "audio_cache",
         "fresh": bool((fresh_watch.get("fresh_files") or [])),
         "fresh_count": fresh_watch.get("fresh_count"),
+        "baseline_count": fresh_watch.get("baseline_count"),
+        "final_count": fresh_watch.get("final_count"),
         "wait_seconds": fresh_watch.get("wait_seconds"),
+        "elapsed_seconds": fresh_watch.get("elapsed_seconds"),
         "drains_bridge_messages": bool(fresh_watch.get("drains_bridge_messages")),
+        "fresh_file_details": fresh_watch.get("fresh_file_details") or [],
         "selected_files_count": len(checks.get("selected_files") or []),
         "audio": [],
     }

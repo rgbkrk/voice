@@ -14,6 +14,9 @@ import time
 from typing import Any
 
 
+WATCH_FILE_SAMPLE_LIMIT = 5
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -86,6 +89,40 @@ def audio_file_snapshot(paths: list[Path]) -> dict[Path, tuple[int, int]]:
     return snapshot
 
 
+def describe_audio_file(path: Path, *, now_epoch: float | None = None) -> dict[str, Any]:
+    description: dict[str, Any] = {
+        "path": str(path),
+        "name": path.name,
+        "exists": False,
+    }
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return description
+
+    description.update(
+        {
+            "exists": True,
+            "size_bytes": stat.st_size,
+            "mtime_epoch": stat.st_mtime,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+    )
+    if now_epoch is not None:
+        description["age_seconds"] = round(max(0.0, now_epoch - stat.st_mtime), 3)
+    return description
+
+
+def describe_audio_files(
+    paths: list[Path],
+    *,
+    now_epoch: float | None = None,
+    limit: int | None = WATCH_FILE_SAMPLE_LIMIT,
+) -> list[dict[str, Any]]:
+    sampled = paths if limit is None else paths[:limit]
+    return [describe_audio_file(path, now_epoch=now_epoch) for path in sampled]
+
+
 def fresh_audio_files(
     paths: list[Path],
     *,
@@ -115,6 +152,26 @@ def wait_for_fresh_audio_files(
         discovered = discover_audio_files(audio_cache_dir)
         fresh = fresh_audio_files(discovered, baseline=baseline)
     return fresh, discovered
+
+
+def fresh_watch_failure_detail(fresh_watch: dict[str, Any]) -> str:
+    parts = [
+        f"baseline_count={fresh_watch.get('baseline_count')}",
+        f"final_count={fresh_watch.get('final_count')}",
+    ]
+    final_sample = fresh_watch.get("final_files_sample") or []
+    if final_sample:
+        latest = final_sample[0]
+        parts.append(f"latest_candidate={latest.get('name')}")
+        size = latest.get("size_bytes")
+        if size is not None:
+            parts.append(f"latest_size_bytes={size}")
+        age = latest.get("age_seconds")
+        if age is not None:
+            parts.append(f"latest_age_seconds={age}")
+    else:
+        parts.append("cache_empty=true")
+    return ", ".join(parts)
 
 
 def probe_audio(path: Path, *, timeout: float, skip_ffprobe: bool) -> tuple[dict[str, Any], list[str]]:
@@ -269,6 +326,9 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     selected_files: list[Path]
     discovered = discover_audio_files(audio_cache_dir)
     baseline = audio_file_snapshot(discovered)
+    watch_started_epoch = time.time()
+    watch_started_monotonic = time.monotonic()
+    baseline_files = describe_audio_files(discovered, now_epoch=watch_started_epoch)
     fresh_files: list[Path] = []
 
     if args.wait_fresh_seconds > 0 and not failures:
@@ -277,6 +337,31 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             baseline=baseline,
             wait_seconds=args.wait_fresh_seconds,
         )
+    watch_finished_epoch = time.time()
+    watch_elapsed_seconds = time.monotonic() - watch_started_monotonic
+    fresh_watch = {
+        "wait_seconds": args.wait_fresh_seconds,
+        "elapsed_seconds": round(watch_elapsed_seconds, 3),
+        "started_at_epoch": watch_started_epoch,
+        "completed_at_epoch": watch_finished_epoch,
+        "drains_bridge_messages": False,
+        "baseline_count": len(baseline),
+        "final_count": len(discovered),
+        "fresh_count": len(fresh_files),
+        "fresh_files": [str(path) for path in fresh_files],
+        "fresh_file_details": describe_audio_files(
+            fresh_files,
+            now_epoch=watch_finished_epoch,
+            limit=None,
+        ),
+        "baseline_files_sample": baseline_files,
+        "final_files_sample": describe_audio_files(
+            discovered,
+            now_epoch=watch_finished_epoch,
+        ),
+        "sample_limit": WATCH_FILE_SAMPLE_LIMIT,
+        "skipped": args.wait_fresh_seconds <= 0,
+    }
 
     if args.audio_file:
         selected_files = [path.expanduser().resolve() for path in args.audio_file]
@@ -292,7 +377,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         if args.wait_fresh_seconds > 0 and args.require_fresh_audio:
             message = (
                 "no fresh bridge-downloaded inbound audio files found in "
-                f"{audio_cache_dir} during {args.wait_fresh_seconds}s watch"
+                f"{audio_cache_dir} during {args.wait_fresh_seconds}s watch "
+                f"({fresh_watch_failure_detail(fresh_watch)})"
             )
         else:
             message = f"no bridge-downloaded inbound audio files found in {audio_cache_dir}"
@@ -307,14 +393,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "voice_bin": voice_bin,
         "discovered_count": len(discovered),
         "selected_files": [str(path) for path in selected_files],
-        "fresh_watch": {
-            "wait_seconds": args.wait_fresh_seconds,
-            "drains_bridge_messages": False,
-            "baseline_count": len(baseline),
-            "fresh_count": len(fresh_files),
-            "fresh_files": [str(path) for path in fresh_files],
-            "skipped": args.wait_fresh_seconds <= 0,
-        },
+        "fresh_watch": fresh_watch,
         "audio": [],
     }
 
@@ -394,9 +473,18 @@ def human_summary(result: dict[str, Any]) -> None:
         print(
             "fresh_watch="
             f"fresh_count={fresh.get('fresh_count')} "
+            f"baseline_count={fresh.get('baseline_count')} "
+            f"final_count={fresh.get('final_count')} "
             f"wait_seconds={fresh.get('wait_seconds')} "
+            f"elapsed_seconds={fresh.get('elapsed_seconds')} "
             f"drains_messages={fresh.get('drains_bridge_messages')}"
         )
+        for index, item in enumerate(fresh.get("fresh_file_details") or [], start=1):
+            print(
+                f"fresh_file[{index}]={item.get('path')} "
+                f"size={item.get('size_bytes')} "
+                f"age_seconds={item.get('age_seconds')}"
+            )
     for index, audio in enumerate(checks["audio"], start=1):
         probe = audio.get("probe") or {}
         stream = ((probe.get("ffprobe") or {}).get("stream") or {})

@@ -148,7 +148,11 @@ class WhatsAppInboundAudioCacheVerifierTests(unittest.TestCase):
         self.assertTrue(result["success"], result["failures"])
         fresh = result["checks"]["fresh_watch"]
         self.assertEqual(fresh["fresh_count"], 1)
+        self.assertEqual(fresh["baseline_count"], 0)
+        self.assertEqual(fresh["final_count"], 1)
         self.assertFalse(fresh["drains_bridge_messages"])
+        self.assertEqual(fresh["fresh_file_details"][0]["name"], "aud_fresh.ogg")
+        self.assertEqual(fresh["final_files_sample"][0]["name"], "aud_fresh.ogg")
         self.assertTrue(result["checks"]["selected_files"][0].endswith("aud_fresh.ogg"))
         terminal = result["checks"]["audio"][0]["stt"]["terminal_event"]
         self.assertEqual(terminal["event"], "stt.transcribed")
@@ -170,8 +174,35 @@ class WhatsAppInboundAudioCacheVerifierTests(unittest.TestCase):
         self.assertTrue(result["success"], result["failures"])
         fresh = result["checks"]["fresh_watch"]
         self.assertEqual(fresh["fresh_count"], 0)
+        self.assertEqual(fresh["baseline_count"], 1)
+        self.assertEqual(fresh["final_count"], 1)
+        self.assertEqual(fresh["baseline_files_sample"][0]["name"], "aud_existing.ogg")
+        self.assertEqual(fresh["final_files_sample"][0]["name"], "aud_existing.ogg")
         self.assertFalse(fresh["drains_bridge_messages"])
         self.assertTrue(result["checks"]["selected_files"][0].endswith("aud_existing.ogg"))
+
+    def test_require_fresh_audio_failure_reports_stale_cache_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(
+                tmp_path,
+                wait_fresh_seconds=0.01,
+                require_fresh_audio=True,
+            )
+            write_audio(args.hermes_home / "audio_cache" / "aud_stale.ogg")
+
+            result = self.script.verify(args)
+
+        self.assertFalse(result["success"])
+        message = "\n".join(result["failures"])
+        self.assertIn("no fresh bridge-downloaded inbound audio files", message)
+        self.assertIn("baseline_count=1", message)
+        self.assertIn("final_count=1", message)
+        self.assertIn("latest_candidate=aud_stale.ogg", message)
+        fresh = result["checks"]["fresh_watch"]
+        self.assertEqual(fresh["fresh_count"], 0)
+        self.assertEqual(fresh["baseline_files_sample"][0]["name"], "aud_stale.ogg")
+        self.assertEqual(fresh["final_files_sample"][0]["name"], "aud_stale.ogg")
 
     def test_require_fresh_audio_requires_wait_window(self):
         with tempfile.TemporaryDirectory() as tmp:

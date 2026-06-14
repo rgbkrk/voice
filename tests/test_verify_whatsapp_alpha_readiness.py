@@ -822,7 +822,18 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
                 "fresh_watch": {
                     "drains_bridge_messages": False,
                     "fresh_files": ["/tmp/aud_fresh.ogg"],
+                    "fresh_file_details": [
+                        {
+                            "path": "/tmp/aud_fresh.ogg",
+                            "name": "aud_fresh.ogg",
+                            "size_bytes": 12345,
+                            "age_seconds": 0.1,
+                        }
+                    ],
                     "fresh_count": 1,
+                    "baseline_count": 0,
+                    "final_count": 1,
+                    "elapsed_seconds": 0.2,
                 }
             },
             "failures": [],
@@ -859,6 +870,10 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertTrue(evidence["fresh"])
         self.assertFalse(evidence["drains_bridge_messages"])
         self.assertEqual(evidence["fresh_count"], 1)
+        self.assertEqual(evidence["baseline_count"], 0)
+        self.assertEqual(evidence["final_count"], 1)
+        self.assertEqual(evidence["elapsed_seconds"], 0.2)
+        self.assertEqual(evidence["fresh_file_details"][0]["name"], "aud_fresh.ogg")
         self.assertEqual(evidence["audio"][0]["name"], "aud_fresh.ogg")
         self.assertEqual(evidence["audio"][0]["codec"], "opus")
         self.assertEqual(evidence["audio"][0]["stt"]["frames"], 210)

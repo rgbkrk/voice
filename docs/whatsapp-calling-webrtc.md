@@ -292,6 +292,12 @@ scripts/verify_whatsapp_inbound_audio_cache.py \
   --run-stt
 ```
 
+This mode snapshots the current `aud_*` cache files by path, size, and mtime,
+then waits for a new or updated cache artifact. The JSON report includes
+baseline/final cache counts, sampled before/after file details, and the fresh
+file descriptors selected for STT. If the window expires, the failure reports
+the latest stale candidate or that the cache stayed empty.
+
 Cloud/Calling readiness requires these external Meta settings in addition to
 the local sidecar:
 

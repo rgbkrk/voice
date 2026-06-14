@@ -451,6 +451,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                     "Quill",
                     "--require-whatsapp-cloud",
                     "--require-whatsapp-calling",
+                    "--require-whatsapp-alpha-complete",
                     "--skip-hermes-config",
                     "--skip-hermes-gateway",
                     "--skip-cli-mcp",
@@ -525,7 +526,25 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 "--skip-hermes-tts-smoke",
                 "--require-whatsapp-cloud",
                 "--require-whatsapp-calling",
+                "--require-complete",
             ],
+        )
+
+    def test_require_whatsapp_alpha_complete_requires_alpha_profile(self):
+        result = subprocess.run(
+            [
+                str(SCRIPT_PATH),
+                "--require-whatsapp-alpha-complete",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "--require-whatsapp-alpha-complete requires --whatsapp-alpha-profile",
+            result.stderr,
         )
 
     def test_skip_hermes_config_does_not_require_config_file(self):

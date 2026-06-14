@@ -96,14 +96,36 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self,
         tmp_path: Path,
         *args: str,
+        cloud_configured: bool = False,
         skip_voice_note_smoke: bool = True,
         voice_note_payload: dict | None = None,
         inbound_cache_payload: dict | None = None,
     ) -> dict:
+        result = self.run_readiness_process(
+            tmp_path,
+            *args,
+            cloud_configured=cloud_configured,
+            skip_voice_note_smoke=skip_voice_note_smoke,
+            voice_note_payload=voice_note_payload,
+            inbound_cache_payload=inbound_cache_payload,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def run_readiness_process(
+        self,
+        tmp_path: Path,
+        *args: str,
+        cloud_configured: bool = False,
+        skip_voice_note_smoke: bool = True,
+        voice_note_payload: dict | None = None,
+        inbound_cache_payload: dict | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         helpers = tmp_path / "helpers"
         helpers.mkdir()
         write_fake_helpers(
             helpers,
+            cloud_configured=cloud_configured,
             voice_note_payload=voice_note_payload,
             inbound_cache_payload=inbound_cache_payload,
         )
@@ -137,8 +159,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
                 "VOICE_READINESS_SCRIPT_DIR": str(helpers),
             },
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)
+        return result
 
     def test_readiness_succeeds_for_baileys_alpha_when_cloud_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,6 +208,34 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertIn(
             "configure_whatsapp_cloud_calling",
             [action["id"] for action in summary["next_actions"]],
+        )
+
+    def test_require_complete_fails_when_alpha_gates_are_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_readiness_process(
+                Path(tmp),
+                "--require-complete",
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["success"])
+        self.assertEqual(
+            payload["readiness_summary"]["status"],
+            "local_ready_pending_gates",
+        )
+        failures = {
+            item["name"]: item
+            for item in payload["failures"]
+        }
+        self.assertIn("whatsapp_alpha_complete", failures)
+        self.assertEqual(
+            failures["whatsapp_alpha_complete"]["category"],
+            "readiness_summary",
+        )
+        self.assertIn(
+            "run_attended_fresh_receive",
+            failures["whatsapp_alpha_complete"]["failures"][1],
         )
 
     def test_default_voice_bin_prefers_installed_voice_on_path(self):
@@ -498,6 +547,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
                     "--skip-sidecar",
                     "--profile",
                     "attended-cache-receive",
+                    "--require-complete",
                     "--json",
                 ],
                 capture_output=True,

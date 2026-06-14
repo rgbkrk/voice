@@ -34,6 +34,7 @@ expected_whatsapp_agent_number="${WHATSAPP_AGENT_NUMBER:-}"
 expected_whatsapp_agent_name="${WHATSAPP_AGENT_NAME:-}"
 require_whatsapp_cloud="${REQUIRE_WHATSAPP_CLOUD:-0}"
 require_whatsapp_calling="${REQUIRE_WHATSAPP_CALLING:-0}"
+require_whatsapp_alpha_complete="${REQUIRE_WHATSAPP_ALPHA_COMPLETE:-0}"
 
 hermes_config_verify_script="${HERMES_CONFIG_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_voice_config.py}"
 hermes_gateway_verify_script="${HERMES_GATEWAY_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_gateway_service.py}"
@@ -81,6 +82,8 @@ Options:
                                require Baileys creds to expose this profile name
   --require-whatsapp-cloud     fail when WhatsApp Cloud credentials are missing
   --require-whatsapp-calling   fail when Cloud Calling credentials/readiness are missing
+  --require-whatsapp-alpha-complete
+                               fail unless all WhatsApp alpha readiness gates are complete
   --run-whatsapp-inbound-cache-smoke
                                transcribe a bridge-downloaded aud_* file from the audio cache
   --whatsapp-alpha-profile PROFILE
@@ -106,6 +109,7 @@ Environment aliases:
   WHATSAPP_BRIDGE_URL, WHATSAPP_SESSION_DIR, WHATSAPP_ENV_FILE
   WHATSAPP_AUDIO_CACHE_DIR, WHATSAPP_AGENT_NUMBER, WHATSAPP_AGENT_NAME
   REQUIRE_WHATSAPP_CLOUD=1, REQUIRE_WHATSAPP_CALLING=1
+  REQUIRE_WHATSAPP_ALPHA_COMPLETE=1
   RUN_WHATSAPP_INBOUND_CACHE_SMOKE=1, WHATSAPP_ALPHA_PROFILE
   WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID, WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS
   WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS
@@ -251,6 +255,10 @@ while [[ $# -gt 0 ]]; do
       require_whatsapp_calling=1
       shift
       ;;
+    --require-whatsapp-alpha-complete)
+      require_whatsapp_alpha_complete=1
+      shift
+      ;;
     --run-whatsapp-inbound-cache-smoke)
       run_whatsapp_inbound_cache_smoke=1
       shift
@@ -312,6 +320,9 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
       fail "unknown WhatsApp alpha profile: $whatsapp_alpha_profile"
       ;;
   esac
+fi
+if [[ "$require_whatsapp_alpha_complete" == "1" && -z "$whatsapp_alpha_profile" ]]; then
+  fail "--require-whatsapp-alpha-complete requires --whatsapp-alpha-profile"
 fi
 
 voice_bin="$(default_voice_bin)"
@@ -539,6 +550,9 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
   fi
   if [[ "$require_whatsapp_calling" == "1" ]]; then
     whatsapp_alpha_args+=(--require-whatsapp-calling)
+  fi
+  if [[ "$require_whatsapp_alpha_complete" == "1" ]]; then
+    whatsapp_alpha_args+=(--require-complete)
   fi
   run_step "WhatsApp alpha readiness profile ($whatsapp_alpha_profile)" "${whatsapp_alpha_args[@]}"
   whatsapp_alpha_status="$whatsapp_alpha_profile"

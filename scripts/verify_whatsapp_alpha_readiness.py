@@ -600,6 +600,29 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
         pending_gates=pending_gates,
         external_meta_setup=external_meta_setup,
     )
+    completion_failures: list[dict[str, Any]] = []
+    if args.require_complete and not readiness_summary["complete"]:
+        success = False
+        next_action_ids = [
+            str(action.get("id"))
+            for action in readiness_summary.get("next_actions") or []
+            if action.get("id")
+        ]
+        failure_messages = [
+            "WhatsApp alpha readiness is not complete: "
+            + str(readiness_summary["status"])
+        ]
+        if next_action_ids:
+            failure_messages.append(
+                "next actions: " + ", ".join(next_action_ids)
+            )
+        completion_failures.append(
+            {
+                "name": "whatsapp_alpha_complete",
+                "category": "readiness_summary",
+                "failures": failure_messages,
+            }
+        )
 
     return {
         "success": success,
@@ -617,7 +640,8 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
             }
             for item in required_failures
         ]
-        + external_failures,
+        + external_failures
+        + completion_failures,
     }
 
 
@@ -680,6 +704,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--require-fresh-cache-audio", action="store_true")
     parser.add_argument("--require-whatsapp-cloud", action="store_true")
     parser.add_argument("--require-whatsapp-calling", action="store_true")
+    parser.add_argument(
+        "--require-complete",
+        action="store_true",
+        help=(
+            "fail unless local checks, attended fresh receive, and WhatsApp "
+            "Cloud/Calling gates are all complete"
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -757,6 +789,16 @@ def human_summary(result: dict[str, Any]) -> None:
         if not item["success"]:
             for failure in item.get("failures") or []:
                 print(f"  - {failure}", file=sys.stderr)
+
+    component_names = {item["name"] for item in result["components"]}
+    for failure in result.get("failures") or []:
+        if failure.get("name") in component_names:
+            continue
+        print(
+            f"{failure.get('name')}=failed category={failure.get('category')}"
+        )
+        for message in failure.get("failures") or []:
+            print(f"  - {message}", file=sys.stderr)
 
     external = result["external_meta_setup"]
     pending = result.get("pending_gates") or {}

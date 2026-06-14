@@ -75,7 +75,7 @@ enum Command {
     /// Stream TTS audio chunks from the voice daemon
     Stream(StreamArgs),
 
-    /// Replay a WAV file through daemon streaming STT
+    /// Replay WAV or raw PCM audio through daemon streaming STT
     StreamTranscribe(StreamTranscribeArgs),
 
     /// Speak text aloud, then listen for a response (speak + listen in one shot)
@@ -247,7 +247,16 @@ struct StreamArgs {
 #[derive(clap::Args, Debug)]
 struct StreamTranscribeArgs {
     /// Path to WAV audio file
-    file: PathBuf,
+    #[arg(required_unless_present = "raw_input", conflicts_with = "raw_input")]
+    file: Option<PathBuf>,
+
+    /// Read raw signed 16-bit little-endian mono PCM from this path (use - for stdin)
+    #[arg(long = "raw-input", value_name = "PATH", conflicts_with = "file")]
+    raw_input: Option<PathBuf>,
+
+    /// Sample rate for --raw-input
+    #[arg(long = "sample-rate", default_value = "48000", requires = "raw_input")]
+    sample_rate: u32,
 
     /// Target stream frame duration in milliseconds
     #[arg(long = "frame-ms", default_value = "20")]
@@ -1514,29 +1523,27 @@ fn run_stream(stream_args: StreamArgs) {
 }
 
 fn run_stream_transcribe(stream_args: StreamTranscribeArgs) {
-    let audio = match listen::load_transcription_wav(&stream_args.file) {
-        Ok(audio) => audio,
+    let input = match load_stream_transcribe_input(&stream_args) {
+        Ok(input) => input,
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
         }
     };
 
-    validate_stream_frame_params(audio.sample_rate, stream_args.frame_ms).unwrap_or_else(|e| {
+    validate_stream_frame_params(input.sample_rate, stream_args.frame_ms).unwrap_or_else(|e| {
         eprintln!("voice stream-transcribe: {e}");
         std::process::exit(1);
     });
-    let frames =
-        voice_stream::pcm_s16le_frames(&audio.samples, audio.sample_rate, stream_args.frame_ms);
 
     if !QUIET.load(Ordering::Relaxed) {
-        let duration = audio.samples.len() as f64 / audio.sample_rate as f64;
+        let duration = input.sample_count as f64 / input.sample_rate as f64;
         eprintln!(
             "Streaming: {} ({:.1}s, {}Hz, {} frames)",
-            stream_args.file.display(),
+            input.label,
             duration,
-            audio.sample_rate,
-            frames.len()
+            input.sample_rate,
+            input.frames.len()
         );
     }
 
@@ -1545,8 +1552,11 @@ fn run_stream_transcribe(stream_args: StreamTranscribeArgs) {
     let mut terminal_error: Option<String> = None;
     let mut received_terminal = false;
 
-    let result =
-        daemon.stream_transcribe(&frames, audio.sample_rate, stream_args.frame_ms, |event| {
+    let result = daemon.stream_transcribe(
+        &input.frames,
+        input.sample_rate,
+        stream_args.frame_ms,
+        |event| {
             if stream_args.json {
                 println!("{}", serde_json::to_string(&event).unwrap());
             }
@@ -1578,7 +1588,8 @@ fn run_stream_transcribe(stream_args: StreamTranscribeArgs) {
             }
 
             Ok(())
-        });
+        },
+    );
 
     match result {
         Ok(resp) => {
@@ -1606,6 +1617,90 @@ fn run_stream_transcribe(stream_args: StreamTranscribeArgs) {
     if !stream_args.json {
         println!("{}", transcript.unwrap_or_default());
     }
+}
+
+struct StreamTranscribeInput {
+    label: String,
+    sample_rate: u32,
+    sample_count: usize,
+    frames: Vec<Vec<i16>>,
+}
+
+fn load_stream_transcribe_input(
+    stream_args: &StreamTranscribeArgs,
+) -> Result<StreamTranscribeInput, String> {
+    if let Some(path) = &stream_args.raw_input {
+        validate_stream_frame_params(stream_args.sample_rate, stream_args.frame_ms)
+            .map_err(|e| format!("voice stream-transcribe: {e}"))?;
+        return load_raw_pcm_s16le_input(path, stream_args.sample_rate, stream_args.frame_ms);
+    }
+
+    let file = stream_args
+        .file
+        .as_ref()
+        .ok_or_else(|| "Path to WAV audio file or --raw-input is required".to_string())?;
+    let audio = listen::load_transcription_wav(file)?;
+    validate_stream_frame_params(audio.sample_rate, stream_args.frame_ms)
+        .map_err(|e| format!("voice stream-transcribe: {e}"))?;
+    let frames =
+        voice_stream::pcm_s16le_frames(&audio.samples, audio.sample_rate, stream_args.frame_ms);
+    Ok(StreamTranscribeInput {
+        label: file.display().to_string(),
+        sample_rate: audio.sample_rate,
+        sample_count: audio.samples.len(),
+        frames,
+    })
+}
+
+fn load_raw_pcm_s16le_input(
+    path: &Path,
+    sample_rate: u32,
+    frame_ms: u32,
+) -> Result<StreamTranscribeInput, String> {
+    let bytes = if path.as_os_str() == std::ffi::OsStr::new("-") {
+        let mut bytes = Vec::new();
+        io::stdin()
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("Failed to read raw PCM from stdin: {e}"))?;
+        bytes
+    } else {
+        std::fs::read(path)
+            .map_err(|e| format!("Failed to read raw PCM {}: {e}", path.display()))?
+    };
+    let frame_samples = voice_stream::samples_per_frame(sample_rate, frame_ms);
+    let frames = pcm_s16le_bytes_to_frames(&bytes, frame_samples)?;
+    let sample_count = bytes.len() / 2;
+    Ok(StreamTranscribeInput {
+        label: if path.as_os_str() == std::ffi::OsStr::new("-") {
+            "stdin raw pcm_s16le".to_string()
+        } else {
+            format!("{} raw pcm_s16le", path.display())
+        },
+        sample_rate,
+        sample_count,
+        frames,
+    })
+}
+
+fn pcm_s16le_bytes_to_frames(bytes: &[u8], frame_samples: usize) -> Result<Vec<Vec<i16>>, String> {
+    if bytes.is_empty() {
+        return Err("Raw PCM input is empty".to_string());
+    }
+    if bytes.len() % 2 != 0 {
+        return Err(format!(
+            "Raw PCM input has {} bytes; expected an even number of bytes for s16le samples",
+            bytes.len()
+        ));
+    }
+
+    let samples: Vec<i16> = bytes
+        .chunks_exact(2)
+        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect();
+    Ok(samples
+        .chunks(frame_samples.max(1))
+        .map(|chunk| chunk.to_vec())
+        .collect())
 }
 
 fn validate_stream_frame_params(sample_rate: u32, frame_ms: u32) -> Result<(), String> {
@@ -1884,6 +1979,27 @@ mod tests {
         assert!(validate_stream_frame_params(0, 20).is_err());
         assert!(validate_stream_frame_params(48_000, 0).is_err());
         assert!(validate_stream_frame_params(48_000, 20).is_ok());
+    }
+
+    #[test]
+    fn pcm_s16le_bytes_to_frames_decodes_little_endian_samples() {
+        let bytes = [
+            0x00, 0x00, // 0
+            0xff, 0x7f, // i16::MAX
+            0x00, 0x80, // i16::MIN
+            0xff, 0xff, // -1
+            0x01, 0x00, // 1
+        ];
+        let frames = pcm_s16le_bytes_to_frames(&bytes, 2).unwrap();
+
+        assert_eq!(frames, vec![vec![0, i16::MAX], vec![i16::MIN, -1], vec![1]]);
+    }
+
+    #[test]
+    fn pcm_s16le_bytes_to_frames_rejects_empty_or_odd_bytes() {
+        assert!(pcm_s16le_bytes_to_frames(&[], 2).is_err());
+        let err = pcm_s16le_bytes_to_frames(&[0, 1, 2], 2).unwrap_err();
+        assert!(err.contains("even number"));
     }
 
     #[test]

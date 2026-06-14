@@ -94,7 +94,16 @@ silence until real TTS PCM arrives.
 
 Inbound decoded PCM is written as raw signed 16-bit little-endian mono samples.
 A later bridge layer can segment that stream with VAD and submit each segment
-to `voice stream-transcribe` or the daemon `stream_transcribe` RPC.
+directly to the daemon STT stream contract:
+
+```bash
+voice stream-transcribe \
+  --raw-input /tmp/voice-webrtc-in.s16le \
+  --sample-rate 48000 \
+  --frame-ms 20
+```
+
+Use `--raw-input -` when piping decoded PCM from another process.
 
 ## Tests
 

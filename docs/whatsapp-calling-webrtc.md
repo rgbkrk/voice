@@ -109,6 +109,13 @@ Owns speech model concerns:
 - cancellation: stop current TTS on barge-in or call termination
 - backpressure: avoid unbounded audio buffering
 
+For local smoke tests, decoded sidecar PCM can go straight into the CLI wrapper
+for the daemon contract:
+
+```bash
+voice stream-transcribe --raw-input /tmp/voice-webrtc-in.s16le --sample-rate 48000 --frame-ms 20
+```
+
 ## Inbound Call Flow
 
 1. WhatsApp sends a `connect` webhook containing `call_id` and an SDP offer.

@@ -175,21 +175,25 @@ Options:
 
 ### `voice stream-transcribe`
 
-Replays a WAV file as ordered PCM frames into a running `voiced` daemon. Use
-this to smoke-test the inbound STT stream contract that WebRTC and bridge
+Replays WAV or raw PCM audio as ordered frames into a running `voiced` daemon.
+Use this to smoke-test the inbound STT stream contract that WebRTC and bridge
 clients use.
 
 ```
-Usage: voice stream-transcribe [OPTIONS] <FILE>
+Usage: voice stream-transcribe [OPTIONS] [FILE]
 
 Arguments:
-  <FILE>                 Path to WAV audio file
+  [FILE]                 Path to WAV audio file
 
 Options:
-      --frame-ms <MS>    Target stream frame duration in milliseconds [default: 20]
-      --json             Print full JSON STT events
-  -q, --quiet            Suppress progress output
-  -h, --help             Print help
+      --raw-input <PATH>           Read raw signed 16-bit little-endian mono PCM
+                                   from this path (use - for stdin)
+      --sample-rate <SAMPLE_RATE>  Sample rate for --raw-input [default: 48000]
+      --frame-ms <MS>              Target stream frame duration in milliseconds
+                                   [default: 20]
+      --json                       Print full JSON STT events
+  -q, --quiet                      Suppress progress output
+  -h, --help                       Print help
 ```
 
 ### `voice transcribe`

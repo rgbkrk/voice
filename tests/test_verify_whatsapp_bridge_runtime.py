@@ -151,6 +151,47 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
         self.assertTrue(summary["calling_ready"])
         self.assertEqual(summary["calling_missing"], [])
 
+    def test_cloud_calling_summary_can_use_running_gateway_process_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(tmp_path, skip_systemd=False)
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text("WHATSAPP_MODE=bot\n", encoding="utf-8")
+
+            original_service_env = self.script.get_systemd_service_env
+            original_main_pid = self.script.get_systemd_main_pid
+            original_process_env = self.script.read_process_environment
+            self.script.get_systemd_service_env = lambda *_args, **_kwargs: ({}, None)
+            self.script.get_systemd_main_pid = lambda *_args, **_kwargs: (4242, None)
+            self.script.read_process_environment = lambda _pid: (
+                {
+                    "WHATSAPP_CLOUD_PHONE_NUMBER_ID": "phone-id",
+                    "WHATSAPP_CLOUD_ACCESS_TOKEN": "token",
+                    "WHATSAPP_CLOUD_APP_SECRET": "secret",
+                    "WHATSAPP_CLOUD_VERIFY_TOKEN": "verify",
+                    "WHATSAPP_CLOUD_CALLING_SIDECAR_URL": "http://127.0.0.1:8787",
+                    "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND": "voice stream",
+                },
+                None,
+            )
+            try:
+                result = self.script.verify(args)
+            finally:
+                self.script.get_systemd_service_env = original_service_env
+                self.script.get_systemd_main_pid = original_main_pid
+                self.script.read_process_environment = original_process_env
+
+        self.assertTrue(result["success"], result["failures"])
+        checks = result["checks"]
+        self.assertTrue(checks["whatsapp_cloud"]["cloud_configured"])
+        self.assertTrue(checks["whatsapp_cloud"]["calling_ready"])
+        self.assertIn(
+            "WHATSAPP_CLOUD_ACCESS_TOKEN",
+            checks["env_key_sources"]["systemd_process"],
+        )
+        self.assertNotIn("token", json.dumps(checks["env_key_sources"]))
+
 
 if __name__ == "__main__":
     unittest.main()

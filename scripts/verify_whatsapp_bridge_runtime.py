@@ -132,6 +132,61 @@ def get_systemd_service_env(
     return {}, None
 
 
+def get_systemd_main_pid(
+    service_name: str,
+    *,
+    timeout: float,
+) -> tuple[int | None, str | None]:
+    completed = subprocess.run(
+        [
+            "systemctl",
+            "--user",
+            "show",
+            service_name,
+            "-p",
+            "MainPID",
+            "--no-pager",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        return None, detail or f"systemctl show MainPID failed for {service_name}"
+
+    for line in completed.stdout.splitlines():
+        if not line.startswith("MainPID="):
+            continue
+        raw_pid = line.split("=", 1)[1].strip()
+        try:
+            pid = int(raw_pid)
+        except ValueError:
+            return None, f"{service_name} MainPID is not an integer: {raw_pid!r}"
+        return (pid if pid > 0 else None), None
+    return None, None
+
+
+def read_process_environment(pid: int) -> tuple[dict[str, str], str | None]:
+    try:
+        raw = (Path("/proc") / str(pid) / "environ").read_bytes()
+    except OSError as exc:
+        return {}, f"could not read /proc/{pid}/environ: {exc}"
+
+    env: dict[str, str] = {}
+    for item in raw.split(b"\0"):
+        if not item or b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        decoded_key = key.decode("utf-8", errors="replace")
+        if not decoded_key:
+            continue
+        env[decoded_key] = value.decode("utf-8", errors="replace")
+    return env, None
+
+
 def read_json_file(path: Path) -> tuple[Any | None, str | None]:
     try:
         return json.loads(path.read_text(encoding="utf-8")), None
@@ -386,6 +441,22 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             warnings.append(
                 f"could not inspect {args.service_name} environment: {service_env_error}"
             )
+        main_pid, main_pid_error = get_systemd_main_pid(
+            args.service_name,
+            timeout=args.timeout,
+        )
+        if main_pid_error:
+            warnings.append(
+                f"could not inspect {args.service_name} MainPID: {main_pid_error}"
+            )
+        elif main_pid:
+            process_env, process_env_error = read_process_environment(main_pid)
+            env_sources["systemd_process"] = process_env
+            if process_env_error:
+                warnings.append(
+                    f"could not inspect {args.service_name} process environment: "
+                    f"{process_env_error}"
+                )
 
     expected_agent_number = normalize_whatsapp_identifier(args.expected_agent_number)
     expected_agent_name = args.expected_agent_name

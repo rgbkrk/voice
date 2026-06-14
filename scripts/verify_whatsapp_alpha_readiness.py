@@ -345,6 +345,86 @@ def bridge_cloud_summary(components: list[dict[str, Any]]) -> dict[str, Any]:
     return {}
 
 
+def attended_receive_gate(
+    components: list[dict[str, Any]],
+    *,
+    hermes_home: Path,
+) -> dict[str, Any]:
+    receive_names = {"whatsapp_voice_note_receive", "whatsapp_voice_note_send_receive"}
+    cached_receive_verified = any(
+        item["name"] == "whatsapp_inbound_cache_stt" and item.get("success")
+        for item in components
+    )
+
+    gate: dict[str, Any] = {
+        "status": "pending_attended",
+        "component": None,
+        "cached_receive_verified": cached_receive_verified,
+        "requires_operator": True,
+        "drains_bridge_messages": True,
+        "reason": "fresh WhatsApp inbound voice-note receive has not been run",
+        "command": [
+            "scripts/verify_whatsapp_alpha_readiness.py",
+            "--hermes-home",
+            str(hermes_home),
+            "--send-voice-note",
+            "--wait-inbound-seconds",
+            "60",
+            "--require-inbound-audio",
+            "--drain-bridge-messages",
+        ],
+    }
+
+    for item in components:
+        if item["name"] not in receive_names:
+            continue
+        summary = item.get("summary") or {}
+        checks = summary.get("checks") or {}
+        inbound = checks.get("inbound_audio") or {}
+        audio_events = inbound.get("audio_events") or []
+        gate["component"] = item["name"]
+        gate["drains_bridge_messages"] = bool(inbound.get("drains_bridge_messages"))
+        if item.get("success") and audio_events:
+            gate["status"] = "verified"
+            gate["requires_operator"] = False
+            gate["reason"] = "fresh WhatsApp inbound audio event observed"
+            gate["audio_events"] = len(audio_events)
+        elif item.get("success"):
+            gate["status"] = "not_verified"
+            gate["reason"] = "receive polling completed without fresh audio-event evidence"
+            gate["audio_events"] = len(audio_events)
+        else:
+            gate["status"] = "failed"
+            gate["reason"] = "fresh receive verifier failed"
+            gate["failures"] = item.get("failures") or []
+        break
+    return gate
+
+
+def external_meta_gate(external_meta_setup: dict[str, Any]) -> dict[str, Any]:
+    cloud_missing = [str(key) for key in external_meta_setup.get("cloud_missing") or []]
+    calling_missing = [
+        str(key) for key in external_meta_setup.get("calling_missing") or []
+    ]
+    cloud_configured = bool(external_meta_setup.get("cloud_configured"))
+    calling_ready = bool(external_meta_setup.get("calling_ready"))
+    return {
+        "whatsapp_cloud": {
+            "status": "configured" if cloud_configured else "external_setup_required",
+            "missing": cloud_missing,
+        },
+        "whatsapp_cloud_calling": {
+            "status": "ready" if calling_ready else "external_setup_required",
+            "missing": calling_missing,
+            "setup_steps": (
+                []
+                if calling_ready
+                else list(external_meta_setup.get("setup_steps") or META_SETUP_STEPS)
+            ),
+        },
+    }
+
+
 def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
     components = build_components(args)
     required_failures = [
@@ -397,11 +477,20 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
 
+    pending_gates = {
+        "attended_fresh_receive": attended_receive_gate(
+            components,
+            hermes_home=args.hermes_home.expanduser().resolve(),
+        ),
+        **external_meta_gate(external_meta_setup),
+    }
+
     return {
         "success": success,
         "components": components,
         "by_category": by_category,
         "external_meta_setup": external_meta_setup,
+        "pending_gates": pending_gates,
         "failures": [
             {
                 "name": item["name"],
@@ -506,6 +595,14 @@ def human_summary(result: dict[str, Any]) -> None:
                 print(f"  - {failure}", file=sys.stderr)
 
     external = result["external_meta_setup"]
+    pending = result.get("pending_gates") or {}
+    attended = pending.get("attended_fresh_receive") or {}
+    if attended:
+        print(
+            "attended_fresh_receive="
+            f"{attended.get('status')} cached_receive_verified="
+            f"{attended.get('cached_receive_verified')}"
+        )
     print(
         "whatsapp_cloud="
         + ("configured" if external["cloud_configured"] else "not_configured")

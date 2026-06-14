@@ -95,6 +95,13 @@ scripts/verify_whatsapp_alpha_readiness.py \
   --run-inbound-cache-smoke
 ```
 
+The JSON report includes `pending_gates` for checks that are intentionally not
+part of unattended local readiness: fresh attended inbound receive, WhatsApp
+Cloud API credentials, and WhatsApp Cloud Calling. A default local pass can
+still report `pending_gates.attended_fresh_receive.status=pending_attended`
+until someone sends a fresh WhatsApp voice note during the guarded receive
+window.
+
 The same alpha report can also drive the real bridge voice-note operation when
 running an attended test. Add `--send-voice-note` to post the generated
 Ogg/Opus note to `WHATSAPP_HOME_CHANNEL`, or pass `--voice-note-chat-id` to

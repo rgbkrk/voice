@@ -23,6 +23,8 @@ PROFILE_CHOICES = (
     "attended-cache-receive",
     "attended-send-receive",
 )
+DEFAULT_ATTENDED_CACHE_RECEIVE_SECONDS = 60.0
+DEFAULT_ATTENDED_DRAIN_RECEIVE_SECONDS = 60.0
 
 META_SETUP_STEPS = (
     "Create or select a WhatsApp Business Platform app and WABA.",
@@ -425,6 +427,8 @@ def attended_receive_gate(
     *,
     hermes_home: Path,
     audio_cache_dir: Path,
+    preferred_wait_audio_cache_seconds: float = DEFAULT_ATTENDED_CACHE_RECEIVE_SECONDS,
+    fallback_wait_inbound_seconds: float = DEFAULT_ATTENDED_DRAIN_RECEIVE_SECONDS,
 ) -> dict[str, Any]:
     bridge_checks = bridge_runtime_checks(components)
     local_config = bridge_checks.get("whatsapp_local_config") or {}
@@ -445,6 +449,8 @@ def attended_receive_gate(
             str(hermes_home),
             "--profile",
             "attended-cache-receive",
+            "--wait-audio-cache-seconds",
+            str(preferred_wait_audio_cache_seconds),
         ],
         "fallback_draining_command": [
             "scripts/verify_whatsapp_alpha_readiness.py",
@@ -452,6 +458,8 @@ def attended_receive_gate(
             str(hermes_home),
             "--profile",
             "attended-send-receive",
+            "--wait-inbound-seconds",
+            str(fallback_wait_inbound_seconds),
         ],
     }
     gate["operator_handoff"] = {
@@ -461,6 +469,8 @@ def attended_receive_gate(
         "fallback_draining_command": gate["fallback_draining_command"],
         "drains_bridge_messages": False,
         "fallback_drains_bridge_messages": True,
+        "wait_audio_cache_seconds": preferred_wait_audio_cache_seconds,
+        "fallback_wait_inbound_seconds": fallback_wait_inbound_seconds,
         "audio_cache_dir": str(audio_cache_dir),
         "home_channel": local_config.get("home_channel"),
         "home_channel_kind": local_config.get("home_channel_kind"),
@@ -760,6 +770,8 @@ def build_readiness_summary(
                     "fallback_profile",
                     "drains_bridge_messages",
                     "fallback_drains_bridge_messages",
+                    "wait_audio_cache_seconds",
+                    "fallback_wait_inbound_seconds",
                     "audio_cache_dir",
                     "home_channel",
                     "home_channel_kind",
@@ -911,6 +923,16 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
                 if args.whatsapp_audio_cache_dir
                 else args.hermes_home.expanduser().resolve() / "audio_cache"
             ),
+            preferred_wait_audio_cache_seconds=(
+                args.wait_audio_cache_seconds
+                if args.profile == "attended-cache-receive"
+                else DEFAULT_ATTENDED_CACHE_RECEIVE_SECONDS
+            ),
+            fallback_wait_inbound_seconds=(
+                args.wait_inbound_seconds
+                if args.profile == "attended-send-receive"
+                else DEFAULT_ATTENDED_DRAIN_RECEIVE_SECONDS
+            ),
         ),
         **external_meta_gate(
             external_meta_setup,
@@ -1056,12 +1078,12 @@ def apply_profile(args: argparse.Namespace) -> None:
         args.send_voice_note = True
         args.run_inbound_cache_smoke = True
         if args.wait_audio_cache_seconds == 0:
-            args.wait_audio_cache_seconds = 60.0
+            args.wait_audio_cache_seconds = DEFAULT_ATTENDED_CACHE_RECEIVE_SECONDS
         args.require_fresh_cache_audio = True
     elif args.profile == "attended-send-receive":
         args.send_voice_note = True
         if args.wait_inbound_seconds == 0:
-            args.wait_inbound_seconds = 60.0
+            args.wait_inbound_seconds = DEFAULT_ATTENDED_DRAIN_RECEIVE_SECONDS
         args.require_inbound_audio = True
         args.drain_bridge_messages = True
 
@@ -1160,7 +1182,11 @@ def human_summary(result: dict[str, Any]) -> None:
                     f"agent={handoff.get('agent_name') or '<unknown>'} "
                     f"number={handoff.get('agent_number') or '<unknown>'} "
                     f"home_channel={handoff.get('home_channel') or '<unknown>'} "
-                    f"audio_cache_dir={handoff.get('audio_cache_dir')}"
+                    f"audio_cache_dir={handoff.get('audio_cache_dir')} "
+                    "wait_audio_cache_seconds="
+                    f"{handoff.get('wait_audio_cache_seconds')} "
+                    "fallback_wait_inbound_seconds="
+                    f"{handoff.get('fallback_wait_inbound_seconds')}"
                 )
                 for index, step in enumerate(handoff.get("steps") or [], start=1):
                     print(f"attended_fresh_receive_step[{index}]={step}")

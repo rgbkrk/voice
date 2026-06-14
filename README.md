@@ -421,7 +421,8 @@ draining queued messages. Use `attended-send-receive` only when the verifier
 itself should poll and drain the bridge message queue. Add
 `--whatsapp-alpha-chat-id` to override `WHATSAPP_HOME_CHANNEL`, or adjust the
 attended wait with `--whatsapp-alpha-wait-audio-cache-seconds` /
-`--whatsapp-alpha-wait-inbound-seconds`.
+`--whatsapp-alpha-wait-inbound-seconds`. The generated attended receive
+handoff commands include explicit 60-second wait windows by default.
 
 To fail unless every alpha gate is complete, include the strict completion flag:
 

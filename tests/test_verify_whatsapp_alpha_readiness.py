@@ -263,12 +263,27 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             gates["attended_fresh_receive"]["command"],
         )
         self.assertIn(
+            "--wait-audio-cache-seconds",
+            gates["attended_fresh_receive"]["command"],
+        )
+        self.assertIn("60.0", gates["attended_fresh_receive"]["command"])
+        self.assertIn(
             "attended-send-receive",
+            gates["attended_fresh_receive"]["fallback_draining_command"],
+        )
+        self.assertIn(
+            "--wait-inbound-seconds",
+            gates["attended_fresh_receive"]["fallback_draining_command"],
+        )
+        self.assertIn(
+            "60.0",
             gates["attended_fresh_receive"]["fallback_draining_command"],
         )
         handoff = gates["attended_fresh_receive"]["operator_handoff"]
         self.assertEqual(handoff["preferred_profile"], "attended-cache-receive")
         self.assertEqual(handoff["fallback_profile"], "attended-send-receive")
+        self.assertEqual(handoff["wait_audio_cache_seconds"], 60.0)
+        self.assertEqual(handoff["fallback_wait_inbound_seconds"], 60.0)
         self.assertEqual(handoff["home_channel"], "20530681934008@lid")
         self.assertEqual(handoff["home_channel_kind"], "lid")
         self.assertEqual(handoff["agent_name"], "Quill")
@@ -359,6 +374,14 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertEqual(
             attended_action["operator_handoff"]["home_channel"],
             "20530681934008@lid",
+        )
+        self.assertEqual(
+            attended_action["operator_handoff"]["wait_audio_cache_seconds"],
+            60.0,
+        )
+        self.assertEqual(
+            attended_action["operator_handoff"]["fallback_wait_inbound_seconds"],
+            60.0,
         )
         meta_action = actions["configure_whatsapp_cloud_calling"]
         self.assertEqual(
@@ -529,15 +552,19 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("--profile attended-cache-receive", result.stdout)
+        self.assertIn("--wait-audio-cache-seconds 60.0", result.stdout)
         self.assertIn(
             "attended_fresh_receive_fallback_draining_command=",
             result.stdout,
         )
         self.assertIn("--profile attended-send-receive", result.stdout)
+        self.assertIn("--wait-inbound-seconds 60.0", result.stdout)
         self.assertIn(
             "attended_fresh_receive_operator=agent=Quill number=13236478455",
             result.stdout,
         )
+        self.assertIn("wait_audio_cache_seconds=60.0", result.stdout)
+        self.assertIn("fallback_wait_inbound_seconds=60.0", result.stdout)
         self.assertIn(
             "home_channel=20530681934008@lid",
             result.stdout,

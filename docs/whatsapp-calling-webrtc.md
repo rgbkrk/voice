@@ -186,7 +186,9 @@ scripts/verify_whatsapp_alpha_readiness.py \
 That profile sends a real voice note, then watches the Hermes audio cache for a
 fresh inbound `aud_*` file without polling the bridge message queue. If Hermes
 is not running and the verifier itself must consume bridge events, use the
-draining profile instead:
+draining profile instead. The alpha readiness handoff prints both commands with
+explicit 60-second wait windows so copied commands and saved JSON artifacts are
+self-contained:
 
 ```bash
 scripts/verify_whatsapp_alpha_readiness.py \

@@ -129,7 +129,11 @@ write real mono 48 kHz Ogg/Opus, verifies misleading `.wav`/`ogg-opus`
 combinations are rejected before writing a file, and, when the daemon is
 running, checks both raw 48 kHz 20 ms PCM streaming and streamed Ogg/Opus
 encoding. Pass `--require-daemon` when the daemon stream path must be covered,
-or `--skip-daemon` for a file-only preflight.
+or `--skip-daemon` for a file-only preflight. Pass `--run-stt-smoke` with
+`--require-daemon` when the inbound WebRTC/STT path must also be covered; it
+creates a tiny WAV fixture and requires `voice stream-transcribe --json` to
+return a terminal `stt.transcribed` event. This is optional because it may lazily
+load the Whisper model.
 
 The raw output is signed 16-bit little-endian mono PCM with no container header.
 Use the event metadata for sample rate, frame duration, and stream ID.

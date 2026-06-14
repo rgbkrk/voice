@@ -67,6 +67,7 @@ voice stream-transcribe recording.ogg
 
 # Verify WhatsApp-ready file output and stream contract from an installed binary
 VOICE_BIN=/path/to/voice scripts/verify_whatsapp_voice_contract.sh
+VOICE_BIN=/path/to/voice scripts/verify_whatsapp_voice_contract.sh --require-daemon --run-stt-smoke
 
 # Read from a file, strip markdown
 voice say --markdown -f blog-post.mdx

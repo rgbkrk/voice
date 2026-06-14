@@ -8,6 +8,7 @@ text="${TEXT:-Voice WhatsApp contract smoke test.}"
 keep_output="${KEEP_OUTPUT:-0}"
 require_daemon="${REQUIRE_DAEMON:-0}"
 skip_daemon="${SKIP_DAEMON:-0}"
+run_stt_smoke="${RUN_STT_SMOKE:-0}"
 
 usage() {
   cat <<'EOF'
@@ -21,11 +22,12 @@ Options:
   --text TEXT          smoke text to synthesize
   --require-daemon     fail if voice daemon streaming is unavailable
   --skip-daemon        skip daemon-backed stream checks even if the daemon is running
+  --run-stt-smoke      also replay a WAV through daemon stream-transcribe
   --keep-output        retain generated files and print their directory
   -h, --help           show this help
 
 Environment aliases:
-  VOICE_BIN, TEXT, REQUIRE_DAEMON=1, SKIP_DAEMON=1, KEEP_OUTPUT=1
+  VOICE_BIN, TEXT, REQUIRE_DAEMON=1, SKIP_DAEMON=1, RUN_STT_SMOKE=1, KEEP_OUTPUT=1
 EOF
 }
 
@@ -58,6 +60,10 @@ while [[ $# -gt 0 ]]; do
       skip_daemon=1
       shift
       ;;
+    --run-stt-smoke)
+      run_stt_smoke=1
+      shift
+      ;;
     --keep-output)
       keep_output=1
       shift
@@ -74,6 +80,9 @@ done
 
 if [[ "$require_daemon" == "1" && "$skip_daemon" == "1" ]]; then
   fail "--require-daemon and --skip-daemon cannot be combined"
+fi
+if [[ "$run_stt_smoke" == "1" && "$skip_daemon" == "1" ]]; then
+  fail "--run-stt-smoke requires daemon checks; do not combine it with --skip-daemon"
 fi
 
 if [[ -z "$voice_bin" ]]; then
@@ -225,6 +234,7 @@ daemon_available=0
 if "$voice_bin" daemon status >/dev/null 2>&1; then
   daemon_available=1
 fi
+stt_status="skipped (pass --run-stt-smoke to check stream-transcribe)"
 
 if [[ "$skip_daemon" != "1" && "$daemon_available" == "1" ]]; then
   raw_pcm="$tmp_dir/stream.s16le"
@@ -255,9 +265,58 @@ PY
     --format ogg-opus \
     "$text"
   assert_ogg_opus "$streamed_ogg"
+
+  if [[ "$run_stt_smoke" == "1" ]]; then
+    stt_wav="$tmp_dir/stream-transcribe-smoke.wav"
+    python3 - "$stt_wav" <<'PY'
+import pathlib
+import struct
+import sys
+import wave
+
+path = pathlib.Path(sys.argv[1])
+sample_rate = 16_000
+samples = [0] * sample_rate
+with wave.open(str(path), "wb") as wav:
+    wav.setnchannels(1)
+    wav.setsampwidth(2)
+    wav.setframerate(sample_rate)
+    wav.writeframes(struct.pack("<" + "h" * len(samples), *samples))
+PY
+
+    stt_output="$tmp_dir/stream-transcribe-output.jsonl"
+    "$voice_bin" --quiet stream-transcribe --json "$stt_wav" >"$stt_output"
+    python3 - "$stt_output" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+terminal = None
+for line in path.read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event.get("event") == "stt.transcribed":
+        terminal = event.get("data") or {}
+if terminal is None:
+    raise SystemExit("stream-transcribe did not emit stt.transcribed")
+if int(terminal.get("frames") or 0) <= 0:
+    raise SystemExit("stream-transcribe terminal event reported no frames")
+if int(terminal.get("audio_duration_ms") or 0) <= 0:
+    raise SystemExit("stream-transcribe terminal event reported no audio duration")
+PY
+    stt_status="checked"
+  fi
   daemon_status="checked"
 elif [[ "$require_daemon" == "1" ]]; then
   fail "voice daemon is not available; start it with 'voice daemon start --tts-only' or use --skip-daemon"
+elif [[ "$run_stt_smoke" == "1" ]]; then
+  fail "voice daemon is not available; stream-transcribe STT smoke requires daemon streaming"
 else
   daemon_status="skipped (daemon not running)"
 fi
@@ -265,6 +324,7 @@ fi
 echo "ok: voice WhatsApp contract verifier passed"
 echo "voice_bin=$voice_bin"
 echo "daemon_streams=$daemon_status"
+echo "stream_transcribe=$stt_status"
 if [[ "$keep_output" == "1" ]]; then
   echo "contract=$contract_path"
   echo "direct_ogg=$direct_ogg"

@@ -81,6 +81,7 @@ jobs:
             tests/test_verify_cli_mcp_surface.py \
             tests/test_verify_hermes_voice_config.py \
             tests/test_verify_local_hermes_voice_stack.py \
+            tests/test_verify_telegram_voice_contract.py \
             tests/test_verify_webrtc_sidecar_service.py
 
       - run: python -m unittest discover -s tests
@@ -90,4 +91,5 @@ jobs:
             scripts/install_webrtc_sidecar_service.sh \
             scripts/verify_hermes_command_tts.sh \
             scripts/verify_local_hermes_voice_stack.sh \
+            scripts/verify_telegram_voice_contract.sh \
             scripts/verify_whatsapp_voice_contract.sh

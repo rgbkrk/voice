@@ -65,9 +65,10 @@ voice stream --sample-rate 48000 --frame-ms 20 --output streamed.ogg --format og
 # Replay audio through daemon streaming STT
 voice stream-transcribe recording.ogg
 
-# Verify WhatsApp-ready file output and stream contract from an installed binary
+# Verify messaging voice-note output and stream contract from an installed binary
 VOICE_BIN=/path/to/voice scripts/verify_whatsapp_voice_contract.sh
 VOICE_BIN=/path/to/voice scripts/verify_whatsapp_voice_contract.sh --require-daemon --run-stt-smoke
+VOICE_BIN=/path/to/voice scripts/verify_telegram_voice_contract.sh --skip-hermes-config
 
 # Read from a file, strip markdown
 voice say --markdown -f blog-post.mdx
@@ -357,6 +358,11 @@ For WhatsApp or Telegram voice-note delivery through Hermes, prefer
 Opus output directly. `output_format: wav` remains a compatibility fallback,
 with Hermes converting to OGG/Opus when needed.
 
+Telegram voice messages use the same Ogg/Opus file shape as WhatsApp voice
+notes. Run `scripts/verify_telegram_voice_contract.sh` before adding the bot
+token; it does not contact Telegram, but it verifies Voice's Ogg/Opus output
+contract and, unless skipped, the active Hermes command-provider config.
+
 Hermes can call `voice` directly, or use the voice-owned command-provider
 shims:
 
@@ -397,7 +403,8 @@ provider, direct Ogg/Opus voice note output, daemon-backed streaming,
 `stream-transcribe`, and the local WebRTC sidecar service. It requires the
 daemon and sidecar by default. For narrower checks, run
 `scripts/verify_cli_mcp_surface.py`, `scripts/verify_hermes_voice_config.py`,
-`scripts/verify_whatsapp_voice_contract.sh`, or
+`scripts/verify_whatsapp_voice_contract.sh`,
+`scripts/verify_telegram_voice_contract.sh`, or
 `scripts/verify_webrtc_sidecar_service.py` directly.
 
 To include the categorized WhatsApp alpha report in the same command, add

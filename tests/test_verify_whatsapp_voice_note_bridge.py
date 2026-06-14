@@ -71,6 +71,7 @@ def make_args(tmp_path: Path, **overrides):
         "send": False,
         "wait_inbound_seconds": 0.0,
         "require_inbound_audio": False,
+        "drain_bridge_messages": False,
         "keep_output": False,
     }
     values.update(overrides)
@@ -127,6 +128,64 @@ class WhatsAppVoiceNoteBridgeSmokeTests(unittest.TestCase):
 
         self.assertFalse(result["success"])
         self.assertIn("no chat id configured", "\n".join(result["failures"]))
+
+    def test_wait_inbound_requires_explicit_message_drain(self):
+        get_calls = []
+
+        def fake_get(url, *, timeout):
+            get_calls.append((url, timeout))
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.script.verify(
+                make_args(
+                    Path(tmp),
+                    wait_inbound_seconds=1.0,
+                    require_inbound_audio=True,
+                ),
+                get_json_func=fake_get,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(get_calls, [])
+        self.assertIn("drains the bridge /messages queue", "\n".join(result["failures"]))
+        self.assertEqual(
+            result["checks"]["inbound_audio"]["reason"],
+            "requires --drain-bridge-messages",
+        )
+
+    def test_wait_inbound_audio_polls_messages_when_drain_allowed(self):
+        get_calls = []
+
+        def fake_get(url, *, timeout):
+            get_calls.append((url, timeout))
+            return [
+                {
+                    "chatId": "20530681934008@lid",
+                    "senderId": "13236478455@s.whatsapp.net",
+                    "hasMedia": True,
+                    "mediaType": "ptt",
+                    "mediaUrls": ["/home/ubuntu/.hermes/audio_cache/aud_test.ogg"],
+                }
+            ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.script.verify(
+                make_args(
+                    Path(tmp),
+                    wait_inbound_seconds=1.0,
+                    require_inbound_audio=True,
+                    drain_bridge_messages=True,
+                ),
+                get_json_func=fake_get,
+            )
+
+        self.assertTrue(result["success"], result["failures"])
+        self.assertEqual(get_calls, [("http://127.0.0.1:3000/messages", 1.0)])
+        inbound = result["checks"]["inbound_audio"]
+        self.assertTrue(inbound["drains_bridge_messages"])
+        self.assertEqual(len(inbound["seen_events"]), 1)
+        self.assertEqual(len(inbound["audio_events"]), 1)
 
 
 if __name__ == "__main__":

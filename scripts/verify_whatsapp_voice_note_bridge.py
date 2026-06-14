@@ -307,12 +307,14 @@ def poll_inbound_audio(
     *,
     wait_seconds: float,
     timeout: float,
+    get_json_func: Callable[..., Any] = get_json,
 ) -> dict[str, Any]:
+    message_endpoint = bridge_url.rstrip("/") + "/messages"
     deadline = time.monotonic() + wait_seconds
     seen: list[dict[str, Any]] = []
     audio_events: list[dict[str, Any]] = []
     while time.monotonic() < deadline:
-        payload = get_json(bridge_url.rstrip("/") + "/messages", timeout=timeout)
+        payload = get_json_func(message_endpoint, timeout=timeout)
         if isinstance(payload, list):
             for event in payload:
                 if not isinstance(event, dict):
@@ -333,6 +335,8 @@ def poll_inbound_audio(
         time.sleep(min(2.0, max(0.1, deadline - time.monotonic())))
     return {
         "wait_seconds": wait_seconds,
+        "message_endpoint": message_endpoint,
+        "drains_bridge_messages": True,
         "seen_events": seen,
         "audio_events": audio_events,
     }
@@ -348,6 +352,7 @@ def verify(
     args: argparse.Namespace,
     *,
     post_json_func: Callable[..., dict[str, Any]] = post_json,
+    get_json_func: Callable[..., Any] = get_json,
 ) -> dict[str, Any]:
     hermes_home = args.hermes_home.expanduser().resolve()
     env_file = args.env_file.expanduser().resolve() if args.env_file else hermes_home / ".env"
@@ -365,6 +370,13 @@ def verify(
         "send_requested": bool(args.send),
         "chat_id": resolve_chat_id(args, env),
     }
+
+    inbound_requested = args.wait_inbound_seconds > 0
+    if inbound_requested and not args.drain_bridge_messages:
+        failures.append(
+            "inbound WhatsApp receive polling drains the bridge /messages queue; "
+            "pass --drain-bridge-messages only during an attended receive test"
+        )
 
     if not args.skip_bridge_health:
         health, health_error = fetch_bridge_health(bridge_url, timeout=args.timeout)
@@ -455,14 +467,30 @@ def verify(
             checks["send_media"] = {"skipped": True, "reason": "pass --send to post"}
 
         if args.wait_inbound_seconds > 0:
-            if failures:
-                checks["inbound_audio"] = {"skipped": True, "reason": "prior failures"}
+            inbound_base = {
+                "wait_seconds": args.wait_inbound_seconds,
+                "message_endpoint": bridge_url + "/messages",
+                "drains_bridge_messages": bool(args.drain_bridge_messages),
+            }
+            if not args.drain_bridge_messages:
+                checks["inbound_audio"] = {
+                    **inbound_base,
+                    "skipped": True,
+                    "reason": "requires --drain-bridge-messages",
+                }
+            elif failures:
+                checks["inbound_audio"] = {
+                    **inbound_base,
+                    "skipped": True,
+                    "reason": "prior failures",
+                }
             else:
                 try:
                     inbound = poll_inbound_audio(
                         bridge_url,
                         wait_seconds=args.wait_inbound_seconds,
                         timeout=args.timeout,
+                        get_json_func=get_json_func,
                     )
                     checks["inbound_audio"] = inbound
                     if args.require_inbound_audio and not inbound["audio_events"]:
@@ -472,7 +500,10 @@ def verify(
                 except Exception as exc:
                     failures.append(str(exc))
         else:
-            checks["inbound_audio"] = {"skipped": True}
+            checks["inbound_audio"] = {
+                "skipped": True,
+                "drains_bridge_messages": False,
+            }
 
         if args.keep_output and output_path.exists():
             checks["retained_output"] = str(output_path)
@@ -514,6 +545,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--send", action="store_true", help="post a real WhatsApp voice note")
     parser.add_argument("--wait-inbound-seconds", type=float, default=0.0)
     parser.add_argument("--require-inbound-audio", action="store_true")
+    parser.add_argument(
+        "--drain-bridge-messages",
+        action="store_true",
+        help=(
+            "allow attended inbound receive polling via GET /messages; this consumes "
+            "queued bridge messages"
+        ),
+    )
     parser.add_argument("--keep-output", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
@@ -554,11 +593,20 @@ def human_summary(result: dict[str, Any]) -> None:
             f"success={response.get('success')} message_id={response.get('messageId')}"
         )
     inbound = checks.get("inbound_audio") or {}
-    if not inbound.get("skipped"):
+    if inbound.get("skipped"):
+        reason = inbound.get("reason")
+        if reason:
+            print(
+                "inbound_audio="
+                f"skipped reason={reason} "
+                f"drains_messages={inbound.get('drains_bridge_messages')}"
+            )
+    else:
         print(
             "inbound_audio="
             f"events={len(inbound.get('seen_events') or [])} "
-            f"audio_events={len(inbound.get('audio_events') or [])}"
+            f"audio_events={len(inbound.get('audio_events') or [])} "
+            f"drains_messages={inbound.get('drains_bridge_messages')}"
         )
     if checks.get("retained_output"):
         print(f"retained_output={checks['retained_output']}")

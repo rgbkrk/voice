@@ -102,9 +102,21 @@ posting. Add `--send` to post the generated file to the configured
 scripts/verify_whatsapp_voice_note_bridge.py --hermes-home ~/.hermes --send
 ```
 
-Use `--wait-inbound-seconds N --require-inbound-audio` only during an attended
-test where someone can reply with a real WhatsApp voice note during the wait
-window.
+Use attended inbound receive polling only when someone can reply with a real
+WhatsApp voice note during the wait window:
+
+```bash
+scripts/verify_whatsapp_voice_note_bridge.py \
+  --hermes-home ~/.hermes \
+  --wait-inbound-seconds 60 \
+  --require-inbound-audio \
+  --drain-bridge-messages
+```
+
+The explicit `--drain-bridge-messages` flag is required because this path polls
+the bridge's `GET /messages` endpoint, which consumes queued bridge messages.
+Do not use it as a background health check while Hermes is expected to process
+the same queue.
 
 If the bridge has already downloaded inbound WhatsApp audio, validate that
 receive artifact without draining the live `/messages` queue:

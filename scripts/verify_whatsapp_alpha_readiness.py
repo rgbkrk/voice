@@ -19,6 +19,7 @@ PROFILE_CHOICES = (
     "unattended",
     "cached-receive",
     "send",
+    "attended-cache-receive",
     "attended-send-receive",
 )
 
@@ -294,6 +295,7 @@ def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
         )
 
     if args.run_inbound_cache_smoke:
+        inbound_name = "whatsapp_inbound_cache_stt"
         inbound_cmd = [
             script_path("verify_whatsapp_inbound_audio_cache.py"),
             "--voice-bin",
@@ -306,12 +308,17 @@ def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
         ]
         if args.whatsapp_audio_cache_dir:
             inbound_cmd.extend(["--audio-cache-dir", str(args.whatsapp_audio_cache_dir)])
+        if args.wait_audio_cache_seconds > 0:
+            inbound_name = "whatsapp_inbound_cache_fresh_stt"
+            inbound_cmd.extend(["--wait-fresh-seconds", str(args.wait_audio_cache_seconds)])
+            if args.require_fresh_cache_audio:
+                inbound_cmd.append("--require-fresh-audio")
         components.append(
             component(
-                name="whatsapp_inbound_cache_stt",
+                name=inbound_name,
                 category="voice_note",
                 command=inbound_cmd,
-                timeout=args.stt_timeout,
+                timeout=args.stt_timeout + args.wait_audio_cache_seconds + args.timeout,
                 parse_json=True,
             )
         )
@@ -404,6 +411,30 @@ def attended_receive_gate(
             gate["reason"] = "fresh receive verifier failed"
             gate["failures"] = item.get("failures") or []
         break
+    else:
+        for item in components:
+            if item["name"] != "whatsapp_inbound_cache_fresh_stt":
+                continue
+            summary = item.get("summary") or {}
+            checks = summary.get("checks") or {}
+            fresh_watch = checks.get("fresh_watch") or {}
+            fresh_files = fresh_watch.get("fresh_files") or []
+            gate["component"] = item["name"]
+            gate["drains_bridge_messages"] = False
+            if item.get("success") and fresh_files:
+                gate["status"] = "verified"
+                gate["requires_operator"] = False
+                gate["reason"] = "fresh WhatsApp inbound audio cache artifact observed"
+                gate["fresh_files"] = len(fresh_files)
+            elif item.get("success"):
+                gate["status"] = "not_verified"
+                gate["reason"] = "audio cache watch completed without fresh audio evidence"
+                gate["fresh_files"] = len(fresh_files)
+            else:
+                gate["status"] = "failed"
+                gate["reason"] = "fresh audio cache receive verifier failed"
+                gate["failures"] = item.get("failures") or []
+            break
     return gate
 
 
@@ -518,7 +549,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="unattended",
         help=(
             "named readiness profile: unattended dry run, cached receive STT, "
-            "real send, or attended send/receive"
+            "real send, non-draining attended cache receive, or attended "
+            "bridge send/receive"
         ),
     )
     parser.add_argument("--voice-bin", default=default_voice_bin())
@@ -564,6 +596,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--run-stt-smoke", action="store_true")
     parser.add_argument("--run-inbound-cache-smoke", action="store_true")
+    parser.add_argument("--wait-audio-cache-seconds", type=float, default=0.0)
+    parser.add_argument("--require-fresh-cache-audio", action="store_true")
     parser.add_argument("--require-whatsapp-cloud", action="store_true")
     parser.add_argument("--require-whatsapp-calling", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -575,6 +609,12 @@ def apply_profile(args: argparse.Namespace) -> None:
         args.run_inbound_cache_smoke = True
     elif args.profile == "send":
         args.send_voice_note = True
+    elif args.profile == "attended-cache-receive":
+        args.send_voice_note = True
+        args.run_inbound_cache_smoke = True
+        if args.wait_audio_cache_seconds == 0:
+            args.wait_audio_cache_seconds = 60.0
+        args.require_fresh_cache_audio = True
     elif args.profile == "attended-send-receive":
         args.send_voice_note = True
         if args.wait_inbound_seconds == 0:
@@ -597,10 +637,16 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         )
     if args.wait_inbound_seconds < 0:
         parser.error("--wait-inbound-seconds must be non-negative")
+    if args.wait_audio_cache_seconds < 0:
+        parser.error("--wait-audio-cache-seconds must be non-negative")
     if args.voice_note_chat_id and not args.send_voice_note:
         parser.error("--voice-note-chat-id requires --send-voice-note")
     if args.require_inbound_audio and args.wait_inbound_seconds <= 0:
         parser.error("--require-inbound-audio requires --wait-inbound-seconds")
+    if args.require_fresh_cache_audio and args.wait_audio_cache_seconds <= 0:
+        parser.error(
+            "--require-fresh-cache-audio requires --wait-audio-cache-seconds"
+        )
     if args.drain_bridge_messages and args.wait_inbound_seconds <= 0:
         parser.error("--drain-bridge-messages requires --wait-inbound-seconds")
     if args.wait_inbound_seconds > 0 and not args.drain_bridge_messages:

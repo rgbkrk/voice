@@ -401,10 +401,12 @@ daemon and sidecar by default. For narrower checks, run
 `scripts/verify_webrtc_sidecar_service.py` directly.
 
 To include the categorized WhatsApp alpha report in the same command, add
-`--whatsapp-alpha-profile unattended`, `cached-receive`, `send`, or
-`attended-send-receive`. The `send` and `attended-send-receive` profiles perform
-real bridge operations, and `attended-send-receive` drains the bridge message
-queue while waiting for a fresh inbound voice note.
+`--whatsapp-alpha-profile unattended`, `cached-receive`, `send`,
+`attended-cache-receive`, or `attended-send-receive`. The `send` and attended
+profiles perform real bridge operations. Prefer `attended-cache-receive` when
+Hermes is already watching the bridge; it waits for a fresh `aud_*` cache
+artifact without draining queued messages. Use `attended-send-receive` only when
+the verifier itself should poll and drain the bridge message queue.
 
 When the WebRTC Python dependencies are installed, add
 `--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`

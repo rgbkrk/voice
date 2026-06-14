@@ -82,7 +82,8 @@ Options:
                                transcribe a bridge-downloaded aud_* file from the audio cache
   --whatsapp-alpha-profile PROFILE
                                run categorized alpha readiness profile:
-                               unattended, cached-receive, send, attended-send-receive
+                               unattended, cached-receive, send,
+                               attended-cache-receive, attended-send-receive
   --run-webrtc-loopback-smoke  run one local full-duplex WebRTC media turn
   --webrtc-python PATH         Python used for the WebRTC smoke (default: python3)
   --webrtc-timeout SECONDS     timeout passed to the WebRTC smoke (default: 60)
@@ -280,7 +281,7 @@ done
 
 if [[ -n "$whatsapp_alpha_profile" ]]; then
   case "$whatsapp_alpha_profile" in
-    unattended|cached-receive|send|attended-send-receive)
+    unattended|cached-receive|send|attended-cache-receive|attended-send-receive)
       ;;
     *)
       fail "unknown WhatsApp alpha profile: $whatsapp_alpha_profile"

@@ -5,7 +5,9 @@ import importlib.util
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import textwrap
+import time
 import unittest
 
 
@@ -55,6 +57,8 @@ def make_args(tmp_path: Path, **overrides):
         "audio_file": None,
         "max_files": 1,
         "require_cache": False,
+        "wait_fresh_seconds": 0.0,
+        "require_fresh_audio": False,
         "run_stt": False,
         "skip_ffprobe": True,
         "timeout": 1.0,
@@ -114,6 +118,66 @@ class WhatsAppInboundAudioCacheVerifierTests(unittest.TestCase):
 
         self.assertFalse(result["success"])
         self.assertIn("no bridge-downloaded inbound audio", "\n".join(result["failures"]))
+
+    def test_wait_fresh_audio_selects_new_cache_artifact_without_draining_bridge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(
+                tmp_path,
+                wait_fresh_seconds=1.0,
+                require_fresh_audio=True,
+                run_stt=True,
+            )
+            audio = args.hermes_home / "audio_cache" / "aud_fresh.ogg"
+
+            def create_audio() -> None:
+                time.sleep(0.05)
+                write_audio(audio)
+
+            thread = threading.Thread(target=create_audio)
+            thread.start()
+            try:
+                result = self.script.verify(args)
+            finally:
+                thread.join()
+
+        self.assertTrue(result["success"], result["failures"])
+        fresh = result["checks"]["fresh_watch"]
+        self.assertEqual(fresh["fresh_count"], 1)
+        self.assertFalse(fresh["drains_bridge_messages"])
+        self.assertTrue(result["checks"]["selected_files"][0].endswith("aud_fresh.ogg"))
+        terminal = result["checks"]["audio"][0]["stt"]["terminal_event"]
+        self.assertEqual(terminal["event"], "stt.transcribed")
+
+    def test_optional_fresh_watch_falls_back_to_existing_cached_audio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(
+                tmp_path,
+                wait_fresh_seconds=0.01,
+                require_cache=True,
+            )
+            write_audio(args.hermes_home / "audio_cache" / "aud_existing.ogg")
+
+            result = self.script.verify(args)
+
+        self.assertTrue(result["success"], result["failures"])
+        fresh = result["checks"]["fresh_watch"]
+        self.assertEqual(fresh["fresh_count"], 0)
+        self.assertFalse(fresh["drains_bridge_messages"])
+        self.assertTrue(result["checks"]["selected_files"][0].endswith("aud_existing.ogg"))
+
+    def test_require_fresh_audio_requires_wait_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.script.verify(
+                make_args(Path(tmp), require_fresh_audio=True)
+            )
+
+        self.assertFalse(result["success"])
+        self.assertIn(
+            "--require-fresh-audio requires --wait-fresh-seconds",
+            "\n".join(result["failures"]),
+        )
 
 
 if __name__ == "__main__":

@@ -83,10 +83,12 @@ scripts/verify_local_hermes_voice_stack.sh \
 ```
 
 Use `--whatsapp-alpha-profile send` only when it is acceptable to post a real
-voice note through the paired bridge. Use
-`--whatsapp-alpha-profile attended-send-receive` only during an attended test;
-that profile waits for fresh inbound audio and drains the bridge `/messages`
-queue.
+voice note through the paired bridge. Prefer
+`--whatsapp-alpha-profile attended-cache-receive` for an attended receive test
+while Hermes is already running; it watches `~/.hermes/audio_cache` for a fresh
+`aud_*` artifact and does not drain the bridge queue. Use
+`--whatsapp-alpha-profile attended-send-receive` only when the verifier itself
+should poll and drain the bridge `/messages` queue.
 
 For a categorized alpha-readiness report, use:
 
@@ -100,9 +102,9 @@ voice-note, live-call local sidecar, or external Meta setup. Use
 `--require-whatsapp-calling` when a host is expected to be ready for real Cloud
 Calling; otherwise missing Meta credentials are reported as external setup
 still required, not as a local Baileys voice-note failure. The named profiles
-are `unattended`, `cached-receive`, `send`, and `attended-send-receive`. Use
-`cached-receive` when the report should also replay a cached inbound WhatsApp
-voice note through `voice stream-transcribe`:
+are `unattended`, `cached-receive`, `send`, `attended-cache-receive`, and
+`attended-send-receive`. Use `cached-receive` when the report should also
+replay a cached inbound WhatsApp voice note through `voice stream-transcribe`:
 
 ```bash
 scripts/verify_whatsapp_alpha_readiness.py \
@@ -128,7 +130,19 @@ scripts/verify_whatsapp_alpha_readiness.py \
   --profile send
 ```
 
-For a full attended send/receive pass, use the guarded receive profile:
+For a full attended send/receive pass while Hermes is already watching the
+bridge, use the cache-watching guarded receive profile:
+
+```bash
+scripts/verify_whatsapp_alpha_readiness.py \
+  --hermes-home ~/.hermes \
+  --profile attended-cache-receive
+```
+
+That profile sends a real voice note, then watches the Hermes audio cache for a
+fresh inbound `aud_*` file without polling the bridge message queue. If Hermes
+is not running and the verifier itself must consume bridge events, use the
+draining profile instead:
 
 ```bash
 scripts/verify_whatsapp_alpha_readiness.py \
@@ -187,6 +201,17 @@ same receive-side smoke behind an explicit opt-in:
 scripts/verify_local_hermes_voice_stack.sh \
   --hermes-home ~/.hermes \
   --run-whatsapp-inbound-cache-smoke
+```
+
+For attended fresh receive without draining bridge messages, use the cache
+watch mode:
+
+```bash
+scripts/verify_whatsapp_inbound_audio_cache.py \
+  --hermes-home ~/.hermes \
+  --wait-fresh-seconds 60 \
+  --require-fresh-audio \
+  --run-stt
 ```
 
 Cloud/Calling readiness requires these external Meta settings in addition to

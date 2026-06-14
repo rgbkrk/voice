@@ -44,6 +44,7 @@ def write_fake_helpers(
     *,
     cloud_configured: bool = False,
     voice_note_payload: dict | None = None,
+    inbound_cache_payload: dict | None = None,
 ) -> None:
     ok_shell(directory / "verify_hermes_voice_config.py")
     ok_shell(directory / "verify_whatsapp_voice_contract.sh")
@@ -55,7 +56,10 @@ def write_fake_helpers(
         directory / "verify_whatsapp_voice_note_bridge.py",
         voice_note_payload or success_payload,
     )
-    json_script(directory / "verify_whatsapp_inbound_audio_cache.py", success_payload)
+    json_script(
+        directory / "verify_whatsapp_inbound_audio_cache.py",
+        inbound_cache_payload or success_payload,
+    )
 
     cloud_missing = [] if cloud_configured else [
         "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
@@ -94,10 +98,15 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         *args: str,
         skip_voice_note_smoke: bool = True,
         voice_note_payload: dict | None = None,
+        inbound_cache_payload: dict | None = None,
     ) -> dict:
         helpers = tmp_path / "helpers"
         helpers.mkdir()
-        write_fake_helpers(helpers, voice_note_payload=voice_note_payload)
+        write_fake_helpers(
+            helpers,
+            voice_note_payload=voice_note_payload,
+            inbound_cache_payload=inbound_cache_payload,
+        )
         voice = tmp_path / "voice"
         write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
         config = tmp_path / "config.yaml"
@@ -260,6 +269,41 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertIn("--require-inbound-audio", command)
         self.assertIn("--drain-bridge-messages", command)
 
+    def test_attended_cache_receive_profile_watches_cache_without_draining_bridge(self):
+        inbound_cache_payload = {
+            "success": True,
+            "checks": {
+                "fresh_watch": {
+                    "drains_bridge_messages": False,
+                    "fresh_files": ["/tmp/aud_fresh.ogg"],
+                    "fresh_count": 1,
+                }
+            },
+            "failures": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                "--profile",
+                "attended-cache-receive",
+                skip_voice_note_smoke=False,
+                inbound_cache_payload=inbound_cache_payload,
+            )
+
+        self.assertEqual(payload["profile"], "attended-cache-receive")
+        components = {item["name"]: item for item in payload["components"]}
+        self.assertIn("whatsapp_voice_note_send", components)
+        self.assertIn("whatsapp_inbound_cache_fresh_stt", components)
+        command = components["whatsapp_inbound_cache_fresh_stt"]["command"]
+        self.assertIn("--wait-fresh-seconds", command)
+        self.assertIn("60.0", command)
+        self.assertIn("--require-fresh-audio", command)
+        gate = payload["pending_gates"]["attended_fresh_receive"]
+        self.assertEqual(gate["status"], "verified")
+        self.assertEqual(gate["component"], "whatsapp_inbound_cache_fresh_stt")
+        self.assertFalse(gate["drains_bridge_messages"])
+        self.assertFalse(gate["requires_operator"])
+
     def test_verified_attended_receive_gate_requires_audio_event_evidence(self):
         voice_note_payload = {
             "success": True,
@@ -317,6 +361,15 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn(
             "--require-inbound-audio requires --wait-inbound-seconds",
+            result.stderr,
+        )
+
+    def test_require_fresh_cache_audio_requires_wait_window(self):
+        result = self.run_invalid("--require-fresh-cache-audio")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "--require-fresh-cache-audio requires --wait-audio-cache-seconds",
             result.stderr,
         )
 

@@ -10,6 +10,9 @@ The machine-readable v1 contract lives at
 [`docs/contracts/webrtc-sidecar-v1.json`](../../docs/contracts/webrtc-sidecar-v1.json)
 and can be printed from an installed binary with `voice stream-contract`. It is
 also exposed by the sidecar at `GET /contract`.
+When the checked-in JSON is not present, the Python sidecar helpers fall back to
+`$VOICE_BIN stream-contract` or `voice stream-contract` so a packaged sidecar can
+discover the same PCM contract from an installed binary.
 
 This is a spike. It does not call the WhatsApp Graph API, authenticate requests,
 run VAD, or manage Hermes sessions. Hermes should still own WhatsApp Cloud

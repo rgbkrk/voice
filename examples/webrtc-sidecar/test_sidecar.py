@@ -76,6 +76,25 @@ def test_audio_contract_is_voice_pcm_shape():
     assert sidecar.MAX_OUTBOUND_QUEUE_BYTES == 960_000
 
 
+def test_load_contract_falls_back_to_voice_stream_contract(monkeypatch, tmp_path: Path):
+    sidecar = load_sidecar()
+    calls = []
+
+    class Completed:
+        stdout = json.dumps(sidecar.CONTRACT)
+
+    def fake_run(command, *, capture_output, text, timeout, check):
+        calls.append((command, capture_output, text, timeout, check))
+        return Completed()
+
+    monkeypatch.setattr(sidecar.subprocess, "run", fake_run)
+
+    contract = sidecar.load_contract(tmp_path / "missing.json", voice_bin="/opt/voice")
+
+    assert contract == sidecar.CONTRACT
+    assert calls == [(["/opt/voice", "stream-contract"], True, True, 5, True)]
+
+
 def test_contract_endpoint_returns_machine_readable_contract():
     sidecar = load_sidecar()
 

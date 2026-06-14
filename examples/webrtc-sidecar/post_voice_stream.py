@@ -17,6 +17,7 @@ import argparse
 import base64
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -52,9 +53,15 @@ class SidecarAudioPostError(RuntimeError):
         )
 
 
-def load_audio_contract(path: Path = CONTRACT_PATH) -> AudioContract:
-    with path.open(encoding="utf-8") as contract_file:
-        contract = json.load(contract_file)
+def load_audio_contract(
+    path: Path = CONTRACT_PATH,
+    voice_bin: str | None = None,
+) -> AudioContract:
+    if path.exists():
+        with path.open(encoding="utf-8") as contract_file:
+            contract = json.load(contract_file)
+    else:
+        contract = load_contract_from_voice(voice_bin)
 
     audio = contract.get("audio")
     if not isinstance(audio, dict):
@@ -95,6 +102,27 @@ def load_audio_contract(path: Path = CONTRACT_PATH) -> AudioContract:
         raise ValueError("contract max_drain_wait_ms must be non-negative")
 
     return parsed
+
+
+def load_contract_from_voice(voice_bin: str | None = None) -> dict[str, object]:
+    command = [voice_bin or os.environ.get("VOICE_BIN", "voice"), "stream-contract"]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
+        raise RuntimeError(
+            "could not load WebRTC contract from docs JSON or `voice stream-contract`"
+        ) from exc
+    return json.loads(result.stdout)
 
 
 def sidecar_audio_url(sidecar_url: str, call_id: str) -> str:

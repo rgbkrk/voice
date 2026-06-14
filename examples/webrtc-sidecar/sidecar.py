@@ -23,6 +23,7 @@ import logging
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 from typing import Any
 
@@ -42,11 +43,38 @@ LOGGER = logging.getLogger("voice-webrtc-sidecar")
 CONTRACT_PATH = Path(__file__).resolve().parents[2] / "docs/contracts/webrtc-sidecar-v1.json"
 
 
-def load_contract() -> dict[str, Any]:
-    with CONTRACT_PATH.open(encoding="utf-8") as contract_file:
-        contract = json.load(contract_file)
+def load_contract(
+    path: Path = CONTRACT_PATH,
+    voice_bin: str | None = None,
+) -> dict[str, Any]:
+    if path.exists():
+        with path.open(encoding="utf-8") as contract_file:
+            contract = json.load(contract_file)
+    else:
+        contract = load_contract_from_voice(voice_bin)
     validate_contract(contract)
     return contract
+
+
+def load_contract_from_voice(voice_bin: str | None = None) -> dict[str, Any]:
+    command = [voice_bin or os.environ.get("VOICE_BIN", "voice"), "stream-contract"]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
+        raise RuntimeError(
+            "could not load WebRTC contract from docs JSON or `voice stream-contract`"
+        ) from exc
+    return json.loads(result.stdout)
 
 
 def validate_contract(contract: dict[str, Any]) -> None:

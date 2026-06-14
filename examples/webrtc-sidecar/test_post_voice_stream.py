@@ -37,6 +37,41 @@ def test_load_audio_contract_matches_sidecar_contract():
     assert contract.max_drain_wait_ms == 5_000
 
 
+def test_load_audio_contract_falls_back_to_voice_stream_contract(monkeypatch, tmp_path: Path):
+    bridge = load_bridge()
+    calls = []
+    contract_json = {
+        "audio": {
+            "sample_rate": 48_000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+            "frame_bytes": 1_920,
+            "default_drain_bytes": 96_000,
+            "max_outbound_queue_bytes": 960_000,
+            "max_drain_wait_ms": 5_000,
+        }
+    }
+
+    class Completed:
+        stdout = json.dumps(contract_json)
+
+    def fake_run(command, *, capture_output, text, timeout, check):
+        calls.append((command, capture_output, text, timeout, check))
+        return Completed()
+
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+
+    contract = bridge.load_audio_contract(
+        tmp_path / "missing.json",
+        voice_bin="/opt/voice",
+    )
+
+    assert contract.sample_rate == 48_000
+    assert contract.frame_bytes == 1_920
+    assert calls == [(["/opt/voice", "stream-contract"], True, True, 5, True)]
+
+
 def test_load_audio_contract_rejects_invalid_audio_shape(tmp_path: Path):
     bridge = load_bridge()
     contract_path = tmp_path / "contract.json"

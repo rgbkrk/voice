@@ -633,7 +633,14 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                               "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
                               "WHATSAPP_CLOUD_ACCESS_TOKEN"
                             ],
-                            "invalid": []
+                            "invalid": [],
+                            "verify_command": [
+                              "scripts/verify_whatsapp_alpha_readiness.py",
+                              "--hermes-home",
+                              "/home/ubuntu/.hermes",
+                              "--require-whatsapp-cloud",
+                              "--check-whatsapp-cloud-api"
+                            ]
                           }}
                         }},
                         "whatsapp_cloud_calling": {{
@@ -645,7 +652,23 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                               "WHATSAPP_CLOUD_APP_SECRET",
                               "WHATSAPP_CLOUD_VERIFY_TOKEN"
                             ],
-                            "invalid": []
+                            "invalid": [],
+                            "verify_command": [
+                              "scripts/verify_whatsapp_alpha_readiness.py",
+                              "--hermes-home",
+                              "/home/ubuntu/.hermes",
+                              "--require-whatsapp-cloud",
+                              "--require-whatsapp-calling",
+                              "--check-whatsapp-cloud-api"
+                            ],
+                            "complete_verification_command": [
+                              "scripts/verify_whatsapp_alpha_readiness.py",
+                              "--hermes-home",
+                              "/home/ubuntu/.hermes",
+                              "--profile",
+                              "attended-cache-receive",
+                              "--require-complete"
+                            ]
                           }}
                         }}
                       }}
@@ -720,13 +743,142 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
+            "whatsapp_alpha_json_cloud_verify_command="
+            "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
+            "/home/ubuntu/.hermes --require-whatsapp-cloud --check-whatsapp-cloud-api",
+            result.stdout,
+        )
+        self.assertIn(
             "whatsapp_alpha_json_calling=external_setup_required "
             "missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,WHATSAPP_CLOUD_ACCESS_TOKEN,"
             "WHATSAPP_CLOUD_APP_SECRET,WHATSAPP_CLOUD_VERIFY_TOKEN invalid=none",
             result.stdout,
         )
+        self.assertIn(
+            "whatsapp_alpha_json_calling_verify_command="
+            "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
+            "/home/ubuntu/.hermes --require-whatsapp-cloud "
+            "--require-whatsapp-calling --check-whatsapp-cloud-api",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_calling_complete_command="
+            "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
+            "/home/ubuntu/.hermes --profile attended-cache-receive "
+            "--require-complete",
+            result.stdout,
+        )
         self.assertEqual([entry[0] for entry in entries], ["whatsapp", "alpha"])
         self.assertIn("--json", entries[1])
+
+    def test_whatsapp_alpha_json_summary_prints_attended_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            alpha = tmp_path / "verify_alpha.py"
+            voice = tmp_path / "voice"
+            json_output = tmp_path / "alpha.json"
+
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_executable(
+                alpha,
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    printf 'alpha' >> {str(log_path)!r}
+                    printf '\\0' >> {str(log_path)!r}
+                    printf '%s\\0' "$@" >> {str(log_path)!r}
+                    printf '\\n' >> {str(log_path)!r}
+                    cat <<'JSON'
+                    {{
+                      "profile": "cached-receive",
+                      "readiness_summary": {{
+                        "status": "local_ready_pending_gates",
+                        "complete": false,
+                        "local_checks_passed": true,
+                        "attended_fresh_receive_verified": false,
+                        "external_meta_setup_required": false,
+                        "operator_action_required": true,
+                        "next_actions": [
+                          {{"id": "run_attended_fresh_receive"}}
+                        ]
+                      }},
+                      "pending_gates": {{
+                        "attended_fresh_receive": {{
+                          "status": "not_verified",
+                          "cached_receive_verified": true,
+                          "command": [
+                            "scripts/verify_whatsapp_alpha_readiness.py",
+                            "--hermes-home",
+                            "/home/ubuntu/.hermes",
+                            "--profile",
+                            "attended-cache-receive",
+                            "--wait-audio-cache-seconds",
+                            "60.0"
+                          ],
+                          "fallback_draining_command": [
+                            "scripts/verify_whatsapp_alpha_readiness.py",
+                            "--hermes-home",
+                            "/home/ubuntu/.hermes",
+                            "--profile",
+                            "attended-send-receive",
+                            "--wait-inbound-seconds",
+                            "60.0"
+                          ]
+                        }},
+                        "whatsapp_cloud": {{"status": "configured"}},
+                        "whatsapp_cloud_calling": {{"status": "ready"}}
+                      }}
+                    }}
+                    JSON
+                    """
+                ),
+            )
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-whatsapp-bridge",
+                    "--skip-systemd",
+                    "--skip-daemon",
+                    "--whatsapp-alpha-profile",
+                    "cached-receive",
+                    "--whatsapp-alpha-json-output",
+                    str(json_output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_ALPHA_READINESS_SCRIPT": str(alpha),
+                },
+            )
+
+        self.assertIn(
+            "whatsapp_alpha_json_attended_command="
+            "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
+            "/home/ubuntu/.hermes --profile attended-cache-receive "
+            "--wait-audio-cache-seconds 60.0",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_attended_fallback_draining_command="
+            "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
+            "/home/ubuntu/.hermes --profile attended-send-receive "
+            "--wait-inbound-seconds 60.0",
+            result.stdout,
+        )
 
     def test_skip_hermes_config_does_not_require_config_file(self):
         with tempfile.TemporaryDirectory() as tmp:

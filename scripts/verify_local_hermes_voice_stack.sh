@@ -167,6 +167,7 @@ print_whatsapp_alpha_json_summary() {
   local json_path="$1"
   python3 - "$json_path" <<'PY'
 import json
+import shlex
 import sys
 
 path = sys.argv[1]
@@ -176,6 +177,12 @@ with open(path, "r", encoding="utf-8") as handle:
 
 def csv(values):
     return ",".join(str(value) for value in (values or [])) or "none"
+
+
+def command_line(parts):
+    if not parts:
+        return ""
+    return shlex.join([str(part) for part in parts])
 
 
 summary = payload.get("readiness_summary") or {}
@@ -224,6 +231,13 @@ if attended:
             f"codec={first_audio.get('codec') or '<unknown>'} "
             f"text_chars={stt.get('text_chars', 0)}"
         )
+    if attended.get("status") != "verified":
+        command = command_line(attended.get("command") or [])
+        fallback = command_line(attended.get("fallback_draining_command") or [])
+        if command:
+            print(f"whatsapp_alpha_json_attended_command={command}")
+        if fallback:
+            print(f"whatsapp_alpha_json_attended_fallback_draining_command={fallback}")
 if cloud:
     print(
         "whatsapp_alpha_json_cloud="
@@ -231,6 +245,10 @@ if cloud:
         f"missing={csv(cloud_handoff.get('missing') or cloud.get('missing'))} "
         f"invalid={csv(cloud_handoff.get('invalid') or cloud.get('invalid'))}"
     )
+    if cloud.get("status") != "configured":
+        command = command_line(cloud_handoff.get("verify_command") or [])
+        if command:
+            print(f"whatsapp_alpha_json_cloud_verify_command={command}")
 if calling:
     print(
         "whatsapp_alpha_json_calling="
@@ -238,6 +256,15 @@ if calling:
         f"missing={csv(calling_handoff.get('missing') or calling.get('missing'))} "
         f"invalid={csv(calling_handoff.get('invalid') or calling.get('invalid'))}"
     )
+    if calling.get("status") != "ready":
+        verify_command = command_line(calling_handoff.get("verify_command") or [])
+        complete_command = command_line(
+            calling_handoff.get("complete_verification_command") or []
+        )
+        if verify_command:
+            print(f"whatsapp_alpha_json_calling_verify_command={verify_command}")
+        if complete_command:
+            print(f"whatsapp_alpha_json_calling_complete_command={complete_command}")
 PY
 }
 

@@ -165,7 +165,10 @@ When the top-level stack gate is run with `--whatsapp-alpha-json-output`, it
 saves the alpha report and then echoes compact `whatsapp_alpha_json_*` summary
 lines for the saved artifact. Those lines include the alpha profile, readiness
 status, completion state, next action IDs, attended receive status, and
-Cloud/Calling missing or invalid key groups.
+Cloud/Calling missing or invalid key groups. When a gate is still pending, the
+same summary also echoes the copyable attended receive command, fallback
+draining command, Cloud verification command, Calling verification command, and
+complete-alpha command if those commands are present in the saved JSON.
 
 Use the complete gate only when the local bridge, attended receive, Cloud API,
 and Calling setup are all expected to pass:

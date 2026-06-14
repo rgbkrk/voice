@@ -118,7 +118,7 @@ Options:
 
 ### `voice stream`
 
-Requires a running `voiced` daemon. Emits ordered signed 16-bit little-endian
+Requires a running voice daemon. Emits ordered signed 16-bit little-endian
 mono PCM frames as compact summaries or full JSON events. Use `--raw-output`
 for headerless PCM frames, or `--output` for streamed Ogg/Opus encoded from
 those frames without a WAV intermediate.

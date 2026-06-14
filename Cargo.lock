@@ -7074,6 +7074,7 @@ dependencies = [
  "serde",
  "serde_json",
  "voice-audio",
+ "voice-daemon",
  "voice-g2p",
  "voice-protocol",
  "voice-stream",

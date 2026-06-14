@@ -19,7 +19,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build release
-        run: cargo build --release -p voice -p voice-daemon
+        run: cargo build --release -p voice
 
       - name: Package
         run: |
@@ -27,8 +27,7 @@ jobs:
 
           # Binaries
           cp target/release/voice dist/
-          cp target/release/voiced dist/
-          cd dist && tar czf voice-aarch64-apple-darwin.tar.gz voice voiced && cd ..
+          cd dist && tar czf voice-aarch64-apple-darwin.tar.gz voice && cd ..
 
       - name: Sign release assets
         if: env.MINISIGN_KEY != ''

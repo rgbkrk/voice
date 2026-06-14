@@ -1,17 +1,16 @@
 # Voice Daemon
 
-`voiced` keeps the TTS model warm for low-latency synthesis and streaming.
+`voice daemon start` keeps the TTS model warm for low-latency synthesis and streaming.
 The `voice` CLI still works without it: `voice say -o output.wav ...` falls
 back to local synthesis, `voice mcp` initializes without a daemon, and
 `voice stream` requires a running daemon.
 
 ## Install
 
-Install both binaries, then register the daemon as a system service:
+Install `voice`, then register the daemon as a system service:
 
 ```bash
 cargo install --path crates/voice-cli
-cargo install --path crates/voice-daemon
 voice daemon install
 ```
 
@@ -54,7 +53,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=%h/.cargo/bin/voiced --tts-only
+ExecStart=%h/.cargo/bin/voice daemon start --tts-only
 Restart=on-failure
 RestartSec=2
 
@@ -62,8 +61,8 @@ RestartSec=2
 WantedBy=default.target
 ```
 
-If `voiced` is installed somewhere else, replace `ExecStart` with the absolute
-path from `command -v voiced`.
+If `voice` is installed somewhere else, replace `ExecStart` with the absolute
+path from `command -v voice`.
 
 Enable and start it:
 
@@ -93,7 +92,9 @@ Create `~/Library/LaunchAgents/com.rgbkrk.voice.voiced.plist`:
   <string>com.rgbkrk.voice.voiced</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/YOU/.cargo/bin/voiced</string>
+    <string>/Users/YOU/.cargo/bin/voice</string>
+    <string>daemon</string>
+    <string>start</string>
     <string>--tts-only</string>
   </array>
   <key>RunAtLoad</key>
@@ -108,8 +109,8 @@ Create `~/Library/LaunchAgents/com.rgbkrk.voice.voiced.plist`:
 </plist>
 ```
 
-Replace `/Users/YOU/.cargo/bin/voiced` with the absolute path from
-`command -v voiced`.
+Replace `/Users/YOU/.cargo/bin/voice` with the absolute path from
+`command -v voice`.
 
 Load and start it:
 

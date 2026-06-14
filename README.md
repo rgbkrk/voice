@@ -400,6 +400,12 @@ daemon and sidecar by default. For narrower checks, run
 `scripts/verify_whatsapp_voice_contract.sh`, or
 `scripts/verify_webrtc_sidecar_service.py` directly.
 
+To include the categorized WhatsApp alpha report in the same command, add
+`--whatsapp-alpha-profile unattended`, `cached-receive`, `send`, or
+`attended-send-receive`. The `send` and `attended-send-receive` profiles perform
+real bridge operations, and `attended-send-receive` drains the bridge message
+queue while waiting for a fresh inbound voice note.
+
 When the WebRTC Python dependencies are installed, add
 `--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`
 to run one full-duplex local media turn through the sidecar spike as well.

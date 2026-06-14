@@ -18,6 +18,7 @@ skip_cli_mcp="${SKIP_CLI_MCP:-0}"
 skip_daemon="${SKIP_DAEMON:-0}"
 skip_stt_smoke="${SKIP_STT_SMOKE:-0}"
 run_whatsapp_inbound_cache_smoke="${RUN_WHATSAPP_INBOUND_CACHE_SMOKE:-0}"
+whatsapp_alpha_profile="${WHATSAPP_ALPHA_PROFILE:-}"
 run_webrtc_loopback_smoke="${RUN_WEBRTC_LOOPBACK_SMOKE:-0}"
 webrtc_python="${VOICE_WEBRTC_PYTHON:-python3}"
 webrtc_timeout="${VOICE_WEBRTC_TIMEOUT:-60}"
@@ -37,6 +38,7 @@ cli_mcp_surface_verify_script="${CLI_MCP_SURFACE_VERIFY_SCRIPT:-$repo_root/scrip
 whatsapp_contract_verify_script="${WHATSAPP_CONTRACT_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_voice_contract.sh}"
 whatsapp_bridge_verify_script="${WHATSAPP_BRIDGE_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_bridge_runtime.py}"
 whatsapp_inbound_cache_verify_script="${WHATSAPP_INBOUND_CACHE_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_inbound_audio_cache.py}"
+whatsapp_alpha_readiness_script="${WHATSAPP_ALPHA_READINESS_SCRIPT:-$repo_root/scripts/verify_whatsapp_alpha_readiness.py}"
 sidecar_service_verify_script="${SIDECAR_SERVICE_VERIFY_SCRIPT:-$repo_root/scripts/verify_webrtc_sidecar_service.py}"
 webrtc_loopback_smoke_script="${WEBRTC_LOOPBACK_SMOKE_SCRIPT:-$repo_root/examples/webrtc-sidecar/full_duplex_loopback_smoke.py}"
 
@@ -78,6 +80,9 @@ Options:
   --require-whatsapp-calling   fail when Cloud Calling credentials/readiness are missing
   --run-whatsapp-inbound-cache-smoke
                                transcribe a bridge-downloaded aud_* file from the audio cache
+  --whatsapp-alpha-profile PROFILE
+                               run categorized alpha readiness profile:
+                               unattended, cached-receive, send, attended-send-receive
   --run-webrtc-loopback-smoke  run one local full-duplex WebRTC media turn
   --webrtc-python PATH         Python used for the WebRTC smoke (default: python3)
   --webrtc-timeout SECONDS     timeout passed to the WebRTC smoke (default: 60)
@@ -92,7 +97,8 @@ Environment aliases:
   WHATSAPP_BRIDGE_URL, WHATSAPP_SESSION_DIR, WHATSAPP_ENV_FILE
   WHATSAPP_AUDIO_CACHE_DIR, WHATSAPP_AGENT_NUMBER, WHATSAPP_AGENT_NAME
   REQUIRE_WHATSAPP_CLOUD=1, REQUIRE_WHATSAPP_CALLING=1
-  RUN_WHATSAPP_INBOUND_CACHE_SMOKE=1, VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
+  RUN_WHATSAPP_INBOUND_CACHE_SMOKE=1, WHATSAPP_ALPHA_PROFILE
+  VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
 EOF
 }
 
@@ -238,6 +244,11 @@ while [[ $# -gt 0 ]]; do
       run_whatsapp_inbound_cache_smoke=1
       shift
       ;;
+    --whatsapp-alpha-profile)
+      [[ $# -ge 2 ]] || fail "--whatsapp-alpha-profile requires a profile"
+      whatsapp_alpha_profile="$2"
+      shift 2
+      ;;
     --run-webrtc-loopback-smoke)
       run_webrtc_loopback_smoke=1
       shift
@@ -267,6 +278,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$whatsapp_alpha_profile" ]]; then
+  case "$whatsapp_alpha_profile" in
+    unattended|cached-receive|send|attended-send-receive)
+      ;;
+    *)
+      fail "unknown WhatsApp alpha profile: $whatsapp_alpha_profile"
+      ;;
+  esac
+fi
+
 voice_bin="$(default_voice_bin)"
 if [[ "$voice_bin" == */* ]]; then
   require_executable "$voice_bin" "voice binary"
@@ -280,6 +301,9 @@ if [[ "$skip_whatsapp_bridge" != "1" ]]; then
 fi
 if [[ "$run_whatsapp_inbound_cache_smoke" == "1" ]]; then
   require_executable "$whatsapp_inbound_cache_verify_script" "WhatsApp inbound audio cache verifier"
+fi
+if [[ -n "$whatsapp_alpha_profile" ]]; then
+  require_executable "$whatsapp_alpha_readiness_script" "WhatsApp alpha readiness verifier"
 fi
 if [[ "$skip_hermes_config" != "1" ]]; then
   require_executable "$hermes_config_verify_script" "Hermes voice config verifier"
@@ -441,6 +465,52 @@ else
   webrtc_loopback_status="skipped"
 fi
 
+if [[ -n "$whatsapp_alpha_profile" ]]; then
+  whatsapp_alpha_args=(
+    "$whatsapp_alpha_readiness_script"
+    --voice-bin "$voice_bin"
+    --hermes-home "$hermes_home"
+    --hermes-config "$hermes_config"
+    --bridge-url "$whatsapp_bridge_url"
+    --sidecar-url "$sidecar_url"
+    --profile "$whatsapp_alpha_profile"
+    --text "$text"
+  )
+  if [[ -n "$whatsapp_audio_cache_dir" ]]; then
+    whatsapp_alpha_args+=(--whatsapp-audio-cache-dir "$whatsapp_audio_cache_dir")
+  fi
+  if [[ -n "$expected_whatsapp_agent_number" ]]; then
+    whatsapp_alpha_args+=(--expected-agent-number "$expected_whatsapp_agent_number")
+  fi
+  if [[ -n "$expected_whatsapp_agent_name" ]]; then
+    whatsapp_alpha_args+=(--expected-agent-name "$expected_whatsapp_agent_name")
+  fi
+  if [[ "$skip_systemd" == "1" ]]; then
+    whatsapp_alpha_args+=(--skip-systemd)
+  fi
+  if [[ "$skip_daemon" == "1" ]]; then
+    whatsapp_alpha_args+=(--skip-daemon)
+  elif [[ "$skip_stt_smoke" != "1" ]]; then
+    whatsapp_alpha_args+=(--run-stt-smoke)
+  fi
+  if [[ "$skip_sidecar" == "1" ]]; then
+    whatsapp_alpha_args+=(--skip-sidecar)
+  fi
+  if [[ "$skip_hermes_tts_smoke" == "1" ]]; then
+    whatsapp_alpha_args+=(--skip-hermes-tts-smoke)
+  fi
+  if [[ "$require_whatsapp_cloud" == "1" ]]; then
+    whatsapp_alpha_args+=(--require-whatsapp-cloud)
+  fi
+  if [[ "$require_whatsapp_calling" == "1" ]]; then
+    whatsapp_alpha_args+=(--require-whatsapp-calling)
+  fi
+  run_step "WhatsApp alpha readiness profile ($whatsapp_alpha_profile)" "${whatsapp_alpha_args[@]}"
+  whatsapp_alpha_status="$whatsapp_alpha_profile"
+else
+  whatsapp_alpha_status="skipped"
+fi
+
 echo
 echo "ok: local Hermes voice stack verifier passed"
 echo "voice_bin=$voice_bin"
@@ -450,5 +520,6 @@ echo "cli_mcp=$cli_mcp_status"
 echo "whatsapp_contract=checked"
 echo "whatsapp_bridge=$whatsapp_bridge_status"
 echo "whatsapp_inbound_cache=$whatsapp_inbound_cache_status"
+echo "whatsapp_alpha=$whatsapp_alpha_status"
 echo "sidecar_service=$sidecar_status"
 echo "webrtc_loopback=$webrtc_loopback_status"

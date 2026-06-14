@@ -74,6 +74,20 @@ voice-stream service, and the WebRTC sidecar contract. Add
 `--require-whatsapp-cloud` or `--require-whatsapp-calling` only when the host is
 expected to have real Meta Cloud credentials.
 
+The same stack gate can run the categorized alpha report as an explicit opt-in:
+
+```bash
+scripts/verify_local_hermes_voice_stack.sh \
+  --hermes-home ~/.hermes \
+  --whatsapp-alpha-profile cached-receive
+```
+
+Use `--whatsapp-alpha-profile send` only when it is acceptable to post a real
+voice note through the paired bridge. Use
+`--whatsapp-alpha-profile attended-send-receive` only during an attended test;
+that profile waits for fresh inbound audio and drains the bridge `/messages`
+queue.
+
 For a categorized alpha-readiness report, use:
 
 ```bash

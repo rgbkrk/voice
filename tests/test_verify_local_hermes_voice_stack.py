@@ -117,6 +117,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("cli_mcp=checked", result.stdout)
         self.assertIn("whatsapp_bridge=checked", result.stdout)
         self.assertIn("whatsapp_inbound_cache=skipped", result.stdout)
+        self.assertIn("whatsapp_alpha=skipped", result.stdout)
         self.assertIn("webrtc_loopback=skipped", result.stdout)
         self.assertEqual(
             [entry[0] for entry in entries],
@@ -231,6 +232,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("hermes_gateway=skipped", result.stdout)
         self.assertIn("whatsapp_bridge=skipped", result.stdout)
         self.assertIn("whatsapp_inbound_cache=skipped", result.stdout)
+        self.assertIn("whatsapp_alpha=skipped", result.stdout)
         self.assertEqual([entry[0] for entry in entries], ["hermes", "cli_mcp", "whatsapp"])
         self.assertIn("--skip-tts-smoke", entries[0])
         self.assertIn("--skip-daemon", entries[1])
@@ -397,6 +399,120 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 "--run-stt",
                 "--audio-cache-dir",
                 str(audio_cache),
+            ],
+        )
+
+    def test_whatsapp_alpha_profile_runs_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            hermes = tmp_path / "verify_hermes.py"
+            gateway = tmp_path / "verify_gateway.py"
+            cli_mcp = tmp_path / "verify_cli_mcp.py"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            bridge = tmp_path / "verify_whatsapp_bridge.py"
+            alpha = tmp_path / "verify_alpha.py"
+            sidecar = tmp_path / "verify_sidecar.py"
+            voice = tmp_path / "voice"
+            config = tmp_path / "config.yaml"
+            hermes_home = tmp_path / "hermes"
+            audio_cache = tmp_path / "audio_cache"
+
+            write_helper(hermes, "hermes", log_path)
+            write_helper(gateway, "gateway", log_path)
+            write_helper(cli_mcp, "cli_mcp", log_path)
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_helper(bridge, "bridge", log_path)
+            write_helper(alpha, "alpha", log_path)
+            write_helper(sidecar, "sidecar", log_path)
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+            config.write_text("tts: {}\n", encoding="utf-8")
+            hermes_home.mkdir()
+            audio_cache.mkdir()
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-config",
+                    str(config),
+                    "--hermes-home",
+                    str(hermes_home),
+                    "--sidecar-url",
+                    "http://127.0.0.1:9999",
+                    "--whatsapp-bridge-url",
+                    "http://127.0.0.1:3001",
+                    "--whatsapp-audio-cache-dir",
+                    str(audio_cache),
+                    "--expected-whatsapp-agent-number",
+                    "13236478455",
+                    "--expected-whatsapp-agent-name",
+                    "Quill",
+                    "--require-whatsapp-cloud",
+                    "--require-whatsapp-calling",
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-whatsapp-bridge",
+                    "--skip-systemd",
+                    "--skip-daemon",
+                    "--skip-hermes-tts-smoke",
+                    "--whatsapp-alpha-profile",
+                    "cached-receive",
+                    "--text",
+                    "Alpha stack smoke.",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "HERMES_CONFIG_VERIFY_SCRIPT": str(hermes),
+                    "HERMES_GATEWAY_VERIFY_SCRIPT": str(gateway),
+                    "CLI_MCP_SURFACE_VERIFY_SCRIPT": str(cli_mcp),
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_BRIDGE_VERIFY_SCRIPT": str(bridge),
+                    "WHATSAPP_ALPHA_READINESS_SCRIPT": str(alpha),
+                    "SIDECAR_SERVICE_VERIFY_SCRIPT": str(sidecar),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+
+        self.assertIn("whatsapp_alpha=cached-receive", result.stdout)
+        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "alpha"])
+        self.assertEqual(
+            entries[1],
+            [
+                "alpha",
+                "--voice-bin",
+                str(voice),
+                "--hermes-home",
+                str(hermes_home),
+                "--hermes-config",
+                str(config),
+                "--bridge-url",
+                "http://127.0.0.1:3001",
+                "--sidecar-url",
+                "http://127.0.0.1:9999",
+                "--profile",
+                "cached-receive",
+                "--text",
+                "Alpha stack smoke.",
+                "--whatsapp-audio-cache-dir",
+                str(audio_cache),
+                "--expected-agent-number",
+                "13236478455",
+                "--expected-agent-name",
+                "Quill",
+                "--skip-systemd",
+                "--skip-daemon",
+                "--skip-sidecar",
+                "--skip-hermes-tts-smoke",
+                "--require-whatsapp-cloud",
+                "--require-whatsapp-calling",
             ],
         )
 

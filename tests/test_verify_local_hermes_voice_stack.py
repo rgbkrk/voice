@@ -34,6 +34,24 @@ def write_helper(path: Path, label: str, log_path: Path) -> None:
     )
 
 
+def write_failing_helper(path: Path, label: str, log_path: Path, status: int = 17) -> None:
+    write_executable(
+        path,
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            printf '{label}' >> {str(log_path)!r}
+            printf '\\0' >> {str(log_path)!r}
+            printf '%s\\0' "$@" >> {str(log_path)!r}
+            printf '\\n' >> {str(log_path)!r}
+            echo "failing {label}" >&2
+            exit {status}
+            """
+        ),
+    )
+
+
 def write_fake_python(path: Path, label: str, log_path: Path) -> None:
     write_executable(
         path,
@@ -192,6 +210,103 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 "--skip-systemd",
             ],
         )
+
+    def test_step_failure_reports_hermes_config_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            hermes = tmp_path / "verify_hermes.py"
+            install = tmp_path / "install_hermes.py"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            voice = tmp_path / "voice"
+            config = tmp_path / "config.yaml"
+
+            write_failing_helper(hermes, "hermes", log_path, status=17)
+            write_helper(install, "install", log_path)
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+            config.write_text("tts: {}\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-config",
+                    str(config),
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-whatsapp-bridge",
+                    "--skip-daemon",
+                ],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "HERMES_CONFIG_VERIFY_SCRIPT": str(hermes),
+                    "HERMES_CONFIG_INSTALL_SCRIPT": str(install),
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+
+        self.assertEqual(result.returncode, 17)
+        self.assertEqual([entry[0] for entry in entries], ["hermes"])
+        self.assertIn("error: local Hermes voice stack step failed: Hermes voice-native config", result.stderr)
+        self.assertIn("failure_category=hermes_config", result.stderr)
+        self.assertIn("failure_step=Hermes voice-native config", result.stderr)
+        self.assertIn("failure_status=17", result.stderr)
+        self.assertNotIn("ok: local Hermes voice stack verifier passed", result.stdout)
+
+    def test_step_failure_reports_bridge_or_credentials_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            bridge = tmp_path / "verify_whatsapp_bridge.py"
+            voice = tmp_path / "voice"
+
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_failing_helper(bridge, "bridge", log_path, status=23)
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-config",
+                    str(tmp_path / "missing.yaml"),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-daemon",
+                ],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_BRIDGE_VERIFY_SCRIPT": str(bridge),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+
+        self.assertEqual(result.returncode, 23)
+        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "bridge"])
+        self.assertIn(
+            "error: local Hermes voice stack step failed: "
+            "WhatsApp bridge identity and credential readiness",
+            result.stderr,
+        )
+        self.assertIn("failure_category=whatsapp_bridge_or_credentials", result.stderr)
+        self.assertIn("failure_step=WhatsApp bridge identity and credential readiness", result.stderr)
+        self.assertIn("failure_status=23", result.stderr)
+        self.assertNotIn("ok: local Hermes voice stack verifier passed", result.stdout)
 
     def test_skip_flags_disable_optional_release_checks(self):
         with tempfile.TemporaryDirectory() as tmp:

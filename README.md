@@ -427,6 +427,9 @@ sidecar service. It requires the daemon and sidecar by default. For narrower che
 `scripts/verify_whatsapp_voice_contract.sh`,
 `scripts/verify_telegram_voice_contract.sh`, or
 `scripts/verify_webrtc_sidecar_service.py` directly.
+When a step fails, the aggregate verifier prints `failure_category=...` with
+values such as `voice_runtime`, `hermes_config`, `upstream_hermes`,
+`whatsapp_bridge_or_credentials`, or `webrtc_sidecar`.
 
 To include the categorized WhatsApp alpha report in the same command, add
 `--whatsapp-alpha-profile unattended`, `cached-receive`, `send`,

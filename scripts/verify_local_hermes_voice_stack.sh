@@ -173,7 +173,47 @@ run_step() {
   shift
   echo
   echo "==> $label"
+  set +e
   "$@"
+  local status=$?
+  set -e
+  if [[ "$status" != "0" ]]; then
+    echo "error: local Hermes voice stack step failed: $label" >&2
+    echo "failure_category=$(step_failure_category "$label")" >&2
+    echo "failure_step=$label" >&2
+    echo "failure_status=$status" >&2
+    return "$status"
+  fi
+}
+
+step_failure_category() {
+  local label="$1"
+  case "$label" in
+    "Hermes voice-native config"|"Hermes voice config installer dry run")
+      echo "hermes_config"
+      ;;
+    "Hermes gateway voice stream service")
+      echo "upstream_hermes"
+      ;;
+    "Voice CLI and MCP daemon surfaces"|"Voice WhatsApp and streaming contract")
+      echo "voice_runtime"
+      ;;
+    "WhatsApp bridge identity and credential readiness")
+      echo "whatsapp_bridge_or_credentials"
+      ;;
+    "WhatsApp inbound cached audio STT smoke")
+      echo "whatsapp_inbound_audio"
+      ;;
+    "Voice WebRTC sidecar service"|"Full-duplex WebRTC media smoke")
+      echo "webrtc_sidecar"
+      ;;
+    "WhatsApp alpha readiness profile"*)
+      echo "whatsapp_alpha"
+      ;;
+    *)
+      echo "unknown"
+      ;;
+  esac
 }
 
 print_whatsapp_alpha_json_summary() {

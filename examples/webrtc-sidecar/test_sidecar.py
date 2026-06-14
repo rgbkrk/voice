@@ -62,12 +62,10 @@ def test_audio_contract_is_voice_pcm_shape():
     contract = json.loads(sidecar.CONTRACT_PATH.read_text(encoding="utf-8"))
     audio = contract["audio"]
 
-    assert sidecar.audio_contract() == {
-        "sample_rate": audio["sample_rate"],
-        "channels": audio["channels"],
-        "frame_ms": audio["frame_ms"],
-        "encoding": audio["encoding"],
-    }
+    assert sidecar.audio_contract() == audio
+    mutated = sidecar.audio_contract()
+    mutated["sample_rate"] = 16_000
+    assert sidecar.audio_contract()["sample_rate"] == audio["sample_rate"]
     assert sidecar.SAMPLES_PER_FRAME == audio["samples_per_frame"]
     assert sidecar.FRAME_BYTES == audio["frame_bytes"]
     assert sidecar.DEFAULT_DRAIN_BYTES == audio["default_drain_bytes"]

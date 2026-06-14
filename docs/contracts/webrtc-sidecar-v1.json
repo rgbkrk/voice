@@ -69,13 +69,19 @@
       "returned_bytes": "Number of decoded PCM bytes returned.",
       "queued_rx_bytes": "Remaining inbound decoded PCM bytes queued after this drain.",
       "pcm_s16le_base64": "Base64 encoded signed 16-bit little-endian mono PCM.",
-      "audio": "Fixed audio shape: sample_rate, channels, frame_ms, encoding."
+      "audio": "Full fixed audio contract object defined by audio."
     },
     "audio_shape": {
       "sample_rate": "audio.sample_rate",
       "channels": "audio.channels",
       "frame_ms": "audio.frame_ms",
-      "encoding": "audio.encoding"
+      "encoding": "audio.encoding",
+      "bytes_per_sample": "audio.bytes_per_sample",
+      "samples_per_frame": "audio.samples_per_frame",
+      "frame_bytes": "audio.frame_bytes",
+      "default_drain_bytes": "audio.default_drain_bytes",
+      "max_inbound_queue_bytes": "audio.max_inbound_queue_bytes",
+      "max_drain_wait_ms": "audio.max_drain_wait_ms"
     }
   }
 }

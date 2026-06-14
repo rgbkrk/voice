@@ -367,12 +367,7 @@ def json_error(message: str, status: int = 400) -> web.Response:
 
 
 def audio_contract() -> dict[str, Any]:
-    return {
-        "sample_rate": SAMPLE_RATE,
-        "channels": CHANNELS,
-        "frame_ms": FRAME_MS,
-        "encoding": str(AUDIO_CONTRACT["encoding"]),
-    }
+    return copy.deepcopy(AUDIO_CONTRACT)
 
 
 def webrtc_contract() -> dict[str, Any]:

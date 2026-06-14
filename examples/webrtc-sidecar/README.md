@@ -230,6 +230,7 @@ set:
 python3 -m venv /tmp/voice-webrtc-venv
 /tmp/voice-webrtc-venv/bin/pip install -r examples/webrtc-sidecar/requirements.txt pytest
 /tmp/voice-webrtc-venv/bin/python examples/webrtc-sidecar/loopback_smoke.py
+/tmp/voice-webrtc-venv/bin/python examples/webrtc-sidecar/voice_stream_loopback_smoke.py --voice-bin /path/to/voice
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_sidecar.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_post_voice_stream.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_drain_sidecar_audio.py
@@ -240,3 +241,8 @@ python3 -m venv /tmp/voice-webrtc-venv
 offer/answer, verifies that HTTP-queued PCM reaches a WebRTC audio track, and
 verifies that inbound WebRTC audio can be drained back as local PCM. It does
 not contact WhatsApp or the Graph API.
+
+`voice_stream_loopback_smoke.py` runs the real `voice stream` command through
+`post_voice_stream.py`, queues those PCM frames into the sidecar, and waits for
+non-silent audio at a local WebRTC peer. It also does not contact WhatsApp or
+the Graph API.

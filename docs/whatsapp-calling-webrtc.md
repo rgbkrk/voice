@@ -171,8 +171,9 @@ Response:
 }
 ```
 
-Debug a live session with `GET /calls/{call_id}`. Queue outbound audio for the
-WebRTC track with `POST /calls/{call_id}/audio`. Terminate a local session with
+Debug a live session with `GET /calls/{call_id}`. Drain decoded inbound audio
+with `GET /calls/{call_id}/audio`. Queue outbound audio for the WebRTC track
+with `POST /calls/{call_id}/audio`. Terminate a local session with
 `POST /calls/{call_id}/close`.
 
 Runtime events:
@@ -182,6 +183,29 @@ Runtime events:
 {"type": "inbound_audio", "sequence": 42, "pcm_s16le_base64": "..."}
 {"type": "dtmf", "digit": "1"}
 {"type": "ended", "reason": "remote_hangup"}
+```
+
+Inbound audio:
+
+```http
+GET /calls/{call_id}/audio?max_bytes=1920
+```
+
+Response:
+
+```json
+{
+  "call_id": "wamid-call-id",
+  "returned_bytes": 1920,
+  "queued_rx_bytes": 3840,
+  "pcm_s16le_base64": "...",
+  "audio": {
+    "sample_rate": 48000,
+    "channels": 1,
+    "frame_ms": 20,
+    "encoding": "pcm_s16le"
+  }
+}
 ```
 
 Outbound audio:

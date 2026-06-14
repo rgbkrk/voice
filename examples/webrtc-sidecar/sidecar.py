@@ -44,6 +44,8 @@ CHANNELS = 1
 SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1_000
 BYTES_PER_SAMPLE = 2
 FRAME_BYTES = SAMPLES_PER_FRAME * CHANNELS * BYTES_PER_SAMPLE
+DEFAULT_DRAIN_BYTES = FRAME_BYTES * 50
+MAX_INBOUND_QUEUE_BYTES = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * 10
 
 
 class PcmSource:
@@ -125,6 +127,48 @@ class CallPcmSource:
         return self.fallback.read_frame()
 
 
+class InboundPcmSink:
+    """Decoded inbound PCM sink with optional file mirroring and HTTP draining."""
+
+    def __init__(
+        self,
+        path: str | None,
+        max_queue_bytes: int = MAX_INBOUND_QUEUE_BYTES,
+    ) -> None:
+        self.path = Path(path) if path else None
+        self.max_queue_bytes = max_queue_bytes
+        self.buffer = bytearray()
+        self.file = None
+
+    @property
+    def queued_bytes(self) -> int:
+        return len(self.buffer)
+
+    def write(self, pcm_s16le: bytes) -> None:
+        if self.path is not None:
+            if self.file is None:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self.file = self.path.open("ab")
+            self.file.write(pcm_s16le)
+            self.file.flush()
+
+        self.buffer.extend(pcm_s16le)
+        if len(self.buffer) > self.max_queue_bytes:
+            del self.buffer[: len(self.buffer) - self.max_queue_bytes]
+
+    def drain(self, max_bytes: int = DEFAULT_DRAIN_BYTES) -> bytes:
+        if max_bytes <= 0 or not self.buffer:
+            return b""
+        chunk = bytes(self.buffer[:max_bytes])
+        del self.buffer[:max_bytes]
+        return chunk
+
+    def close(self) -> None:
+        if self.file is not None:
+            self.file.close()
+            self.file = None
+
+
 class VoicePcmAudioTrack(MediaStreamTrack):
     """Outbound WebRTC audio track backed by local pcm_s16le frames."""
 
@@ -158,34 +202,23 @@ class VoicePcmAudioTrack(MediaStreamTrack):
         return frame
 
 
-async def write_inbound_pcm(track: MediaStreamTrack, path: str | None) -> None:
-    if not path:
-        while True:
-            try:
-                await track.recv()
-            except MediaStreamError:
-                return
-
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
+async def write_inbound_pcm(track: MediaStreamTrack, sink: InboundPcmSink) -> None:
     resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
 
-    with target.open("ab") as sink:
-        while True:
-            try:
-                frame = await track.recv()
-            except MediaStreamError:
-                return
-            for out in resampler.resample(frame):
-                sink.write(bytes(out.planes[0]))
-                sink.flush()
+    while True:
+        try:
+            frame = await track.recv()
+        except MediaStreamError:
+            return
+        for out in resampler.resample(frame):
+            sink.write(bytes(out.planes[0]))
 
 
 class CallSession:
     def __init__(self, call_id: str, source: PcmSource, rx_pcm: str | None) -> None:
         self.call_id = call_id
         self.source = CallPcmSource(source)
-        self.rx_pcm = rx_pcm
+        self.inbound = InboundPcmSink(rx_pcm)
         self.pc = RTCPeerConnection()
         self.tasks: set[asyncio.Task[Any]] = set()
         self.closed = False
@@ -195,7 +228,7 @@ class CallSession:
         def on_track(track: MediaStreamTrack) -> None:
             LOGGER.info("call %s received %s track", self.call_id, track.kind)
             if track.kind == "audio":
-                task = asyncio.create_task(write_inbound_pcm(track, self.rx_pcm))
+                task = asyncio.create_task(write_inbound_pcm(track, self.inbound))
                 self.tasks.add(task)
                 task.add_done_callback(self.tasks.discard)
 
@@ -226,6 +259,7 @@ class CallSession:
             "signaling_state": self.pc.signalingState,
             "tasks": len(self.tasks),
             "queued_tx_bytes": self.source.queued_bytes,
+            "queued_rx_bytes": self.inbound.queued_bytes,
             "audio": audio_contract(),
         }
 
@@ -237,6 +271,7 @@ class CallSession:
             task.cancel()
         if self.tasks:
             await asyncio.gather(*self.tasks, return_exceptions=True)
+        self.inbound.close()
         await self.pc.close()
 
 
@@ -308,6 +343,19 @@ def decode_pcm_payload(body: dict[str, Any]) -> bytes:
     if len(pcm) % BYTES_PER_SAMPLE != 0:
         raise ValueError("decoded PCM payload must contain whole s16le samples")
     return pcm
+
+
+def drain_size(request: web.Request) -> int:
+    raw = str(request.query.get("max_bytes") or DEFAULT_DRAIN_BYTES).strip()
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise ValueError("max_bytes must be an integer") from exc
+    if parsed <= 0:
+        raise ValueError("max_bytes must be positive")
+    if parsed % BYTES_PER_SAMPLE != 0:
+        raise ValueError("max_bytes must contain whole s16le samples")
+    return min(parsed, MAX_INBOUND_QUEUE_BYTES)
 
 
 def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
@@ -394,6 +442,27 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
             }
         )
 
+    async def receive_audio(request: web.Request) -> web.Response:
+        call_id = request.match_info["call_id"]
+        session = sessions.get(call_id)
+        if session is None:
+            return json_error("unknown call_id", status=404)
+        try:
+            max_bytes = drain_size(request)
+        except ValueError as exc:
+            return json_error(str(exc))
+
+        pcm = session.inbound.drain(max_bytes)
+        return web.json_response(
+            {
+                "call_id": call_id,
+                "returned_bytes": len(pcm),
+                "queued_rx_bytes": session.inbound.queued_bytes,
+                "pcm_s16le_base64": base64.b64encode(pcm).decode("ascii"),
+                "audio": audio_contract(),
+            }
+        )
+
     async def close_call(request: web.Request) -> web.Response:
         call_id = request.match_info["call_id"]
         session = sessions.pop(call_id, None)
@@ -410,6 +479,7 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
     app.router.add_get("/health", health)
     app.router.add_post("/offer", offer)
     app.router.add_get("/calls/{call_id}", call_status)
+    app.router.add_get("/calls/{call_id}/audio", receive_audio)
     app.router.add_post("/calls/{call_id}/audio", send_audio)
     app.router.add_post("/calls/{call_id}/close", close_call)
     app.on_cleanup.append(cleanup)

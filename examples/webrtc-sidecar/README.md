@@ -96,6 +96,12 @@ Inspect a live session:
 curl -sS http://127.0.0.1:8787/calls/local-test
 ```
 
+Drain decoded inbound PCM for a live session:
+
+```bash
+curl -sS 'http://127.0.0.1:8787/calls/local-test/audio?max_bytes=1920'
+```
+
 Queue outbound PCM for a live session:
 
 ```bash
@@ -118,8 +124,9 @@ local `/offer` call, then pass the returned SDP answer to the Cloud API
 audio track attached and ready before Hermes calls `accept`; the track sends
 silence until real TTS PCM arrives.
 
-Inbound decoded PCM is written as raw signed 16-bit little-endian mono samples.
-A later bridge layer can segment that stream with VAD and submit each segment
+Inbound decoded PCM is kept in a bounded per-call queue and can also be mirrored
+to a raw signed 16-bit little-endian mono sink with `--rx-pcm`. A later bridge
+layer can drain or read that stream, segment it with VAD, and submit each segment
 directly to the daemon STT stream contract:
 
 ```bash

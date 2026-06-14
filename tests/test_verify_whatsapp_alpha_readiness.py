@@ -312,6 +312,41 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "configure_whatsapp_cloud_calling",
             [action["id"] for action in summary["next_actions"]],
         )
+        actions = {action["id"]: action for action in summary["next_actions"]}
+        attended_action = actions["run_attended_fresh_receive"]
+        self.assertEqual(
+            attended_action["operator_handoff"]["preferred_profile"],
+            "attended-cache-receive",
+        )
+        self.assertEqual(
+            attended_action["operator_handoff"]["home_channel"],
+            "20530681934008@lid",
+        )
+        meta_action = actions["configure_whatsapp_cloud_calling"]
+        self.assertEqual(
+            meta_action["gates"],
+            ["whatsapp_cloud", "whatsapp_cloud_calling"],
+        )
+        self.assertIn(
+            "WHATSAPP_CLOUD_ACCESS_TOKEN",
+            meta_action["missing_by_gate"]["whatsapp_cloud"],
+        )
+        self.assertIn(
+            "WHATSAPP_CLOUD_ACCESS_TOKEN",
+            meta_action["missing_by_gate"]["whatsapp_cloud_calling"],
+        )
+        self.assertIn(
+            "--require-whatsapp-cloud",
+            meta_action["verify_commands"]["whatsapp_cloud"],
+        )
+        self.assertIn(
+            "--require-whatsapp-calling",
+            meta_action["verify_commands"]["whatsapp_cloud_calling"],
+        )
+        self.assertIn(
+            "--require-complete",
+            meta_action["complete_verification_command"],
+        )
 
     def test_require_complete_fails_when_alpha_gates_are_pending(self):
         with tempfile.TemporaryDirectory() as tmp:

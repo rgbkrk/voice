@@ -654,6 +654,9 @@ def build_readiness_summary(
     pending_gates: dict[str, Any],
     external_meta_setup: dict[str, Any],
 ) -> dict[str, Any]:
+    def missing_keys(handoff: dict[str, Any], fallback: Any) -> list[str]:
+        return [str(key) for key in (handoff.get("missing") or fallback or [])]
+
     attended = pending_gates.get("attended_fresh_receive") or {}
     attended_verified = attended.get("status") == "verified"
     external_meta_setup_required = not (
@@ -682,17 +685,62 @@ def build_readiness_summary(
         fallback = attended.get("fallback_draining_command")
         if fallback:
             action["fallback_draining_command"] = fallback
+        handoff = attended.get("operator_handoff")
+        if isinstance(handoff, dict):
+            action["operator_handoff"] = {
+                key: handoff.get(key)
+                for key in (
+                    "preferred_profile",
+                    "fallback_profile",
+                    "drains_bridge_messages",
+                    "fallback_drains_bridge_messages",
+                    "audio_cache_dir",
+                    "home_channel",
+                    "home_channel_kind",
+                    "agent_number",
+                    "agent_name",
+                    "steps",
+                )
+                if key in handoff
+            }
         next_actions.append(action)
     if external_meta_setup_required:
-        next_actions.append(
-            {
-                "id": "configure_whatsapp_cloud_calling",
-                "requires_operator": True,
-                "description": "Complete external Meta WhatsApp Cloud and Calling setup, then rerun with Cloud/Calling requirements.",
-                "missing": external_meta_setup.get("calling_missing") or [],
-                "setup_steps": external_meta_setup.get("setup_steps") or [],
-            }
-        )
+        cloud_gate = pending_gates.get("whatsapp_cloud") or {}
+        calling_gate = pending_gates.get("whatsapp_cloud_calling") or {}
+        cloud_handoff = cloud_gate.get("setup_handoff") or {}
+        calling_handoff = calling_gate.get("setup_handoff") or {}
+        action = {
+            "id": "configure_whatsapp_cloud_calling",
+            "requires_operator": True,
+            "description": "Complete external Meta WhatsApp Cloud and Calling setup, then rerun with Cloud/Calling requirements.",
+            "missing": external_meta_setup.get("calling_missing") or [],
+            "setup_steps": external_meta_setup.get("setup_steps") or [],
+            "gates": [],
+            "missing_by_gate": {},
+            "verify_commands": {},
+        }
+        if cloud_gate.get("status") != "configured":
+            action["gates"].append("whatsapp_cloud")
+            action["missing_by_gate"]["whatsapp_cloud"] = missing_keys(
+                cloud_handoff,
+                external_meta_setup.get("cloud_missing"),
+            )
+            verify_command = cloud_handoff.get("verify_command")
+            if verify_command:
+                action["verify_commands"]["whatsapp_cloud"] = verify_command
+        if calling_gate.get("status") != "ready":
+            action["gates"].append("whatsapp_cloud_calling")
+            action["missing_by_gate"]["whatsapp_cloud_calling"] = missing_keys(
+                calling_handoff,
+                external_meta_setup.get("calling_missing"),
+            )
+            verify_command = calling_handoff.get("verify_command")
+            if verify_command:
+                action["verify_commands"]["whatsapp_cloud_calling"] = verify_command
+            complete_command = calling_handoff.get("complete_verification_command")
+            if complete_command:
+                action["complete_verification_command"] = complete_command
+        next_actions.append(action)
 
     complete = local_checks_passed and attended_verified and not external_meta_setup_required
     if complete:

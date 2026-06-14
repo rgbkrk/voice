@@ -127,7 +127,9 @@ For the external Meta gates, the JSON report includes safe setup handoffs under
 `pending_gates.whatsapp_cloud_calling.setup_handoff`. These handoffs list the
 required key names, which keys are missing, redacted source labels for values
 that were found, and the exact follow-up verifier commands. Secret values are
-never printed. The human output mirrors the same information with:
+never printed. `readiness_summary.next_actions` repeats the same non-secret
+commands and missing-key groups so another agent can consume the report without
+scraping human output. The human output mirrors the same information with:
 
 - `whatsapp_cloud_setup`
 - `whatsapp_cloud_verify_command`

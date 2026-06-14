@@ -69,9 +69,11 @@ jobs:
       - run: |
           python -m py_compile \
             scripts/macos_release_compare.py \
+            scripts/verify_hermes_voice_config.py \
             scripts/verify_webrtc_sidecar_service.py \
             tests/test_install_webrtc_sidecar_service.py \
             tests/test_macos_release_compare.py \
+            tests/test_verify_hermes_voice_config.py \
             tests/test_verify_webrtc_sidecar_service.py
 
       - run: python -m unittest discover -s tests

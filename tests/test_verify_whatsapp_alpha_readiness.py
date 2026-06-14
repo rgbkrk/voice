@@ -656,6 +656,8 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         inbound_cache_payload = {
             "success": True,
             "checks": {
+                "selected_files": ["/tmp/aud_fresh.ogg"],
+                "audio": [{"path": "/tmp/aud_fresh.ogg"}],
                 "fresh_watch": {
                     "drains_bridge_messages": False,
                     "fresh_files": ["/tmp/aud_fresh.ogg"],
@@ -693,6 +695,42 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertEqual(
             [action["id"] for action in summary["next_actions"]],
             ["configure_whatsapp_cloud_calling"],
+        )
+
+    def test_cached_receive_verified_survives_optional_fresh_watch_timeout(self):
+        inbound_cache_payload = {
+            "success": True,
+            "checks": {
+                "selected_files": ["/tmp/aud_cached.ogg"],
+                "audio": [{"path": "/tmp/aud_cached.ogg"}],
+                "fresh_watch": {
+                    "drains_bridge_messages": False,
+                    "fresh_files": [],
+                    "fresh_count": 0,
+                },
+            },
+            "failures": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                "--profile",
+                "cached-receive",
+                "--wait-audio-cache-seconds",
+                "0.1",
+                inbound_cache_payload=inbound_cache_payload,
+            )
+
+        gate = payload["pending_gates"]["attended_fresh_receive"]
+        self.assertEqual(gate["component"], "whatsapp_inbound_cache_fresh_stt")
+        self.assertEqual(gate["status"], "not_verified")
+        self.assertTrue(gate["cached_receive_verified"])
+        self.assertTrue(gate["requires_operator"])
+        summary = payload["readiness_summary"]
+        self.assertFalse(summary["attended_fresh_receive_verified"])
+        self.assertIn(
+            "run_attended_fresh_receive",
+            [action["id"] for action in summary["next_actions"]],
         )
 
     def test_verified_attended_receive_gate_requires_audio_event_evidence(self):

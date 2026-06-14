@@ -404,6 +404,22 @@ def bridge_runtime_checks(components: list[dict[str, Any]]) -> dict[str, Any]:
     return {}
 
 
+def cached_inbound_audio_verified(components: list[dict[str, Any]]) -> bool:
+    for item in components:
+        if item["name"] not in {
+            "whatsapp_inbound_cache_stt",
+            "whatsapp_inbound_cache_fresh_stt",
+        }:
+            continue
+        if not item.get("success"):
+            continue
+        summary = item.get("summary") or {}
+        checks = summary.get("checks") or {}
+        if checks.get("selected_files") or checks.get("audio"):
+            return True
+    return False
+
+
 def attended_receive_gate(
     components: list[dict[str, Any]],
     *,
@@ -414,10 +430,7 @@ def attended_receive_gate(
     local_config = bridge_checks.get("whatsapp_local_config") or {}
     identity = bridge_checks.get("baileys_identity") or {}
     receive_names = {"whatsapp_voice_note_receive", "whatsapp_voice_note_send_receive"}
-    cached_receive_verified = any(
-        item["name"] == "whatsapp_inbound_cache_stt" and item.get("success")
-        for item in components
-    )
+    cached_receive_verified = cached_inbound_audio_verified(components)
 
     gate: dict[str, Any] = {
         "status": "pending_attended",

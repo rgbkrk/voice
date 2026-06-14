@@ -29,7 +29,7 @@ Options:
   --voice-bin PATH      voice binary exposed to the sidecar as VOICE_BIN
   --python-bin PATH     Python used to create the venv (default: python3)
   --venv PATH           sidecar venv path (default: XDG data dir)
-  --host HOST           sidecar bind host (default: 127.0.0.1)
+  --host HOST           sidecar bind host; must be loopback (default: 127.0.0.1)
   --port PORT           sidecar bind port (default: 8787)
   --rx-pcm PATH         optional inbound PCM mirror path (default: XDG state dir)
   --service-name NAME   systemd user unit name (default: voice-webrtc-sidecar.service)
@@ -113,6 +113,24 @@ resolve_voice_bin() {
   else
     fail "voice binary not found; pass --voice-bin PATH or install voice on PATH"
   fi
+}
+
+is_loopback_host() {
+  case "$1" in
+    localhost|127.*|::1)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_bind_host() {
+  if is_loopback_host "$host"; then
+    return
+  fi
+  fail "refusing non-loopback --host '$host'; the sidecar control plane must bind to localhost"
 }
 
 render_unit() {
@@ -233,6 +251,7 @@ sidecar_script="$repo_root/examples/webrtc-sidecar/sidecar.py"
 requirements="$repo_root/examples/webrtc-sidecar/requirements.txt"
 [[ -f "$sidecar_script" ]] || fail "sidecar script not found: $sidecar_script"
 [[ -f "$requirements" ]] || fail "requirements file not found: $requirements"
+validate_bind_host
 
 if [[ -z "$venv" ]]; then
   venv="$(default_data_home)/voice/webrtc-sidecar-venv"

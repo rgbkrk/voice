@@ -63,6 +63,36 @@ class WebrtcSidecarServiceInstallTests(unittest.TestCase):
         self.assertIn("Restart=on-failure", unit)
         self.assertIn("WantedBy=default.target", unit)
 
+    def test_print_unit_rejects_non_loopback_host(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--print-unit",
+                    "--repo-root",
+                    str(REPO_ROOT),
+                    "--voice-bin",
+                    "/opt/voice/bin/voice",
+                    "--host",
+                    "0.0.0.0",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "HOME": str(tmp_path),
+                    "XDG_CONFIG_HOME": str(tmp_path / "config"),
+                    "XDG_DATA_HOME": str(tmp_path / "data"),
+                    "XDG_STATE_HOME": str(tmp_path / "state"),
+                },
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refusing non-loopback --host '0.0.0.0'", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

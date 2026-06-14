@@ -158,8 +158,13 @@ pub fn webrtc_sidecar_contract() -> serde_json::Value {
                 "signaling_state": "WebRTC signaling state.",
                 "tasks": "Number of active background media tasks owned by the session.",
                 "queued_tx_bytes": "Outbound PCM bytes queued for WebRTC transmission.",
+                "queued_tx_ms": "Approximate outbound PCM duration queued for WebRTC transmission, rounded up to whole milliseconds.",
                 "max_tx_queue_bytes": "Maximum outbound PCM bytes this sidecar will queue for one call.",
+                "max_tx_queue_ms": "Maximum outbound PCM duration this sidecar will queue for one call, rounded up to whole milliseconds.",
                 "queued_rx_bytes": "Inbound decoded PCM bytes queued for Hermes to drain.",
+                "queued_rx_ms": "Approximate inbound decoded PCM duration queued for Hermes to drain, rounded up to whole milliseconds.",
+                "max_rx_queue_bytes": "Maximum inbound decoded PCM bytes this sidecar will retain for one call.",
+                "max_rx_queue_ms": "Maximum inbound decoded PCM duration this sidecar will retain for one call, rounded up to whole milliseconds.",
                 "audio": "Full fixed audio contract object defined by audio."
             },
             "call_status_response": "The call_state object for the requested call_id.",
@@ -177,21 +182,31 @@ pub fn webrtc_sidecar_contract() -> serde_json::Value {
             "send_audio_response": {
                 "call_id": "Call session identifier.",
                 "accepted_bytes": "Number of outbound PCM bytes accepted into the per-call queue.",
+                "accepted_ms": "Approximate outbound PCM duration accepted into the per-call queue, rounded up to whole milliseconds.",
                 "queued_tx_bytes": "Outbound PCM bytes queued after this write.",
+                "queued_tx_ms": "Approximate outbound PCM duration queued after this write, rounded up to whole milliseconds.",
                 "max_tx_queue_bytes": "Maximum outbound PCM bytes this sidecar will queue for one call.",
+                "max_tx_queue_ms": "Maximum outbound PCM duration this sidecar will queue for one call, rounded up to whole milliseconds.",
                 "audio": "Full fixed audio contract object defined by audio."
             },
             "clear_audio_response": {
                 "call_id": "Call session identifier.",
                 "dropped_tx_bytes": "Number of queued outbound PCM bytes discarded.",
+                "dropped_tx_ms": "Approximate queued outbound PCM duration discarded, rounded up to whole milliseconds.",
                 "queued_tx_bytes": "Outbound PCM bytes queued after the clear operation, normally 0.",
+                "queued_tx_ms": "Approximate outbound PCM duration queued after the clear operation, normally 0.",
                 "max_tx_queue_bytes": "Maximum outbound PCM bytes this sidecar will queue for one call.",
+                "max_tx_queue_ms": "Maximum outbound PCM duration this sidecar will queue for one call, rounded up to whole milliseconds.",
                 "audio": "Full fixed audio contract object defined by audio."
             },
             "receive_audio_response": {
                 "call_id": "Call session identifier.",
                 "returned_bytes": "Number of decoded PCM bytes returned.",
+                "returned_ms": "Approximate decoded PCM duration returned, rounded up to whole milliseconds.",
                 "queued_rx_bytes": "Remaining inbound decoded PCM bytes queued after this drain.",
+                "queued_rx_ms": "Approximate inbound decoded PCM duration queued after this drain, rounded up to whole milliseconds.",
+                "max_rx_queue_bytes": "Maximum inbound decoded PCM bytes this sidecar will retain for one call.",
+                "max_rx_queue_ms": "Maximum inbound decoded PCM duration this sidecar will retain for one call, rounded up to whole milliseconds.",
                 "pcm_s16le_base64": "Base64 encoded signed 16-bit little-endian mono PCM.",
                 "audio": "Full fixed audio contract object defined by audio."
             },
@@ -647,8 +662,36 @@ mod tests {
             "Inbound decoded PCM bytes queued for Hermes to drain."
         );
         assert_eq!(
+            payloads["call_state"]["queued_tx_ms"],
+            "Approximate outbound PCM duration queued for WebRTC transmission, rounded up to whole milliseconds."
+        );
+        assert_eq!(
+            payloads["call_state"]["max_rx_queue_ms"],
+            "Maximum inbound decoded PCM duration this sidecar will retain for one call, rounded up to whole milliseconds."
+        );
+        assert_eq!(
+            payloads["call_state"]["max_rx_queue_bytes"],
+            "Maximum inbound decoded PCM bytes this sidecar will retain for one call."
+        );
+        assert_eq!(
+            payloads["send_audio_response"]["accepted_ms"],
+            "Approximate outbound PCM duration accepted into the per-call queue, rounded up to whole milliseconds."
+        );
+        assert_eq!(
             payloads["clear_audio_response"]["dropped_tx_bytes"],
             "Number of queued outbound PCM bytes discarded."
+        );
+        assert_eq!(
+            payloads["clear_audio_response"]["dropped_tx_ms"],
+            "Approximate queued outbound PCM duration discarded, rounded up to whole milliseconds."
+        );
+        assert_eq!(
+            payloads["receive_audio_response"]["returned_ms"],
+            "Approximate decoded PCM duration returned, rounded up to whole milliseconds."
+        );
+        assert_eq!(
+            payloads["receive_audio_response"]["max_rx_queue_bytes"],
+            "Maximum inbound decoded PCM bytes this sidecar will retain for one call."
         );
         assert_eq!(
             payloads["error_response"]["error"],

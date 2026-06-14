@@ -184,8 +184,11 @@ Response:
 {
   "call_id": "local-test",
   "accepted_bytes": 1920,
+  "accepted_ms": 20,
   "queued_tx_bytes": 1920,
+  "queued_tx_ms": 20,
   "max_tx_queue_bytes": 960000,
+  "max_tx_queue_ms": 10000,
   "audio": {
     "sample_rate": 48000,
     "channels": 1,
@@ -207,8 +210,11 @@ Response:
 {
   "call_id": "local-test",
   "dropped_tx_bytes": 3840,
+  "dropped_tx_ms": 40,
   "queued_tx_bytes": 0,
+  "queued_tx_ms": 0,
   "max_tx_queue_bytes": 960000,
+  "max_tx_queue_ms": 10000,
   "audio": {
     "sample_rate": 48000,
     "channels": 1,

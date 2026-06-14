@@ -74,6 +74,16 @@ def test_audio_contract_is_voice_pcm_shape():
     assert sidecar.MAX_DRAIN_WAIT_MS == audio["max_drain_wait_ms"]
     assert sidecar.FRAME_BYTES == 1920
     assert sidecar.MAX_OUTBOUND_QUEUE_BYTES == 960_000
+    assert sidecar.PCM_BYTES_PER_SECOND == 96_000
+
+
+def test_pcm_bytes_to_ms_reports_ceiled_audio_duration():
+    sidecar = load_sidecar()
+
+    assert sidecar.pcm_bytes_to_ms(0) == 0
+    assert sidecar.pcm_bytes_to_ms(2) == 1
+    assert sidecar.pcm_bytes_to_ms(sidecar.FRAME_BYTES) == sidecar.FRAME_MS
+    assert sidecar.pcm_bytes_to_ms(sidecar.MAX_OUTBOUND_QUEUE_BYTES) == 10_000
 
 
 def test_load_contract_falls_back_to_voice_stream_contract(monkeypatch, tmp_path: Path):
@@ -340,8 +350,13 @@ def test_audio_endpoint_queues_pcm_for_call():
             assert response.status == 200
             body = await response.json()
             assert body["accepted_bytes"] == 4
+            assert body["accepted_ms"] == 1
             assert body["queued_tx_bytes"] == 4
+            assert body["queued_tx_ms"] == 1
             assert body["max_tx_queue_bytes"] == source.max_queue_bytes
+            assert body["max_tx_queue_ms"] == sidecar.pcm_bytes_to_ms(
+                source.max_queue_bytes
+            )
             assert body["audio"] == sidecar.audio_contract()
 
             frame = source.read_frame()
@@ -363,8 +378,11 @@ def test_clear_audio_endpoint_drops_queued_pcm_for_call():
             return {
                 "call_id": "call-1",
                 "dropped_tx_bytes": dropped_bytes,
+                "dropped_tx_ms": sidecar.pcm_bytes_to_ms(dropped_bytes),
                 "queued_tx_bytes": self.source.queued_bytes,
+                "queued_tx_ms": sidecar.pcm_bytes_to_ms(self.source.queued_bytes),
                 "max_tx_queue_bytes": self.source.max_queue_bytes,
+                "max_tx_queue_ms": sidecar.pcm_bytes_to_ms(self.source.max_queue_bytes),
                 "audio": sidecar.audio_contract(),
             }
 
@@ -387,8 +405,11 @@ def test_clear_audio_endpoint_drops_queued_pcm_for_call():
             assert body == {
                 "call_id": "call-1",
                 "dropped_tx_bytes": 4,
+                "dropped_tx_ms": 1,
                 "queued_tx_bytes": 0,
+                "queued_tx_ms": 0,
                 "max_tx_queue_bytes": source.max_queue_bytes,
+                "max_tx_queue_ms": sidecar.pcm_bytes_to_ms(source.max_queue_bytes),
                 "audio": sidecar.audio_contract(),
             }
             assert source.queued_bytes == 0
@@ -513,7 +534,13 @@ def test_audio_endpoint_drains_inbound_pcm_for_call():
             body = await response.json()
             assert body["call_id"] == "call-1"
             assert body["returned_bytes"] == 2
+            assert body["returned_ms"] == 1
             assert body["queued_rx_bytes"] == 2
+            assert body["queued_rx_ms"] == 1
+            assert body["max_rx_queue_bytes"] == session.inbound.max_queue_bytes
+            assert body["max_rx_queue_ms"] == sidecar.pcm_bytes_to_ms(
+                session.inbound.max_queue_bytes
+            )
             assert base64.b64decode(body["pcm_s16le_base64"]) == b"\x01\x00"
             assert body["audio"] == sidecar.audio_contract()
 

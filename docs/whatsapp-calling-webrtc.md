@@ -219,7 +219,11 @@ Response:
 {
   "call_id": "wamid-call-id",
   "returned_bytes": 1920,
+  "returned_ms": 20,
   "queued_rx_bytes": 3840,
+  "queued_rx_ms": 40,
+  "max_rx_queue_bytes": 960000,
+  "max_rx_queue_ms": 10000,
   "pcm_s16le_base64": "...",
   "audio": {
     "sample_rate": 48000,
@@ -258,8 +262,11 @@ Response:
 {
   "call_id": "wamid-call-id",
   "accepted_bytes": 1920,
+  "accepted_ms": 20,
   "queued_tx_bytes": 1920,
+  "queued_tx_ms": 20,
   "max_tx_queue_bytes": 960000,
+  "max_tx_queue_ms": 10000,
   "audio": {
     "sample_rate": 48000,
     "channels": 1,
@@ -287,8 +294,11 @@ Response:
 {
   "call_id": "wamid-call-id",
   "dropped_tx_bytes": 3840,
+  "dropped_tx_ms": 40,
   "queued_tx_bytes": 0,
+  "queued_tx_ms": 0,
   "max_tx_queue_bytes": 960000,
+  "max_tx_queue_ms": 10000,
   "audio": {
     "sample_rate": 48000,
     "channels": 1,

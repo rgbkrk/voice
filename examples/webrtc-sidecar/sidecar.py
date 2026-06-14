@@ -135,6 +135,7 @@ MAX_OUTBOUND_QUEUE_BYTES = int(AUDIO_CONTRACT["max_outbound_queue_bytes"])
 MAX_INBOUND_QUEUE_BYTES = int(AUDIO_CONTRACT["max_inbound_queue_bytes"])
 MAX_DRAIN_WAIT_MS = int(AUDIO_CONTRACT["max_drain_wait_ms"])
 LOCAL_HOSTNAMES = {"localhost"}
+PCM_BYTES_PER_SECOND = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE
 
 
 def is_loopback_host(host: str) -> bool:
@@ -154,6 +155,12 @@ def validate_bind_host(host: str, *, allow_nonlocal: bool = False) -> None:
         f"{host!r}; use --allow-nonlocal only behind a trusted local network "
         "or private socket boundary"
     )
+
+
+def pcm_bytes_to_ms(byte_count: int) -> int:
+    if byte_count <= 0:
+        return 0
+    return (byte_count * 1_000 + PCM_BYTES_PER_SECOND - 1) // PCM_BYTES_PER_SECOND
 
 
 class PcmSource:
@@ -396,8 +403,13 @@ class CallSession:
             "signaling_state": self.pc.signalingState,
             "tasks": len(self.tasks),
             "queued_tx_bytes": self.source.queued_bytes,
+            "queued_tx_ms": pcm_bytes_to_ms(self.source.queued_bytes),
             "max_tx_queue_bytes": self.source.max_queue_bytes,
+            "max_tx_queue_ms": pcm_bytes_to_ms(self.source.max_queue_bytes),
             "queued_rx_bytes": self.inbound.queued_bytes,
+            "queued_rx_ms": pcm_bytes_to_ms(self.inbound.queued_bytes),
+            "max_rx_queue_bytes": self.inbound.max_queue_bytes,
+            "max_rx_queue_ms": pcm_bytes_to_ms(self.inbound.max_queue_bytes),
             "audio": audio_contract(),
         }
 
@@ -407,8 +419,11 @@ class CallSession:
         return {
             "call_id": self.call_id,
             "dropped_tx_bytes": dropped_bytes,
+            "dropped_tx_ms": pcm_bytes_to_ms(dropped_bytes),
             "queued_tx_bytes": self.source.queued_bytes,
+            "queued_tx_ms": pcm_bytes_to_ms(self.source.queued_bytes),
             "max_tx_queue_bytes": self.source.max_queue_bytes,
+            "max_tx_queue_ms": pcm_bytes_to_ms(self.source.max_queue_bytes),
             "audio": audio_contract(),
         }
 
@@ -602,8 +617,11 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
             {
                 "call_id": call_id,
                 "accepted_bytes": accepted_bytes,
+                "accepted_ms": pcm_bytes_to_ms(accepted_bytes),
                 "queued_tx_bytes": session.source.queued_bytes,
+                "queued_tx_ms": pcm_bytes_to_ms(session.source.queued_bytes),
                 "max_tx_queue_bytes": session.source.max_queue_bytes,
+                "max_tx_queue_ms": pcm_bytes_to_ms(session.source.max_queue_bytes),
                 "audio": audio_contract(),
             }
         )
@@ -625,7 +643,11 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
             {
                 "call_id": call_id,
                 "returned_bytes": len(pcm),
+                "returned_ms": pcm_bytes_to_ms(len(pcm)),
                 "queued_rx_bytes": session.inbound.queued_bytes,
+                "queued_rx_ms": pcm_bytes_to_ms(session.inbound.queued_bytes),
+                "max_rx_queue_bytes": session.inbound.max_queue_bytes,
+                "max_rx_queue_ms": pcm_bytes_to_ms(session.inbound.max_queue_bytes),
                 "pcm_s16le_base64": base64.b64encode(pcm).decode("ascii"),
                 "audio": audio_contract(),
             }

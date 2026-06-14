@@ -72,7 +72,12 @@ def write_fake_helpers(directory: Path, *, cloud_configured: bool = False) -> No
 
 
 class WhatsAppAlphaReadinessTests(unittest.TestCase):
-    def run_readiness(self, tmp_path: Path, *args: str) -> dict:
+    def run_readiness(
+        self,
+        tmp_path: Path,
+        *args: str,
+        skip_voice_note_smoke: bool = True,
+    ) -> dict:
         helpers = tmp_path / "helpers"
         helpers.mkdir()
         write_fake_helpers(helpers)
@@ -80,22 +85,24 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
         config = tmp_path / "config.yaml"
         config.write_text("tts: {}\n", encoding="utf-8")
+        command = [
+            str(SCRIPT_PATH),
+            "--voice-bin",
+            str(voice),
+            "--hermes-home",
+            str(tmp_path / "hermes"),
+            "--hermes-config",
+            str(config),
+            "--skip-systemd",
+            "--skip-daemon",
+            "--skip-sidecar",
+            "--json",
+        ]
+        if skip_voice_note_smoke:
+            command.append("--skip-voice-note-smoke")
+        command.extend(args)
         result = subprocess.run(
-            [
-                str(SCRIPT_PATH),
-                "--voice-bin",
-                str(voice),
-                "--hermes-home",
-                str(tmp_path / "hermes"),
-                "--hermes-config",
-                str(config),
-                "--skip-systemd",
-                "--skip-daemon",
-                "--skip-sidecar",
-                "--skip-voice-note-smoke",
-                "--json",
-                *args,
-            ],
+            command,
             capture_output=True,
             text=True,
             check=False,
@@ -139,6 +146,32 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "whatsapp_inbound_cache_stt",
             payload["by_category"]["voice_note"]["components"],
         )
+
+    def test_voice_note_send_receive_flags_are_passed_to_bridge_smoke(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                "--send-voice-note",
+                "--voice-note-chat-id",
+                "20530681934008@lid",
+                "--wait-inbound-seconds",
+                "5",
+                "--require-inbound-audio",
+                "--drain-bridge-messages",
+                skip_voice_note_smoke=False,
+            )
+
+        self.assertTrue(payload["success"])
+        components = {item["name"]: item for item in payload["components"]}
+        self.assertIn("whatsapp_voice_note_send_receive", components)
+        command = components["whatsapp_voice_note_send_receive"]["command"]
+        self.assertIn("--send", command)
+        self.assertIn("--chat-id", command)
+        self.assertIn("20530681934008@lid", command)
+        self.assertIn("--wait-inbound-seconds", command)
+        self.assertIn("5.0", command)
+        self.assertIn("--require-inbound-audio", command)
+        self.assertIn("--drain-bridge-messages", command)
 
     def test_require_cloud_calling_fails_when_meta_credentials_are_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

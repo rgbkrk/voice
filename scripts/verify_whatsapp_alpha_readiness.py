@@ -246,23 +246,43 @@ def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
     )
 
     if not args.skip_voice_note_smoke:
+        voice_note_cmd = [
+            script_path("verify_whatsapp_voice_note_bridge.py"),
+            "--voice-bin",
+            voice_bin,
+            "--hermes-home",
+            str(hermes_home),
+            "--bridge-url",
+            args.bridge_url,
+            "--text",
+            args.text,
+            "--json",
+        ]
+        voice_note_name = "whatsapp_voice_note_dry_run"
+        if args.voice_note_chat_id:
+            voice_note_cmd.extend(["--chat-id", args.voice_note_chat_id])
+        if args.send_voice_note:
+            voice_note_cmd.append("--send")
+            voice_note_name = "whatsapp_voice_note_send"
+        if args.wait_inbound_seconds > 0:
+            voice_note_cmd.extend(
+                ["--wait-inbound-seconds", str(args.wait_inbound_seconds)]
+            )
+            if args.send_voice_note:
+                voice_note_name = "whatsapp_voice_note_send_receive"
+            else:
+                voice_note_name = "whatsapp_voice_note_receive"
+            if args.require_inbound_audio:
+                voice_note_cmd.append("--require-inbound-audio")
+            if args.drain_bridge_messages:
+                voice_note_cmd.append("--drain-bridge-messages")
+        voice_note_timeout = args.voice_timeout + args.wait_inbound_seconds + args.timeout
         components.append(
             component(
-                name="whatsapp_voice_note_dry_run",
+                name=voice_note_name,
                 category="voice_note",
-                command=[
-                    script_path("verify_whatsapp_voice_note_bridge.py"),
-                    "--voice-bin",
-                    voice_bin,
-                    "--hermes-home",
-                    str(hermes_home),
-                    "--bridge-url",
-                    args.bridge_url,
-                    "--text",
-                    args.text,
-                    "--json",
-                ],
-                timeout=args.voice_timeout,
+                command=voice_note_cmd,
+                timeout=voice_note_timeout,
                 parse_json=True,
             )
         )
@@ -417,6 +437,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-sidecar", action="store_true")
     parser.add_argument("--skip-hermes-tts-smoke", action="store_true")
     parser.add_argument("--skip-voice-note-smoke", action="store_true")
+    parser.add_argument(
+        "--send-voice-note",
+        action="store_true",
+        help="post a real WhatsApp voice note through the local bridge",
+    )
+    parser.add_argument(
+        "--voice-note-chat-id",
+        default=None,
+        help="override WHATSAPP_HOME_CHANNEL for the real voice-note send",
+    )
+    parser.add_argument("--wait-inbound-seconds", type=float, default=0.0)
+    parser.add_argument("--require-inbound-audio", action="store_true")
+    parser.add_argument(
+        "--drain-bridge-messages",
+        action="store_true",
+        help=(
+            "allow attended inbound receive polling via the bridge /messages "
+            "endpoint; this consumes queued bridge messages"
+        ),
+    )
     parser.add_argument("--run-stt-smoke", action="store_true")
     parser.add_argument("--run-inbound-cache-smoke", action="store_true")
     parser.add_argument("--require-whatsapp-cloud", action="store_true")

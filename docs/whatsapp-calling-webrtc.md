@@ -95,6 +95,29 @@ scripts/verify_whatsapp_alpha_readiness.py \
   --run-inbound-cache-smoke
 ```
 
+The same alpha report can also drive the real bridge voice-note operation when
+running an attended test. Add `--send-voice-note` to post the generated
+Ogg/Opus note to `WHATSAPP_HOME_CHANNEL`, or pass `--voice-note-chat-id` to
+override the destination:
+
+```bash
+scripts/verify_whatsapp_alpha_readiness.py \
+  --hermes-home ~/.hermes \
+  --send-voice-note
+```
+
+For a full attended send/receive pass, combine the send flag with the guarded
+receive drain:
+
+```bash
+scripts/verify_whatsapp_alpha_readiness.py \
+  --hermes-home ~/.hermes \
+  --send-voice-note \
+  --wait-inbound-seconds 60 \
+  --require-inbound-audio \
+  --drain-bridge-messages
+```
+
 To prove the outbound voice-note path without sending a WhatsApp message, run:
 
 ```bash

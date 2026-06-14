@@ -173,6 +173,21 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "WHATSAPP_CLOUD_ACCESS_TOKEN",
             gates["whatsapp_cloud_calling"]["missing"],
         )
+        summary = payload["readiness_summary"]
+        self.assertEqual(summary["status"], "local_ready_pending_gates")
+        self.assertFalse(summary["complete"])
+        self.assertTrue(summary["local_checks_passed"])
+        self.assertFalse(summary["attended_fresh_receive_verified"])
+        self.assertTrue(summary["external_meta_setup_required"])
+        self.assertTrue(summary["operator_action_required"])
+        self.assertIn(
+            "run_attended_fresh_receive",
+            [action["id"] for action in summary["next_actions"]],
+        )
+        self.assertIn(
+            "configure_whatsapp_cloud_calling",
+            [action["id"] for action in summary["next_actions"]],
+        )
 
     def test_default_voice_bin_prefers_installed_voice_on_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -265,6 +280,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("--profile attended-send-receive", result.stdout)
+        self.assertIn("readiness=local_ready_pending_gates", result.stdout)
 
     def test_inbound_cache_smoke_adds_receive_component(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -404,6 +420,14 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertEqual(gate["component"], "whatsapp_inbound_cache_fresh_stt")
         self.assertFalse(gate["drains_bridge_messages"])
         self.assertFalse(gate["requires_operator"])
+        summary = payload["readiness_summary"]
+        self.assertFalse(summary["complete"])
+        self.assertTrue(summary["attended_fresh_receive_verified"])
+        self.assertTrue(summary["external_meta_setup_required"])
+        self.assertEqual(
+            [action["id"] for action in summary["next_actions"]],
+            ["configure_whatsapp_cloud_calling"],
+        )
 
     def test_verified_attended_receive_gate_requires_audio_event_evidence(self):
         voice_note_payload = {
@@ -433,6 +457,68 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertEqual(gate["component"], "whatsapp_voice_note_send_receive")
         self.assertEqual(gate["audio_events"], 1)
         self.assertFalse(gate["requires_operator"])
+
+    def test_readiness_summary_is_complete_when_all_gates_are_verified(self):
+        inbound_cache_payload = {
+            "success": True,
+            "checks": {
+                "fresh_watch": {
+                    "drains_bridge_messages": False,
+                    "fresh_files": ["/tmp/aud_fresh.ogg"],
+                    "fresh_count": 1,
+                }
+            },
+            "failures": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            helpers = tmp_path / "helpers"
+            helpers.mkdir()
+            write_fake_helpers(
+                helpers,
+                cloud_configured=True,
+                inbound_cache_payload=inbound_cache_payload,
+            )
+            voice = tmp_path / "voice"
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+            config = tmp_path / "config.yaml"
+            config.write_text("tts: {}\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-home",
+                    str(tmp_path / "hermes"),
+                    "--hermes-config",
+                    str(config),
+                    "--skip-systemd",
+                    "--skip-daemon",
+                    "--skip-sidecar",
+                    "--profile",
+                    "attended-cache-receive",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "VOICE_READINESS_SCRIPT_DIR": str(helpers),
+                },
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        summary = payload["readiness_summary"]
+        self.assertEqual(summary["status"], "complete")
+        self.assertTrue(summary["complete"])
+        self.assertTrue(summary["local_checks_passed"])
+        self.assertTrue(summary["attended_fresh_receive_verified"])
+        self.assertFalse(summary["external_meta_setup_required"])
+        self.assertFalse(summary["operator_action_required"])
+        self.assertEqual(summary["next_actions"], [])
 
     def test_voice_note_flags_cannot_be_used_when_voice_note_smoke_is_skipped(self):
         result = self.run_invalid("--skip-voice-note-smoke", "--send-voice-note")

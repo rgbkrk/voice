@@ -469,6 +469,73 @@ def external_meta_gate(external_meta_setup: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_readiness_summary(
+    *,
+    local_checks_passed: bool,
+    pending_gates: dict[str, Any],
+    external_meta_setup: dict[str, Any],
+) -> dict[str, Any]:
+    attended = pending_gates.get("attended_fresh_receive") or {}
+    attended_verified = attended.get("status") == "verified"
+    external_meta_setup_required = not (
+        external_meta_setup.get("cloud_configured")
+        and external_meta_setup.get("calling_ready")
+    )
+    next_actions: list[dict[str, Any]] = []
+
+    if not local_checks_passed:
+        next_actions.append(
+            {
+                "id": "fix_local_runtime",
+                "requires_operator": False,
+                "description": "Fix failed local readiness components before retrying.",
+            }
+        )
+    if not attended_verified:
+        action: dict[str, Any] = {
+            "id": "run_attended_fresh_receive",
+            "requires_operator": True,
+            "description": "Run the non-draining attended receive profile while someone sends a fresh WhatsApp voice note.",
+        }
+        command = attended.get("command")
+        if command:
+            action["command"] = command
+        fallback = attended.get("fallback_draining_command")
+        if fallback:
+            action["fallback_draining_command"] = fallback
+        next_actions.append(action)
+    if external_meta_setup_required:
+        next_actions.append(
+            {
+                "id": "configure_whatsapp_cloud_calling",
+                "requires_operator": True,
+                "description": "Complete external Meta WhatsApp Cloud and Calling setup, then rerun with Cloud/Calling requirements.",
+                "missing": external_meta_setup.get("calling_missing") or [],
+                "setup_steps": external_meta_setup.get("setup_steps") or [],
+            }
+        )
+
+    complete = local_checks_passed and attended_verified and not external_meta_setup_required
+    if complete:
+        status = "complete"
+    elif local_checks_passed:
+        status = "local_ready_pending_gates"
+    else:
+        status = "local_checks_failed"
+
+    return {
+        "status": status,
+        "complete": complete,
+        "local_checks_passed": local_checks_passed,
+        "attended_fresh_receive_verified": attended_verified,
+        "external_meta_setup_required": external_meta_setup_required,
+        "operator_action_required": any(
+            bool(action.get("requires_operator")) for action in next_actions
+        ),
+        "next_actions": next_actions,
+    }
+
+
 def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
     components = build_components(args)
     required_failures = [
@@ -528,6 +595,11 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
         ),
         **external_meta_gate(external_meta_setup),
     }
+    readiness_summary = build_readiness_summary(
+        local_checks_passed=not required_failures,
+        pending_gates=pending_gates,
+        external_meta_setup=external_meta_setup,
+    )
 
     return {
         "success": success,
@@ -536,6 +608,7 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
         "by_category": by_category,
         "external_meta_setup": external_meta_setup,
         "pending_gates": pending_gates,
+        "readiness_summary": readiness_summary,
         "failures": [
             {
                 "name": item["name"],
@@ -669,6 +742,14 @@ def human_summary(result: dict[str, Any]) -> None:
     else:
         print("error: WhatsApp alpha readiness failed", file=sys.stderr)
     print(f"profile={result.get('profile')}")
+    summary = result.get("readiness_summary") or {}
+    if summary:
+        print(
+            "readiness="
+            f"{summary.get('status')} complete={summary.get('complete')} "
+            f"operator_action_required={summary.get('operator_action_required')} "
+            f"external_meta_setup_required={summary.get('external_meta_setup_required')}"
+        )
 
     for item in result["components"]:
         status = "ok" if item["success"] else "failed"

@@ -25,6 +25,7 @@ from urllib import error, parse, request
 
 
 CONTRACT_PATH = Path(__file__).resolve().parents[2] / "docs/contracts/webrtc-sidecar-v1.json"
+TEMPFAIL_EXIT_CODE = 75
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,18 @@ class AudioContract:
     default_drain_bytes: int = 0
     max_outbound_queue_bytes: int = 0
     max_drain_wait_ms: int = 0
+
+
+class SidecarAudioPostError(RuntimeError):
+    """Raised when the sidecar rejects an outbound PCM frame."""
+
+    def __init__(self, status_code: int, body: str) -> None:
+        self.status_code = status_code
+        self.body = body
+        self.retryable = status_code == 429
+        super().__init__(
+            f"sidecar rejected audio frame ({status_code}): {body}"
+        )
 
 
 def load_audio_contract(path: Path = CONTRACT_PATH) -> AudioContract:
@@ -123,9 +136,22 @@ def post_audio_frame(
             return json.loads(response.read().decode("utf-8"))
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"sidecar rejected audio frame ({exc.code}): {body}") from exc
+        raise SidecarAudioPostError(exc.code, body) from exc
     except error.URLError as exc:
         raise RuntimeError(f"failed to post audio frame to sidecar: {exc}") from exc
+
+
+def stop_voice_process(process: subprocess.Popen[bytes], timeout_s: float = 2.0) -> int:
+    """Terminate a still-running `voice stream` child and return its exit code."""
+    if process.poll() is not None:
+        return int(process.returncode or 0)
+
+    process.terminate()
+    try:
+        return process.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return process.wait()
 
 
 def read_exact_or_eof(stream: BinaryIO, size: int) -> bytes:
@@ -213,13 +239,31 @@ def main() -> int:
 
     frame_count = 0
     byte_count = 0
+    post_error: Exception | None = None
     try:
         for frame in iter_pcm_frames(process.stdout, contract.frame_bytes):
-            post_audio_frame(url, contract, frame, args.timeout)
+            try:
+                post_audio_frame(url, contract, frame, args.timeout)
+            except Exception as exc:
+                post_error = exc
+                break
             frame_count += 1
             byte_count += len(frame)
     finally:
         process.stdout.close()
+
+    if post_error is not None:
+        return_code = stop_voice_process(process)
+        if not args.quiet:
+            print(f"{post_error}", file=sys.stderr)
+            if isinstance(post_error, SidecarAudioPostError) and post_error.retryable:
+                print(
+                    "sidecar reported outbound audio backpressure; retry later",
+                    file=sys.stderr,
+                )
+        if isinstance(post_error, SidecarAudioPostError) and post_error.retryable:
+            return TEMPFAIL_EXIT_CODE
+        return return_code if return_code else 1
 
     return_code = process.wait()
     if return_code != 0:

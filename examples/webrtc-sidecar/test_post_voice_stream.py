@@ -170,6 +170,77 @@ def test_post_audio_frame_sends_json_payload_to_sidecar_endpoint():
         thread.join(timeout=1)
 
 
+def test_post_audio_frame_marks_429_as_retryable_backpressure():
+    bridge = load_bridge()
+    contract = bridge.AudioContract(
+        sample_rate=48_000,
+        channels=1,
+        frame_ms=20,
+        encoding="pcm_s16le",
+        frame_bytes=1_920,
+    )
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(429)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error":"outbound PCM queue is full"}')
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/calls/call-1/audio"
+
+        try:
+            bridge.post_audio_frame(url, contract, b"\x01\x00", 1.0)
+        except bridge.SidecarAudioPostError as exc:
+            assert exc.status_code == 429
+            assert exc.retryable is True
+            assert "outbound PCM queue is full" in exc.body
+        else:
+            raise AssertionError("expected 429 to raise a typed sidecar error")
+    finally:
+        server.shutdown()
+        thread.join(timeout=1)
+
+
+def test_stop_voice_process_terminates_running_child():
+    bridge = load_bridge()
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+    process = FakeProcess()
+
+    return_code = bridge.stop_voice_process(process)
+
+    assert return_code == -15
+    assert process.terminated is True
+    assert process.killed is False
+
+
 def test_build_voice_stream_command_uses_contract_and_handoff_flags():
     bridge = load_bridge()
     contract = bridge.AudioContract(

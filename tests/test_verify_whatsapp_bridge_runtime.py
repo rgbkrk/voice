@@ -86,7 +86,15 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
             write_baileys_session(args.session_dir)
             args.env_file.parent.mkdir(parents=True, exist_ok=True)
             args.env_file.write_text(
-                "WHATSAPP_ENABLED=true\nWHATSAPP_MODE=bot\n",
+                "\n".join(
+                    [
+                        "WHATSAPP_ENABLED=true",
+                        "WHATSAPP_MODE=bot",
+                        "WHATSAPP_HOME_CHANNEL=20530681934008@lid",
+                        "WHATSAPP_ALLOWED_USERS=18316653748,17202993514",
+                        "",
+                    ]
+                ),
                 encoding="utf-8",
             )
 
@@ -98,6 +106,13 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
         self.assertEqual(checks["baileys_identity"]["number"], "13236478455")
         self.assertEqual(checks["baileys_identity"]["lid_number"], "186999436771390")
         self.assertTrue(checks["lid_mapping"]["ok"])
+        local = checks["whatsapp_local_config"]
+        self.assertTrue(local["enabled"])
+        self.assertEqual(local["mode"], "bot")
+        self.assertEqual(local["home_channel"], "20530681934008@lid")
+        self.assertEqual(local["home_channel_kind"], "lid")
+        self.assertEqual(local["allowed_users_count"], 2)
+        self.assertNotIn("18316653748", json.dumps(local))
         self.assertFalse(checks["whatsapp_cloud"]["cloud_configured"])
         self.assertIn(
             "WHATSAPP_CLOUD_ACCESS_TOKEN",
@@ -129,6 +144,22 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
 
         self.assertFalse(result["success"])
         self.assertIn("WhatsApp Cloud credentials missing", "\n".join(result["failures"]))
+
+    def test_disabled_local_whatsapp_config_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(tmp_path)
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text(
+                "WHATSAPP_ENABLED=false\nWHATSAPP_MODE=bot\n",
+                encoding="utf-8",
+            )
+
+            result = self.script.verify(args)
+
+        self.assertFalse(result["success"])
+        self.assertIn("WHATSAPP_ENABLED is explicitly disabled", result["failures"])
 
     def test_cloud_calling_summary_merges_env_file_and_systemd_sources(self):
         summary = self.script.build_cloud_summary(

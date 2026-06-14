@@ -41,6 +41,15 @@ WHATSAPP_CALLING_ENV = (
     "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND",
     "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT",
 )
+WHATSAPP_LOCAL_CONFIG_ENV = (
+    "WHATSAPP_ENABLED",
+    "WHATSAPP_MODE",
+    "WHATSAPP_HOME_CHANNEL",
+    "WHATSAPP_HOME_CHANNEL_THREAD_ID",
+    "WHATSAPP_ALLOWED_USERS",
+)
+TRUTHY_VALUES = {"1", "true", "yes", "on"}
+FALSY_VALUES = {"0", "false", "no", "off"}
 
 
 def default_hermes_home() -> Path:
@@ -373,6 +382,76 @@ def env_presence(env_sources: dict[str, dict[str, str]], keys: tuple[str, ...]) 
     return key_status
 
 
+def first_env_value(
+    env_sources: dict[str, dict[str, str]],
+    key: str,
+) -> tuple[str | None, list[str]]:
+    sources: list[str] = []
+    first: str | None = None
+    for source, values in env_sources.items():
+        value = values.get(key)
+        if value in (None, ""):
+            continue
+        sources.append(source)
+        if first is None:
+            first = value
+    return first, sources
+
+
+def parse_bool(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in TRUTHY_VALUES:
+        return True
+    if normalized in FALSY_VALUES:
+        return False
+    return None
+
+
+def home_channel_kind(value: str | None) -> str | None:
+    if not value:
+        return None
+    if value.endswith("@lid"):
+        return "lid"
+    if value.endswith("@s.whatsapp.net"):
+        return "jid"
+    if normalize_whatsapp_identifier(value):
+        return "phone"
+    return "other"
+
+
+def count_csv_values(value: str | None) -> int:
+    if not value:
+        return 0
+    return len([item for item in (part.strip() for part in value.split(",")) if item])
+
+
+def build_local_config_summary(env_sources: dict[str, dict[str, str]]) -> dict[str, Any]:
+    enabled_raw, enabled_sources = first_env_value(env_sources, "WHATSAPP_ENABLED")
+    mode, mode_sources = first_env_value(env_sources, "WHATSAPP_MODE")
+    home_channel, home_sources = first_env_value(env_sources, "WHATSAPP_HOME_CHANNEL")
+    thread_id, thread_sources = first_env_value(env_sources, "WHATSAPP_HOME_CHANNEL_THREAD_ID")
+    allowed_users, allowed_sources = first_env_value(env_sources, "WHATSAPP_ALLOWED_USERS")
+    presence = env_presence(env_sources, WHATSAPP_LOCAL_CONFIG_ENV)
+
+    return {
+        "enabled": parse_bool(enabled_raw),
+        "enabled_present": enabled_raw is not None,
+        "enabled_sources": enabled_sources,
+        "mode": mode,
+        "mode_sources": mode_sources,
+        "home_channel": home_channel,
+        "home_channel_kind": home_channel_kind(home_channel),
+        "home_channel_sources": home_sources,
+        "home_channel_thread_id_present": thread_id is not None,
+        "home_channel_thread_id_sources": thread_sources,
+        "allowed_users_count": count_csv_values(allowed_users),
+        "allowed_users_sources": allowed_sources,
+        "key_presence": presence,
+    }
+
+
 def missing_env_keys(env_sources: dict[str, dict[str, str]], keys: tuple[str, ...]) -> list[str]:
     return [
         key
@@ -461,6 +540,13 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     expected_agent_number = normalize_whatsapp_identifier(args.expected_agent_number)
     expected_agent_name = args.expected_agent_name
     expected_mode = args.expected_mode or env_sources["env_file"].get("WHATSAPP_MODE")
+    local_config = build_local_config_summary(env_sources)
+    if local_config["enabled"] is False:
+        failures.append("WHATSAPP_ENABLED is explicitly disabled")
+    elif local_config["enabled_present"] and local_config["enabled"] is None:
+        warnings.append("WHATSAPP_ENABLED is set but is not a recognized boolean")
+    if not local_config["home_channel"]:
+        warnings.append("WHATSAPP_HOME_CHANNEL is not configured")
 
     if not session_dir.is_dir():
         failures.append(f"WhatsApp session directory not found: {session_dir}")
@@ -576,6 +662,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "expected_agent_number": expected_agent_number,
         "expected_agent_name": expected_agent_name,
         "expected_mode": expected_mode,
+        "whatsapp_local_config": local_config,
         "baileys_identity": identity,
         "session_artifacts": counts,
         "lid_mapping": lid_mapping,
@@ -621,6 +708,7 @@ def human_summary(result: dict[str, Any]) -> None:
     health = checks.get("bridge_health") or {}
     process = (checks.get("bridge_process") or {}).get("selected") or {}
     cloud = checks.get("whatsapp_cloud") or {}
+    local_config = checks.get("whatsapp_local_config") or {}
 
     if result["success"]:
         print("ok: WhatsApp bridge runtime verifier passed")
@@ -647,6 +735,14 @@ def human_summary(result: dict[str, Any]) -> None:
             f"pid={process.get('pid')} mode={process.get('mode') or '<unknown>'} "
             f"session={process.get('session') or '<unknown>'}"
         )
+    print(
+        "whatsapp_local="
+        f"enabled={local_config.get('enabled')} "
+        f"mode={local_config.get('mode') or '<unknown>'} "
+        f"home_channel={local_config.get('home_channel') or '<missing>'} "
+        f"home_channel_kind={local_config.get('home_channel_kind') or '<unknown>'} "
+        f"allowed_users={local_config.get('allowed_users_count', 0)}"
+    )
     print(
         "session_artifacts="
         + ",".join(

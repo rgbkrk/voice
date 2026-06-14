@@ -5,6 +5,17 @@ The `voice` CLI still works without it: `voice say -o output.wav ...` falls
 back to local synthesis, `voice mcp` initializes without a daemon, and
 `voice stream` requires a running daemon.
 
+Use the fast verifier when changing CLI, MCP, or daemon detection behavior:
+
+```bash
+scripts/verify_cli_mcp_surface.py --voice-bin "$(command -v voice)"
+```
+
+It checks `voice stream-contract` and `voice mcp` with the daemon deliberately
+hidden, then checks that MCP reports a daemon connection when
+`voice daemon status --json` detects one. Add `--require-daemon` for release
+hosts where the daemon must be installed.
+
 ## Install
 
 Install `voice`, then register the daemon as a system service:

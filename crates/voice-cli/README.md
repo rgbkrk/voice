@@ -54,7 +54,7 @@ voice listen
 voice listen --continuous
 
 # Transcribe an audio file
-voice transcribe recording.wav
+voice transcribe recording.ogg
 
 # JSON-RPC 2.0 server on stdin/stdout
 voice serve -v am_michael
@@ -73,7 +73,7 @@ Commands:
   stream      Stream TTS audio chunks from the voice daemon
   converse    Speak text aloud, then listen for a response
   listen      Record from microphone and transcribe (speech-to-text)
-  transcribe  Transcribe a WAV audio file
+  transcribe  Transcribe an audio file
   serve       Run as a JSON-RPC 2.0 server on stdin/stdout
   mcp         Run as an MCP server on stdin/stdout
   daemon      Inspect and control a running voice daemon
@@ -153,6 +153,8 @@ Options:
 ### `voice transcribe`
 
 ```
+Transcribe an audio file
+
 Usage: voice transcribe <FILE>
 ```
 

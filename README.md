@@ -62,8 +62,8 @@ voice stream-contract
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output speech.s16le "Good morning everyone."
 voice stream --sample-rate 48000 --frame-ms 20 --output streamed.ogg --format ogg-opus "Good morning everyone."
 
-# Replay a WAV through daemon streaming STT
-voice stream-transcribe recording.wav
+# Replay audio through daemon streaming STT
+voice stream-transcribe recording.ogg
 
 # Read from a file, strip markdown
 voice say --markdown -f blog-post.mdx
@@ -84,7 +84,7 @@ voice listen
 voice listen --continuous
 
 # Transcribe an audio file
-voice transcribe recording.wav
+voice transcribe recording.ogg
 
 # JSON-RPC server for agent integration
 voice serve
@@ -190,7 +190,7 @@ Usage: voice stream-contract
 
 ### `voice stream-transcribe`
 
-Replays WAV or raw PCM audio as ordered frames into a daemon started with
+Replays an audio file or raw PCM as ordered frames into a daemon started with
 `voice daemon start`. Use this to smoke-test the inbound STT stream contract
 that WebRTC and bridge clients use.
 
@@ -198,7 +198,7 @@ that WebRTC and bridge clients use.
 Usage: voice stream-transcribe [OPTIONS] [FILE]
 
 Arguments:
-  [FILE]                 Path to WAV audio file
+  [FILE]                 Path to an audio file
 
 Options:
       --raw-input <PATH>           Read raw signed 16-bit little-endian mono PCM
@@ -214,7 +214,8 @@ Options:
 ### `voice transcribe`
 
 ```
-Transcribe a WAV audio file
+Transcribe an audio file. WAV input is decoded directly; Ogg/Opus and other
+compressed formats use `ffmpeg` when available.
 
 Usage: voice transcribe <FILE>
 ```
@@ -338,7 +339,7 @@ For lower-level streaming, `stream_speak` emits `tts.started`, `tts.audio`, and
 terminal `tts.ended` / `tts.error` / `tts.cancelled` events over the same daemon
 frame protocol. `stream_transcribe` accepts client-sent `stt.audio` frames and
 returns a terminal `stt.transcribed` event. Use `voice stream-transcribe` to
-replay a WAV through that inbound stream path. See
+replay WAV or Ogg/Opus audio through that inbound stream path. See
 [docs/streaming.md](docs/streaming.md) for the event schema and Hermes/WebRTC
 notes. See
 [docs/whatsapp-calling-webrtc.md](docs/whatsapp-calling-webrtc.md) for the
@@ -480,7 +481,7 @@ fn main() -> voice_tts::Result<()> {
 ```rust
 fn main() -> voice_stt::Result<()> {
     let mut model = voice_stt::load_model("distil-whisper/distil-large-v3")?;
-    let result = voice_stt::transcribe(&mut model, "audio.wav")?;
+    let result = voice_stt::transcribe(&mut model, "audio.ogg")?;
     println!("{}", result.text);
     Ok(())
 }

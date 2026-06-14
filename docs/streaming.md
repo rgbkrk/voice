@@ -78,9 +78,9 @@ voice stream --json "Hello from the stream"
 voice say --format ogg-opus -o reply.ogg "Hello"
 voice stream --output streamed.ogg --format ogg-opus "Hello"
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output reply.s16le "Hello"
-voice stream-transcribe recording.wav
+voice stream-transcribe recording.ogg
 voice stream-transcribe --raw-input webrtc-in.s16le --sample-rate 48000 --frame-ms 20
-voice stream-transcribe --json recording.wav
+voice stream-transcribe --json recording.ogg
 ```
 
 The raw output is signed 16-bit little-endian mono PCM with no container header.
@@ -94,11 +94,13 @@ PCM frame contract while producing a valid `audio/ogg; codecs=opus` file.
 Use `--raw-output` when the consumer is a WebRTC sidecar or another process
 that wants raw PCM frames.
 
-`voice stream-transcribe` reads a WAV file or explicit raw `pcm_s16le` input,
+`voice stream-transcribe` reads an audio file or explicit raw `pcm_s16le` input,
 splits it into the same ordered PCM frames a WebRTC sidecar would send, and
-returns the terminal STT event from the daemon. Use `--raw-input -` to pipe
-decoded WebRTC PCM directly from another process. It is a transport smoke test;
-`voice transcribe` remains the direct file transcription command.
+returns the terminal STT event from the daemon. WAV input is decoded directly;
+Ogg/Opus and other compressed formats use `ffmpeg` when available. Use
+`--raw-input -` to pipe decoded WebRTC PCM directly from another process. It is
+a transport smoke test; `voice transcribe` remains the direct file transcription
+command.
 
 ## Daemon Protocol
 

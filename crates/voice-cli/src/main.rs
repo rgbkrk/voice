@@ -44,10 +44,10 @@ macro_rules! info {
                   voice stream --json \"Hello world\"\n  \
                   voice stream --output reply.ogg --format ogg-opus \"Hello world\"\n  \
                   voice stream-contract\n  \
-                  voice stream-transcribe recording.wav\n  \
+                  voice stream-transcribe recording.ogg\n  \
                   voice listen\n  \
                   voice listen --continuous\n  \
-                  voice transcribe recording.wav\n  \
+                  voice transcribe recording.ogg\n  \
                   voice daemon start --tts-only\n  \
                   voice daemon status\n  \
                   voice serve -v am_michael"
@@ -77,7 +77,7 @@ enum Command {
     /// Stream TTS audio chunks from the voice daemon
     Stream(StreamArgs),
 
-    /// Replay WAV or raw PCM audio through daemon streaming STT
+    /// Replay an audio file or raw PCM through daemon streaming STT
     StreamTranscribe(StreamTranscribeArgs),
 
     /// Print the machine-readable WebRTC sidecar stream contract
@@ -89,7 +89,7 @@ enum Command {
     /// Record from microphone and transcribe (speech-to-text)
     Listen(ListenArgs),
 
-    /// Transcribe a WAV audio file
+    /// Transcribe an audio file
     Transcribe(TranscribeArgs),
 
     /// Run as a JSON-RPC 2.0 server on stdin/stdout
@@ -264,7 +264,7 @@ struct StreamArgs {
 
 #[derive(clap::Args, Debug)]
 struct StreamTranscribeArgs {
-    /// Path to WAV audio file
+    /// Path to an audio file
     #[arg(required_unless_present = "raw_input", conflicts_with = "raw_input")]
     file: Option<PathBuf>,
 
@@ -326,7 +326,7 @@ struct ListenArgs {
 
 #[derive(clap::Args, Debug)]
 struct TranscribeArgs {
-    /// Path to WAV audio file
+    /// Path to an audio file
     file: PathBuf,
 }
 
@@ -1690,8 +1690,8 @@ fn load_stream_transcribe_input(
     let file = stream_args
         .file
         .as_ref()
-        .ok_or_else(|| "Path to WAV audio file or --raw-input is required".to_string())?;
-    let audio = listen::load_transcription_wav(file)?;
+        .ok_or_else(|| "Path to an audio file or --raw-input is required".to_string())?;
+    let audio = listen::load_transcription_audio(file)?;
     validate_stream_frame_params(audio.sample_rate, stream_args.frame_ms)
         .map_err(|e| format!("voice stream-transcribe: {e}"))?;
     let frames =
@@ -2418,5 +2418,91 @@ mod tests {
                 .unwrap(),
             voice_audio::AudioOutputFormat::OggOpus
         );
+    }
+
+    #[test]
+    fn stream_transcribe_input_accepts_ogg_opus_files() {
+        if !command_available("ffmpeg") {
+            eprintln!(
+                "skipping stream-transcribe Ogg/Opus input test because ffmpeg is not on PATH"
+            );
+            return;
+        }
+
+        let wav_path = temp_audio_path("stream_transcribe_source", "wav");
+        let ogg_path = temp_audio_path("stream_transcribe_source", "ogg");
+        let sample_rate = 24_000u32;
+        let samples: Vec<f32> = (0..sample_rate / 10)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sample_rate as f32).sin())
+            .collect();
+
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut writer = hound::WavWriter::create(&wav_path, spec).unwrap();
+            for sample in &samples {
+                writer.write_sample(*sample).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+
+        let encode = std::process::Command::new("ffmpeg")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-y")
+            .arg("-i")
+            .arg(&wav_path)
+            .arg("-ac")
+            .arg("1")
+            .arg("-ar")
+            .arg("48000")
+            .arg("-c:a")
+            .arg("libopus")
+            .arg(&ogg_path)
+            .output()
+            .unwrap();
+
+        if !encode.status.success() {
+            eprintln!(
+                "skipping stream-transcribe Ogg/Opus input test because ffmpeg encode failed: {}",
+                String::from_utf8_lossy(&encode.stderr)
+            );
+            let _ = std::fs::remove_file(&wav_path);
+            let _ = std::fs::remove_file(&ogg_path);
+            return;
+        }
+
+        let args = StreamTranscribeArgs {
+            file: Some(ogg_path.clone()),
+            raw_input: None,
+            sample_rate: 48_000,
+            frame_ms: 20,
+            json: false,
+        };
+        let input = load_stream_transcribe_input(&args).unwrap();
+        let _ = std::fs::remove_file(&wav_path);
+        let _ = std::fs::remove_file(&ogg_path);
+
+        assert_eq!(input.sample_rate, 16_000);
+        assert!(input.sample_count > 0);
+        assert!(!input.frames.is_empty());
+    }
+
+    fn temp_audio_path(label: &str, ext: &str) -> PathBuf {
+        let pid = std::process::id();
+        let tid = std::thread::current().id();
+        std::env::temp_dir().join(format!("voice_cli_{label}_{pid}_{tid:?}.{ext}"))
+    }
+
+    fn command_available(command: &str) -> bool {
+        std::process::Command::new(command)
+            .arg("-version")
+            .output()
+            .is_ok()
     }
 }

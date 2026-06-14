@@ -6,7 +6,7 @@
 //! use voice_stt::{load_model, transcribe, TranscribeResult};
 //!
 //! let mut model = load_model("distil-whisper/distil-medium.en").unwrap();
-//! let result = transcribe(&mut model, "audio.wav").unwrap();
+//! let result = transcribe(&mut model, "audio.ogg").unwrap();
 //! println!("{}", result.text);
 //! ```
 //!
@@ -25,6 +25,7 @@ pub mod builtin;
 pub mod error;
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use candle_core::{DType, Device};
 use candle_nn::VarBuilder;
@@ -40,6 +41,15 @@ pub struct TranscribeResult {
     /// Token IDs generated (including special tokens).
     pub tokens: Vec<u32>,
     /// Sample rate of the model input (always 16000 for Whisper).
+    pub sample_rate: u32,
+}
+
+/// Decoded mono audio samples suitable for STT.
+#[derive(Debug, Clone)]
+pub struct AudioData {
+    /// Mono f32 samples in the range `[-1.0, 1.0]`.
+    pub samples: Vec<f32>,
+    /// Sample rate of `samples`.
     pub sample_rate: u32,
 }
 
@@ -175,14 +185,15 @@ pub fn load_tokenizer(path_or_repo: &str) -> Result<tokenizers::Tokenizer> {
 
 /// Transcribe an audio file.
 ///
-/// Loads the audio file as WAV (16-bit PCM or 32-bit float), converts to
-/// 16kHz mono f32, and runs greedy decoding.
+/// Loads WAV directly. If the input is another container/codec such as
+/// Ogg/Opus, falls back to `ffmpeg` and decodes to mono f32 audio before
+/// running greedy decoding.
 pub fn transcribe(
     model: &mut WhisperModel,
     audio_path: impl AsRef<Path>,
 ) -> Result<TranscribeResult> {
-    let samples = load_wav_as_f32(audio_path.as_ref())?;
-    transcribe_audio(model, &samples, 16000)
+    let audio = load_audio_file(audio_path.as_ref())?;
+    transcribe_audio(model, &audio.samples, audio.sample_rate)
 }
 
 /// Transcribe raw audio samples.
@@ -242,30 +253,58 @@ fn download_weights(repo_id: &str) -> Result<PathBuf> {
         .map_err(|e| SttError::Hub(e.to_string()))
 }
 
-/// Load a WAV file and return mono f32 samples at 16kHz.
+/// Load an audio file and return mono f32 samples.
 ///
-/// Handles both 16-bit integer and 32-bit float WAV formats.
-/// Multi-channel audio is mixed down to mono by averaging.
-pub(crate) fn load_wav_as_f32(path: &Path) -> Result<Vec<f32>> {
+/// WAV input is decoded in-process. Other formats are decoded with `ffmpeg`
+/// into 16 kHz mono float PCM so WhatsApp-ready Ogg/Opus files can be
+/// transcribed without a manual conversion step.
+pub fn load_audio_file(path: &Path) -> Result<AudioData> {
+    match load_wav_audio_file(path) {
+        Ok(audio) => Ok(audio),
+        Err(wav_error) => decode_audio_with_ffmpeg(path).map_err(|ffmpeg_error| {
+            SttError::Audio(format!(
+                "Failed to decode {} as WAV ({wav_error}); ffmpeg fallback also failed: {ffmpeg_error}",
+                path.display()
+            ))
+        }),
+    }
+}
+
+fn load_wav_audio_file(path: &Path) -> Result<AudioData> {
     let reader = hound::WavReader::open(path)
         .map_err(|e| SttError::Audio(format!("Failed to open {}: {e}", path.display())))?;
 
     let spec = reader.spec();
     let channels = spec.channels as usize;
 
+    if spec.sample_rate == 0 {
+        return Err(SttError::Audio("Invalid WAV: sample rate is 0".into()));
+    }
+    if channels == 0 {
+        return Err(SttError::Audio("Invalid WAV: channel count is 0".into()));
+    }
+
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
             let bits = spec.bits_per_sample;
+            if bits == 0 || bits > 32 {
+                return Err(SttError::Audio(format!(
+                    "Unsupported bits_per_sample {bits}; expected 1..=32"
+                )));
+            }
             let max_val = (1u32 << (bits - 1)) as f32;
             reader
                 .into_samples::<i32>()
-                .map(|s| s.unwrap_or(0) as f32 / max_val)
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| SttError::Audio(format!("Failed to read WAV samples: {e}")))?
+                .into_iter()
+                .map(|s| s as f32 / max_val)
                 .collect()
         }
         hound::SampleFormat::Float => reader
             .into_samples::<f32>()
-            .map(|s| s.unwrap_or(0.0))
-            .collect(),
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| SttError::Audio(format!("Failed to read WAV samples: {e}")))?,
     };
 
     // Mix down to mono if multi-channel
@@ -278,14 +317,58 @@ pub(crate) fn load_wav_as_f32(path: &Path) -> Result<Vec<f32>> {
         samples
     };
 
-    // Resample to 16kHz if needed
-    let mono = if spec.sample_rate != 16000 {
-        resample(&mono, spec.sample_rate, 16000)
-    } else {
-        mono
-    };
+    Ok(AudioData {
+        samples: mono,
+        sample_rate: spec.sample_rate,
+    })
+}
 
-    Ok(mono)
+fn decode_audio_with_ffmpeg(path: &Path) -> Result<AudioData> {
+    let output = Command::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-i")
+        .arg(path)
+        .arg("-f")
+        .arg("f32le")
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg("pipe:1")
+        .output()
+        .map_err(|e| SttError::Audio(format!("spawn ffmpeg: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SttError::Audio(format!(
+            "ffmpeg exited with {}: {}",
+            output.status,
+            stderr.trim()
+        )));
+    }
+
+    if output.stdout.is_empty() {
+        return Err(SttError::Audio("ffmpeg produced no audio samples".into()));
+    }
+    if output.stdout.len() % std::mem::size_of::<f32>() != 0 {
+        return Err(SttError::Audio(format!(
+            "ffmpeg produced {} bytes, not a whole number of f32 samples",
+            output.stdout.len()
+        )));
+    }
+
+    let samples = output
+        .stdout
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect();
+
+    Ok(AudioData {
+        samples,
+        sample_rate: 16000,
+    })
 }
 
 /// High-quality audio resampling using rubato's sinc interpolation.
@@ -512,7 +595,7 @@ mod tests {
             writer.finalize().unwrap();
         }
 
-        let loaded = load_wav_as_f32(&path).unwrap();
+        let loaded = load_audio_file(&path).unwrap().samples;
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(loaded.len(), expected_f32.len());
@@ -544,7 +627,7 @@ mod tests {
             writer.finalize().unwrap();
         }
 
-        let loaded = load_wav_as_f32(&path).unwrap();
+        let loaded = load_audio_file(&path).unwrap().samples;
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(loaded.len(), f32_samples.len());
@@ -556,9 +639,116 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_load_audio_file_preserves_wav_sample_rate() {
+        let path = temp_wav_path("audio_file_wav");
+        let sample_rate = 24_000u32;
+        let f32_samples: Vec<f32> = vec![0.0, 0.25, -0.25, 0.5, -0.5];
+
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+            for &s in &f32_samples {
+                writer.write_sample(s).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+
+        let loaded = load_audio_file(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.sample_rate, sample_rate);
+        assert_eq!(loaded.samples.len(), f32_samples.len());
+        for (i, (got, want)) in loaded.samples.iter().zip(f32_samples.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "sample {i}: got {got}, want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_load_audio_file_decodes_ogg_opus_with_ffmpeg() {
+        if !command_available("ffmpeg") {
+            eprintln!("skipping Ogg/Opus decode test because ffmpeg is not on PATH");
+            return;
+        }
+
+        let wav_path = temp_wav_path("ogg_source");
+        let ogg_path = temp_audio_path("ogg_opus", "ogg");
+        let sample_rate = 24_000u32;
+        let samples: Vec<f32> = (0..sample_rate / 4)
+            .map(|i| (2.0 * PI * 440.0 * i as f32 / sample_rate as f32).sin() * 0.25)
+            .collect();
+
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut writer = hound::WavWriter::create(&wav_path, spec).unwrap();
+            for &sample in &samples {
+                writer.write_sample(sample).unwrap();
+            }
+            writer.finalize().unwrap();
+        }
+
+        let encode = Command::new("ffmpeg")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-y")
+            .arg("-i")
+            .arg(&wav_path)
+            .arg("-ac")
+            .arg("1")
+            .arg("-ar")
+            .arg("48000")
+            .arg("-c:a")
+            .arg("libopus")
+            .arg(&ogg_path)
+            .output()
+            .unwrap();
+
+        if !encode.status.success() {
+            eprintln!(
+                "skipping Ogg/Opus decode test because ffmpeg encode failed: {}",
+                String::from_utf8_lossy(&encode.stderr)
+            );
+            let _ = std::fs::remove_file(&wav_path);
+            let _ = std::fs::remove_file(&ogg_path);
+            return;
+        }
+
+        let loaded = load_audio_file(&ogg_path).unwrap();
+        let _ = std::fs::remove_file(&wav_path);
+        let _ = std::fs::remove_file(&ogg_path);
+
+        assert_eq!(loaded.sample_rate, 16_000);
+        assert!(!loaded.samples.is_empty());
+        let rms = (loaded.samples.iter().map(|s| s * s).sum::<f32>() / loaded.samples.len() as f32)
+            .sqrt();
+        assert!(rms > 0.01, "decoded Ogg/Opus RMS is too low: {rms}");
+    }
+
     fn temp_wav_path(label: &str) -> std::path::PathBuf {
+        temp_audio_path(label, "wav")
+    }
+
+    fn temp_audio_path(label: &str, ext: &str) -> std::path::PathBuf {
         let pid = std::process::id();
         let tid = std::thread::current().id();
-        std::path::PathBuf::from(format!("/tmp/voice_test_{label}_{pid}_{tid:?}.wav"))
+        std::path::PathBuf::from(format!("/tmp/voice_test_{label}_{pid}_{tid:?}.{ext}"))
+    }
+
+    fn command_available(command: &str) -> bool {
+        Command::new(command).arg("-version").output().is_ok()
     }
 }

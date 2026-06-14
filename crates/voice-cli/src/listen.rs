@@ -132,56 +132,11 @@ pub fn load_wav_sound(path: &std::path::Path) -> Result<CachedSound, String> {
     })
 }
 
-pub fn load_transcription_wav(path: &Path) -> Result<TranscriptionAudio, String> {
-    let reader = hound::WavReader::open(path)
-        .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
-
-    let spec = reader.spec();
-    let channels = spec.channels as usize;
-    let sample_rate = spec.sample_rate;
-
-    if sample_rate == 0 {
-        return Err("Invalid WAV: sample rate is 0".to_string());
-    }
-    if channels == 0 {
-        return Err("Invalid WAV: channel count is 0".to_string());
-    }
-
-    let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Int => {
-            let bits = spec.bits_per_sample;
-            if bits == 0 || bits > 32 {
-                return Err(format!(
-                    "Unsupported bits_per_sample {bits}; expected 1..=32"
-                ));
-            }
-            let max_val = (1u32 << (bits - 1)) as f32;
-            reader
-                .into_samples::<i32>()
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("Failed to read WAV samples: {e}"))?
-                .into_iter()
-                .map(|s| s as f32 / max_val)
-                .collect()
-        }
-        hound::SampleFormat::Float => reader
-            .into_samples::<f32>()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to read WAV samples: {e}"))?,
-    };
-
-    let mono = if channels > 1 {
-        samples
-            .chunks(channels)
-            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
-            .collect()
-    } else {
-        samples
-    };
-
+pub fn load_transcription_audio(path: &Path) -> Result<TranscriptionAudio, String> {
+    let audio = voice_stt::load_audio_file(path).map_err(|e| e.to_string())?;
     Ok(TranscriptionAudio {
-        samples: mono,
-        sample_rate,
+        samples: audio.samples,
+        sample_rate: audio.sample_rate,
     })
 }
 
@@ -1470,7 +1425,7 @@ pub fn listen_and_transcribe_vad_warm(
     transcribe_samples(model, &samples, sample_rate)
 }
 
-/// Transcribe a WAV file and print the result.
+/// Transcribe an audio file and print the result.
 ///
 /// Entry point for `voice --transcribe <file>`.
 pub fn transcribe_file(path: &Path) {
@@ -1480,7 +1435,7 @@ pub fn transcribe_file(path: &Path) {
         eprintln!("Transcribing: {}", path.display());
     }
 
-    let audio = match load_transcription_wav(path) {
+    let audio = match load_transcription_audio(path) {
         Ok(audio) => audio,
         Err(e) => {
             eprintln!("{e}");

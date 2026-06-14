@@ -132,10 +132,11 @@ The exact transport can be Unix socket, local HTTP, or WebSocket. The first
 implementation should favor debuggability over abstraction.
 
 ```http
-POST /calls
+POST /offer
 {
   "call_id": "wamid-call-id",
-  "remote_sdp": "v=0..."
+  "type": "offer",
+  "sdp": "v=0..."
 }
 ```
 
@@ -144,15 +145,27 @@ Response:
 ```json
 {
   "call_id": "wamid-call-id",
-  "local_sdp": "v=0...",
+  "type": "answer",
+  "sdp": "v=0...",
   "audio": {
     "sample_rate": 48000,
     "channels": 1,
     "frame_ms": 20,
     "encoding": "pcm_s16le"
+  },
+  "state": {
+    "call_id": "wamid-call-id",
+    "closed": false,
+    "connection_state": "new",
+    "ice_connection_state": "new",
+    "ice_gathering_state": "complete",
+    "signaling_state": "stable"
   }
 }
 ```
+
+Debug a live session with `GET /calls/{call_id}`. Terminate a local session
+with `POST /calls/{call_id}/close`.
 
 Runtime events:
 

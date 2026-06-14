@@ -42,6 +42,12 @@ SDP, ICE, and call timing before TTS is wired in.
 
 ## SDP API
 
+Check process health and the fixed local audio contract:
+
+```bash
+curl -sS http://127.0.0.1:8787/health
+```
+
 Post a remote offer:
 
 ```bash
@@ -66,6 +72,12 @@ Response:
 }
 ```
 
+Inspect a live session:
+
+```bash
+curl -sS http://127.0.0.1:8787/calls/local-test
+```
+
 Close a session:
 
 ```bash
@@ -83,3 +95,14 @@ silence until real TTS PCM arrives.
 Inbound decoded PCM is written as raw signed 16-bit little-endian mono samples.
 A later bridge layer can segment that stream with VAD and submit each segment
 to `voice stream-transcribe` or the daemon `stream_transcribe` RPC.
+
+## Tests
+
+The sidecar tests are optional because they need the Python WebRTC dependency
+set:
+
+```bash
+python3 -m venv /tmp/voice-webrtc-venv
+/tmp/voice-webrtc-venv/bin/pip install -r examples/webrtc-sidecar/requirements.txt pytest
+/tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_sidecar.py
+```

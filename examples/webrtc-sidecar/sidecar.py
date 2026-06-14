@@ -176,6 +176,19 @@ class CallSession:
         assert self.pc.localDescription is not None
         return self.pc.localDescription
 
+    def snapshot(self) -> dict[str, Any]:
+        """Return call state useful for local health checks and Hermes debugging."""
+        return {
+            "call_id": self.call_id,
+            "closed": self.closed,
+            "connection_state": self.pc.connectionState,
+            "ice_connection_state": self.pc.iceConnectionState,
+            "ice_gathering_state": self.pc.iceGatheringState,
+            "signaling_state": self.pc.signalingState,
+            "tasks": len(self.tasks),
+            "audio": audio_contract(),
+        }
+
     async def close(self) -> None:
         if self.closed:
             return
@@ -185,6 +198,9 @@ class CallSession:
         if self.tasks:
             await asyncio.gather(*self.tasks, return_exceptions=True)
         await self.pc.close()
+
+
+SESSIONS_KEY = web.AppKey("sessions", dict[str, CallSession])
 
 
 async def wait_for_ice_complete(pc: RTCPeerConnection, timeout: float = 5.0) -> None:
@@ -208,12 +224,29 @@ def json_error(message: str, status: int = 400) -> web.Response:
     return web.json_response({"error": message}, status=status)
 
 
+def audio_contract() -> dict[str, Any]:
+    return {
+        "sample_rate": SAMPLE_RATE,
+        "channels": CHANNELS,
+        "frame_ms": FRAME_MS,
+        "encoding": "pcm_s16le",
+    }
+
+
 def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
     app = web.Application()
     sessions: dict[str, CallSession] = {}
+    app[SESSIONS_KEY] = sessions
 
     async def health(_: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "sessions": len(sessions)})
+        return web.json_response(
+            {
+                "ok": True,
+                "sessions": len(sessions),
+                "call_ids": sorted(sessions.keys()),
+                "audio": audio_contract(),
+            }
+        )
 
     async def offer(request: web.Request) -> web.Response:
         try:
@@ -248,14 +281,17 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
                 "call_id": call_id,
                 "type": answer.type,
                 "sdp": answer.sdp,
-                "audio": {
-                    "sample_rate": SAMPLE_RATE,
-                    "channels": CHANNELS,
-                    "frame_ms": FRAME_MS,
-                    "encoding": "pcm_s16le",
-                },
+                "audio": audio_contract(),
+                "state": session.snapshot(),
             }
         )
+
+    async def call_status(request: web.Request) -> web.Response:
+        call_id = request.match_info["call_id"]
+        session = sessions.get(call_id)
+        if session is None:
+            return json_error("unknown call_id", status=404)
+        return web.json_response(session.snapshot())
 
     async def close_call(request: web.Request) -> web.Response:
         call_id = request.match_info["call_id"]
@@ -272,6 +308,7 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
 
     app.router.add_get("/health", health)
     app.router.add_post("/offer", offer)
+    app.router.add_get("/calls/{call_id}", call_status)
     app.router.add_post("/calls/{call_id}/close", close_call)
     app.on_cleanup.append(cleanup)
     return app

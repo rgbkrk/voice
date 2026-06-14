@@ -272,6 +272,108 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertTrue(payload["alpha"]["attended_fresh_receive_verified"])
         self.assertEqual(payload["alpha"]["fresh_count"], 1)
 
+    def test_list_discovers_active_units_and_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_systemctl = tmp_path / "systemctl"
+            write_executable(
+                fake_systemctl,
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    args="$*"
+                    if [[ "$args" == *"list-units"* ]]; then
+                      echo "watch-active.service loaded active running active watch"
+                      exit 0
+                    fi
+                    if [[ "$args" == *"show watch-active.service"* ]]; then
+                      cat <<'EOF'
+                    ActiveState=active
+                    SubState=running
+                    MainPID=12345
+                    EOF
+                      exit 0
+                    fi
+                    if [[ "$args" == *"show watch-done.service"* ]]; then
+                      cat <<'EOF'
+                    ActiveState=inactive
+                    SubState=dead
+                    MainPID=0
+                    EOF
+                      exit 0
+                    fi
+                    echo "unknown args: $args" >&2
+                    exit 1
+                    """
+                ),
+            )
+            (tmp_path / "watch-active.json").write_text("", encoding="utf-8")
+            (tmp_path / "watch-active.log").write_text("", encoding="utf-8")
+            (tmp_path / "watch-done.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "profile": "attended-cache-receive",
+                        "readiness_summary": {
+                            "attended_fresh_receive_verified": True,
+                        },
+                        "pending_gates": {
+                            "attended_fresh_receive": {
+                                "status": "verified",
+                                "evidence": {
+                                    "kind": "audio_cache",
+                                    "fresh_count": 1,
+                                },
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--list",
+                    "--unit-prefix",
+                    "watch",
+                    "--output-dir",
+                    str(tmp_path),
+                    "--systemctl-bin",
+                    str(fake_systemctl),
+                    "--json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["count"], 2)
+        by_unit = {watch["unit"]: watch for watch in payload["watches"]}
+        self.assertEqual(
+            by_unit["watch-active"]["watch_status"],
+            "waiting_for_fresh_audio",
+        )
+        self.assertEqual(by_unit["watch-done"]["watch_status"], "verified")
+        self.assertEqual(by_unit["watch-done"]["alpha"]["fresh_count"], 1)
+
+    def test_status_and_list_cannot_be_combined(self):
+        result = subprocess.run(
+            [
+                str(SCRIPT_PATH),
+                "--status",
+                "watch",
+                "--list",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--status and --list cannot be combined", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

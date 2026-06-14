@@ -200,8 +200,8 @@ def classify_watch_status(
     return "no_artifact"
 
 
-def inspect_status(args: argparse.Namespace) -> dict[str, Any]:
-    unit, service = normalize_status_unit(args.status)
+def inspect_unit(unit_or_service: str, args: argparse.Namespace) -> dict[str, Any]:
+    unit, service = normalize_status_unit(unit_or_service)
     output_dir = args.output_dir.expanduser().resolve()
     json_path = output_dir / f"{unit}.json"
     log_path = output_dir / f"{unit}.log"
@@ -250,9 +250,67 @@ def inspect_status(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def inspect_status(args: argparse.Namespace) -> dict[str, Any]:
+    return inspect_unit(args.status, args)
+
+
+def list_systemd_watch_units(args: argparse.Namespace) -> list[str]:
+    command = [
+        str(args.systemctl_bin),
+        "--user",
+        "list-units",
+        "--type=service",
+        "--all",
+        "--no-legend",
+        "--no-pager",
+    ]
+    completed = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    units: list[str] = []
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        service = parts[0]
+        unit = service.removesuffix(".service")
+        if unit.startswith(f"{args.unit_prefix}-"):
+            units.append(unit)
+    return units
+
+
+def list_artifact_watch_units(args: argparse.Namespace) -> list[str]:
+    output_dir = args.output_dir.expanduser().resolve()
+    units: set[str] = set()
+    for pattern in (f"{args.unit_prefix}-*.json", f"{args.unit_prefix}-*.log"):
+        for path in output_dir.glob(pattern):
+            if path.is_file():
+                units.add(path.stem)
+    return sorted(units)
+
+
+def list_watches(args: argparse.Namespace) -> dict[str, Any]:
+    units = sorted(
+        set(list_systemd_watch_units(args)) | set(list_artifact_watch_units(args)),
+        reverse=True,
+    )
+    watches = [inspect_unit(unit, args) for unit in units]
+    return {
+        "unit_prefix": args.unit_prefix,
+        "output_dir": str(args.output_dir.expanduser().resolve()),
+        "count": len(watches),
+        "watches": watches,
+    }
+
+
 def validate_args(args: argparse.Namespace) -> list[str]:
     failures: list[str] = []
-    if not args.status and args.wait_seconds <= 0:
+    if args.status and args.list:
+        failures.append("--status and --list cannot be combined")
+    if not args.status and not args.list and args.wait_seconds <= 0:
         failures.append("--wait-seconds must be positive")
     if not args.unit_prefix:
         failures.append("--unit-prefix must not be empty")
@@ -306,6 +364,21 @@ def print_status_human(result: dict[str, Any]) -> None:
     print(f"journal_command={shlex.join(result['journal_command'])}")
 
 
+def print_list_human(result: dict[str, Any]) -> None:
+    print("ok: WhatsApp attended cache watch list")
+    print(f"unit_prefix={result['unit_prefix']}")
+    print(f"output_dir={result['output_dir']}")
+    print(f"count={result['count']}")
+    for index, watch in enumerate(result.get("watches") or [], start=1):
+        json_artifact = watch.get("json") or {}
+        print(
+            f"watch[{index}]={watch.get('unit')} "
+            f"status={watch.get('watch_status')} "
+            f"active_state={(watch.get('systemd') or {}).get('ActiveState')} "
+            f"json_size={json_artifact.get('size_bytes')}"
+        )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -313,6 +386,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="UNIT",
         default=None,
         help="inspect a started attended watch unit instead of starting a new one",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="list attended watch units and artifacts matching --unit-prefix",
     )
     parser.add_argument("--voice-bin", default=default_voice_bin())
     parser.add_argument("--hermes-home", type=Path, default=default_hermes_home())
@@ -356,6 +434,13 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
         else:
             print_status_human(result)
+        return 0
+    if args.list:
+        result = list_watches(args)
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print_list_human(result)
         return 0
 
     watch = build_watch(args)

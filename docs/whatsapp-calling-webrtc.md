@@ -327,6 +327,12 @@ scripts/start_whatsapp_attended_cache_watch.py \
 
 Status output reports whether the watch is still waiting, has no artifact yet,
 failed, completed, or verified fresh receive evidence.
+To discover active watches and matching `/tmp` artifacts from a later session,
+run:
+
+```bash
+scripts/start_whatsapp_attended_cache_watch.py --list
+```
 
 Cloud/Calling readiness requires these external Meta settings in addition to
 the local sidecar:

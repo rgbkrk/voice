@@ -58,6 +58,7 @@ voice say -o speech.wav "Good morning everyone."
 voice say --format ogg-opus -o speech.ogg "Good morning everyone."
 
 # Stream daemon TTS frames for bridge/WebRTC experiments
+voice stream-contract
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output speech.s16le "Good morning everyone."
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "Good morning everyone." \
   | ffmpeg -f s16le -ar 48000 -ac 1 -i - -c:a libopus speech.ogg
@@ -171,6 +172,16 @@ Options:
       --markdown                   Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>     Word substitution (repeatable)
       --sub-file <PATH>            Load substitutions from a file
+```
+
+### `voice stream-contract`
+
+Prints the machine-readable WebRTC sidecar v1 contract generated from the
+`voice-stream` constants. Use this when Hermes, a sidecar, or a test harness is
+installed without a source checkout but still needs the exact PCM frame shape.
+
+```
+Usage: voice stream-contract
 ```
 
 ### `voice stream-transcribe`

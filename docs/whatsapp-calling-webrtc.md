@@ -139,7 +139,8 @@ The exact transport can be Unix socket, local HTTP, or WebSocket. The first
 implementation should favor debuggability over abstraction. The canonical v1
 PCM and endpoint contract is machine-readable at
 [`docs/contracts/webrtc-sidecar-v1.json`](contracts/webrtc-sidecar-v1.json), and
-the Python sidecar exposes the same object at `GET /contract`.
+installed `voice` binaries print the same object with `voice stream-contract`.
+The Python sidecar exposes the same object at `GET /contract`.
 
 The sidecar HTTP API is a local control plane, not a public web API. It should
 bind to localhost or a private socket, with Hermes as the caller. Only the

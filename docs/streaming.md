@@ -152,6 +152,11 @@ Use `sample_rate: 48000` and `frame_ms: 20` for a WebRTC-friendly stream.
 The WebRTC-friendly constants live in the `voice-stream` crate and are checked
 against the machine-readable sidecar v1 shape in
 [`docs/contracts/webrtc-sidecar-v1.json`](contracts/webrtc-sidecar-v1.json).
+Installed binaries expose the same object with:
+
+```bash
+voice stream-contract
+```
 
 ### STT Input
 

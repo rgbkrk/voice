@@ -8,7 +8,8 @@ It accepts a remote SDP offer over local HTTP, creates a WebRTC answer, sends a
 inbound audio to a raw PCM file. `aiortc` handles Opus RTP, ICE, DTLS, and SRTP.
 The machine-readable v1 contract lives at
 [`docs/contracts/webrtc-sidecar-v1.json`](../../docs/contracts/webrtc-sidecar-v1.json)
-and is also exposed by the sidecar at `GET /contract`.
+and can be printed from an installed binary with `voice stream-contract`. It is
+also exposed by the sidecar at `GET /contract`.
 
 This is a spike. It does not call the WhatsApp Graph API, authenticate requests,
 run VAD, or manage Hermes sessions. Hermes should still own WhatsApp Cloud
@@ -89,6 +90,7 @@ Check process health and the fixed local audio contract:
 ```bash
 curl -sS http://127.0.0.1:8787/contract
 curl -sS http://127.0.0.1:8787/health
+voice stream-contract
 ```
 
 Post a remote offer:

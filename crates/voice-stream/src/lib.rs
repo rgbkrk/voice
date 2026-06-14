@@ -29,6 +29,111 @@ pub const WEBRTC_MAX_INBOUND_QUEUE_BYTES: usize =
     WEBRTC_SAMPLE_RATE as usize * WEBRTC_CHANNELS as usize * PCM_S16LE_BYTES_PER_SAMPLE * 10;
 pub const WEBRTC_MAX_DRAIN_WAIT_MS: u32 = 5_000;
 
+/// Machine-readable local WebRTC sidecar contract.
+///
+/// This mirrors `docs/contracts/webrtc-sidecar-v1.json` while deriving the
+/// audio shape from the crate constants. Installed `voice` binaries can print
+/// this value with `voice stream-contract` so Hermes and sidecar processes do
+/// not need a source checkout to discover the PCM boundary.
+pub fn webrtc_sidecar_contract() -> serde_json::Value {
+    serde_json::json!({
+        "contract": "voice.webrtc_sidecar",
+        "version": 1,
+        "status": "experimental",
+        "summary": "Local HTTP/WebRTC bridge contract for WhatsApp Calling and voice streaming experiments.",
+        "audio": {
+            "sample_rate": WEBRTC_SAMPLE_RATE,
+            "channels": WEBRTC_CHANNELS,
+            "frame_ms": WEBRTC_FRAME_MS,
+            "encoding": "pcm_s16le",
+            "bytes_per_sample": PCM_S16LE_BYTES_PER_SAMPLE,
+            "samples_per_frame": WEBRTC_SAMPLES_PER_FRAME,
+            "frame_bytes": WEBRTC_FRAME_BYTES,
+            "default_drain_bytes": WEBRTC_DEFAULT_DRAIN_BYTES,
+            "max_outbound_queue_bytes": WEBRTC_MAX_OUTBOUND_QUEUE_BYTES,
+            "max_inbound_queue_bytes": WEBRTC_MAX_INBOUND_QUEUE_BYTES,
+            "max_drain_wait_ms": WEBRTC_MAX_DRAIN_WAIT_MS
+        },
+        "endpoints": {
+            "contract": {
+                "method": "GET",
+                "path": "/contract",
+                "description": "Return this machine-readable contract."
+            },
+            "health": {
+                "method": "GET",
+                "path": "/health",
+                "description": "Return process health, active call IDs, and the fixed audio shape."
+            },
+            "offer": {
+                "method": "POST",
+                "path": "/offer",
+                "description": "Create or replace a call session from a remote SDP offer and return a local SDP answer."
+            },
+            "call_status": {
+                "method": "GET",
+                "path": "/calls/{call_id}",
+                "description": "Inspect a live call session and queue depths."
+            },
+            "receive_audio": {
+                "method": "GET",
+                "path": "/calls/{call_id}/audio",
+                "query": {
+                    "max_bytes": "Positive byte count aligned to whole s16le samples. Defaults to audio.default_drain_bytes and is capped by audio.max_inbound_queue_bytes.",
+                    "wait_ms": "Optional non-negative long-poll timeout. Capped by audio.max_drain_wait_ms."
+                },
+                "description": "Drain decoded inbound PCM from a live call session."
+            },
+            "send_audio": {
+                "method": "POST",
+                "path": "/calls/{call_id}/audio",
+                "description": "Queue outbound PCM for a live call session."
+            },
+            "close_call": {
+                "method": "POST",
+                "path": "/calls/{call_id}/close",
+                "description": "Close and remove a live call session."
+            }
+        },
+        "payloads": {
+            "send_audio_request": {
+                "sample_rate": "audio.sample_rate",
+                "channels": "audio.channels",
+                "frame_ms": "audio.frame_ms",
+                "encoding": "audio.encoding",
+                "pcm_s16le_base64": "Required base64 encoded signed 16-bit little-endian mono PCM."
+            },
+            "send_audio_response": {
+                "call_id": "Call session identifier.",
+                "accepted_bytes": "Number of outbound PCM bytes accepted into the per-call queue.",
+                "queued_tx_bytes": "Outbound PCM bytes queued after this write.",
+                "max_tx_queue_bytes": "Maximum outbound PCM bytes this sidecar will queue for one call.",
+                "audio": "Full fixed audio contract object defined by audio."
+            },
+            "receive_audio_response": {
+                "call_id": "Call session identifier.",
+                "returned_bytes": "Number of decoded PCM bytes returned.",
+                "queued_rx_bytes": "Remaining inbound decoded PCM bytes queued after this drain.",
+                "pcm_s16le_base64": "Base64 encoded signed 16-bit little-endian mono PCM.",
+                "audio": "Full fixed audio contract object defined by audio."
+            },
+            "audio_shape": {
+                "sample_rate": "audio.sample_rate",
+                "channels": "audio.channels",
+                "frame_ms": "audio.frame_ms",
+                "encoding": "audio.encoding",
+                "bytes_per_sample": "audio.bytes_per_sample",
+                "samples_per_frame": "audio.samples_per_frame",
+                "frame_bytes": "audio.frame_bytes",
+                "default_drain_bytes": "audio.default_drain_bytes",
+                "max_outbound_queue_bytes": "audio.max_outbound_queue_bytes",
+                "max_inbound_queue_bytes": "audio.max_inbound_queue_bytes",
+                "max_drain_wait_ms": "audio.max_drain_wait_ms"
+            }
+        }
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioEncoding {
@@ -394,6 +499,7 @@ mod tests {
             panic!("parse {}: {err}", contract_path.display());
         });
 
+        assert_eq!(contract, webrtc_sidecar_contract());
         assert_eq!(contract["contract"], "voice.webrtc_sidecar");
         assert_eq!(contract["version"], 1);
 

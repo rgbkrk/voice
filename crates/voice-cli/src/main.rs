@@ -43,6 +43,7 @@ macro_rules! info {
                   voice phonemes \"ChatGPT uses RuntimeStateDoc\"\n  \
                   voice stream --json \"Hello world\"\n  \
                   voice stream --output reply.ogg --format ogg-opus \"Hello world\"\n  \
+                  voice stream-contract\n  \
                   voice stream-transcribe recording.wav\n  \
                   voice listen\n  \
                   voice listen --continuous\n  \
@@ -78,6 +79,9 @@ enum Command {
 
     /// Replay WAV or raw PCM audio through daemon streaming STT
     StreamTranscribe(StreamTranscribeArgs),
+
+    /// Print the machine-readable WebRTC sidecar stream contract
+    StreamContract,
 
     /// Speak text aloud, then listen for a response (speak + listen in one shot)
     Converse(ConverseArgs),
@@ -847,6 +851,9 @@ fn main() {
         Some(Command::StreamTranscribe(stream_args)) => {
             run_stream_transcribe(stream_args);
         }
+        Some(Command::StreamContract) => {
+            run_stream_contract();
+        }
         None => {
             // Backward compatibility: `voice Hello world` = `voice say Hello world`
             // Also: bare `voice` with piped stdin = `voice say` with stdin
@@ -871,6 +878,11 @@ fn main() {
             }
         }
     }
+}
+
+fn run_stream_contract() {
+    let contract = voice_stream::webrtc_sidecar_contract();
+    println!("{}", serde_json::to_string_pretty(&contract).unwrap());
 }
 
 fn run_daemon(args: DaemonArgs) {

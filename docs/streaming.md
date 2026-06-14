@@ -117,6 +117,20 @@ voice stream-transcribe --raw-input webrtc-in.s16le --sample-rate 48000 --frame-
 voice stream-transcribe --json recording.ogg
 ```
 
+For a single voice-side WhatsApp preflight, run:
+
+```bash
+VOICE_BIN=/path/to/voice scripts/verify_whatsapp_voice_contract.sh
+```
+
+That verifier checks `voice stream-contract` against the checked-in sidecar
+contract, proves `voice say --format ogg-opus` and `.ogg` extension inference
+write real mono 48 kHz Ogg/Opus, verifies misleading `.wav`/`ogg-opus`
+combinations are rejected before writing a file, and, when the daemon is
+running, checks both raw 48 kHz 20 ms PCM streaming and streamed Ogg/Opus
+encoding. Pass `--require-daemon` when the daemon stream path must be covered,
+or `--skip-daemon` for a file-only preflight.
+
 The raw output is signed 16-bit little-endian mono PCM with no container header.
 Use the event metadata for sample rate, frame duration, and stream ID.
 When `--raw-output -` is used, stdout is reserved for PCM bytes and compact

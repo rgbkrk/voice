@@ -65,6 +65,9 @@ voice stream --sample-rate 48000 --frame-ms 20 --output streamed.ogg --format og
 # Replay audio through daemon streaming STT
 voice stream-transcribe recording.ogg
 
+# Verify WhatsApp-ready file output and stream contract from an installed binary
+VOICE_BIN=/path/to/voice scripts/verify_whatsapp_voice_contract.sh
+
 # Read from a file, strip markdown
 voice say --markdown -f blog-post.mdx
 

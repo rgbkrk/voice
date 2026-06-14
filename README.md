@@ -466,7 +466,8 @@ It prints the unit name plus JSON/log artifact paths, then waits for a fresh
 Use `--status <unit-or-service>` with the printed unit name to summarize
 whether the watch is still waiting, failed, completed, or verified fresh
 receive evidence. Use `--list` to discover active watches and matching
-artifacts from a later session.
+artifacts from a later session. Use `--stop <unit-or-service>` to stop a stale
+watch without deleting its JSON/log artifacts.
 
 To fail unless every alpha gate is complete, include the strict completion flag:
 

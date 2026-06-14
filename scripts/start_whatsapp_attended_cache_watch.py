@@ -306,11 +306,31 @@ def list_watches(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def stop_watch(args: argparse.Namespace) -> dict[str, Any]:
+    unit, service = normalize_status_unit(args.stop)
+    command = [str(args.systemctl_bin), "--user", "stop", service]
+    completed = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    status = inspect_unit(unit, args)
+    return {
+        **status,
+        "stop_command": command,
+        "stop_returncode": completed.returncode,
+        "stop_stdout": completed.stdout.strip(),
+        "stop_stderr": completed.stderr.strip(),
+    }
+
+
 def validate_args(args: argparse.Namespace) -> list[str]:
     failures: list[str] = []
-    if args.status and args.list:
-        failures.append("--status and --list cannot be combined")
-    if not args.status and not args.list and args.wait_seconds <= 0:
+    modes = [bool(args.status), bool(args.list), bool(args.stop)]
+    if sum(modes) > 1:
+        failures.append("--status, --list, and --stop are mutually exclusive")
+    if not any(modes) and args.wait_seconds <= 0:
         failures.append("--wait-seconds must be positive")
     if not args.unit_prefix:
         failures.append("--unit-prefix must not be empty")
@@ -364,6 +384,25 @@ def print_status_human(result: dict[str, Any]) -> None:
     print(f"journal_command={shlex.join(result['journal_command'])}")
 
 
+def print_stop_human(result: dict[str, Any]) -> None:
+    if result.get("stop_returncode") == 0:
+        print("ok: WhatsApp attended cache watch stop requested")
+    else:
+        print("error: WhatsApp attended cache watch stop failed", file=sys.stderr)
+    print(f"unit={result['unit']}")
+    print(f"service={result['service']}")
+    print(f"stop_returncode={result['stop_returncode']}")
+    if result.get("stop_stderr"):
+        print(f"stop_stderr={result['stop_stderr']}")
+    print(f"watch_status={result['watch_status']}")
+    print(f"active_state={result.get('systemd', {}).get('ActiveState')}")
+    print(f"sub_state={result.get('systemd', {}).get('SubState')}")
+    json_artifact = result.get("json") or {}
+    log_artifact = result.get("log") or {}
+    print(f"json={json_artifact.get('path')} size={json_artifact.get('size_bytes')}")
+    print(f"log={log_artifact.get('path')} size={log_artifact.get('size_bytes')}")
+
+
 def print_list_human(result: dict[str, Any]) -> None:
     print("ok: WhatsApp attended cache watch list")
     print(f"unit_prefix={result['unit_prefix']}")
@@ -391,6 +430,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--list",
         action="store_true",
         help="list attended watch units and artifacts matching --unit-prefix",
+    )
+    parser.add_argument(
+        "--stop",
+        metavar="UNIT",
+        default=None,
+        help="stop a started attended watch unit without deleting artifacts",
     )
     parser.add_argument("--voice-bin", default=default_voice_bin())
     parser.add_argument("--hermes-home", type=Path, default=default_hermes_home())
@@ -442,6 +487,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print_list_human(result)
         return 0
+    if args.stop:
+        result = stop_watch(args)
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print_stop_human(result)
+        return int(result.get("stop_returncode") or 0)
 
     watch = build_watch(args)
     result = {

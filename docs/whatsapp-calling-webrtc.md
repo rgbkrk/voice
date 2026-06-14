@@ -334,6 +334,13 @@ run:
 scripts/start_whatsapp_attended_cache_watch.py --list
 ```
 
+To stop a stale watch without deleting its JSON/log artifacts:
+
+```bash
+scripts/start_whatsapp_attended_cache_watch.py \
+  --stop voice-whatsapp-attended-cache-watch-20260614T225118Z.service
+```
+
 Cloud/Calling readiness requires these external Meta settings in addition to
 the local sidecar:
 

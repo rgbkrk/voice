@@ -359,20 +359,131 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertEqual(by_unit["watch-done"]["watch_status"], "verified")
         self.assertEqual(by_unit["watch-done"]["alpha"]["fresh_count"], 1)
 
-    def test_status_and_list_cannot_be_combined(self):
+    def test_stop_requests_systemd_stop_and_reports_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "systemctl.log"
+            fake_systemctl = tmp_path / "systemctl"
+            write_executable(
+                fake_systemctl,
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    printf '%s\\0' "$@" >> {str(log_path)!r}
+                    printf '\\n' >> {str(log_path)!r}
+                    args="$*"
+                    if [[ "$args" == *" stop watch.service" ]]; then
+                      exit 0
+                    fi
+                    if [[ "$args" == *"show watch.service"* ]]; then
+                      cat <<'EOF'
+                    ActiveState=inactive
+                    SubState=dead
+                    MainPID=0
+                    EOF
+                      exit 0
+                    fi
+                    echo "unknown args: $args" >&2
+                    exit 1
+                    """
+                ),
+            )
+            (tmp_path / "watch.json").write_text("", encoding="utf-8")
+            (tmp_path / "watch.log").write_text("", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--stop",
+                    "watch",
+                    "--output-dir",
+                    str(tmp_path),
+                    "--systemctl-bin",
+                    str(fake_systemctl),
+                    "--json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            entries = command_log_entries(log_path)
+
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["stop_returncode"], 0)
+        self.assertEqual(payload["watch_status"], "empty_artifact")
+        self.assertTrue(payload["json"]["exists"])
+        self.assertEqual(entries[0], ["--user", "stop", "watch.service"])
+        self.assertIn("show", entries[1])
+
+    def test_stop_failure_returns_systemctl_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_systemctl = tmp_path / "systemctl"
+            write_executable(
+                fake_systemctl,
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    args="$*"
+                    if [[ "$args" == *" stop watch.service" ]]; then
+                      echo "unit missing" >&2
+                      exit 4
+                    fi
+                    if [[ "$args" == *"show watch.service"* ]]; then
+                      cat <<'EOF'
+                    ActiveState=inactive
+                    SubState=dead
+                    MainPID=0
+                    EOF
+                      exit 0
+                    fi
+                    exit 1
+                    """
+                ),
+            )
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--stop",
+                    "watch",
+                    "--output-dir",
+                    str(tmp_path),
+                    "--systemctl-bin",
+                    str(fake_systemctl),
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 4)
+        self.assertEqual(payload["stop_returncode"], 4)
+        self.assertIn("unit missing", payload["stop_stderr"])
+        self.assertEqual(payload["watch_status"], "no_artifact")
+
+    def test_status_list_and_stop_cannot_be_combined(self):
         result = subprocess.run(
             [
                 str(SCRIPT_PATH),
                 "--status",
                 "watch",
                 "--list",
+                "--stop",
+                "watch",
             ],
             capture_output=True,
             text=True,
         )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("--status and --list cannot be combined", result.stderr)
+        self.assertIn(
+            "--status, --list, and --stop are mutually exclusive",
+            result.stderr,
+        )
 
 
 if __name__ == "__main__":

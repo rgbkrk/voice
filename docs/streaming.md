@@ -152,7 +152,8 @@ command.
 
 `voice stream-contract` prints the same machine-readable sidecar contract used
 by the Python WebRTC example. Besides the fixed PCM shape and HTTP endpoint
-schema, the `voice_surfaces` object maps integration modes to commands:
+schema, including the outbound-audio clear endpoint used for barge-in, the
+`voice_surfaces` object maps integration modes to commands:
 `completed_voice_note` for WhatsApp-ready Ogg/Opus files, `streamed_voice_note`
 for Ogg/Opus encoded from daemon frames, `raw_outbound_pcm` for WebRTC TTS
 frames, `raw_inbound_pcm` for decoded WebRTC audio entering STT, and

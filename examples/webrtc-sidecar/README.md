@@ -76,6 +76,8 @@ outbound queue is bounded by the contract's `max_outbound_queue_bytes` value;
 instead of allowing unbounded TTS buffering. If both sources are idle, the
 sidecar sends silence. That is useful for checking SDP, ICE, and call timing
 before TTS is wired in.
+For barge-in or cancellation, `POST /calls/{call_id}/audio/clear` drops queued
+per-call outbound PCM while leaving the WebRTC session alive.
 
 For FIFO-based smoke tests, start the sidecar with `--tx-pcm`:
 
@@ -181,6 +183,29 @@ Response:
   "call_id": "local-test",
   "accepted_bytes": 1920,
   "queued_tx_bytes": 1920,
+  "max_tx_queue_bytes": 960000,
+  "audio": {
+    "sample_rate": 48000,
+    "channels": 1,
+    "frame_ms": 20,
+    "encoding": "pcm_s16le"
+  }
+}
+```
+
+Clear queued outbound PCM without closing the call:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8787/calls/local-test/audio/clear
+```
+
+Response:
+
+```json
+{
+  "call_id": "local-test",
+  "dropped_tx_bytes": 3840,
+  "queued_tx_bytes": 0,
   "max_tx_queue_bytes": 960000,
   "audio": {
     "sample_rate": 48000,

@@ -232,6 +232,11 @@ class CallPcmSource:
         self.buffer.extend(pcm_s16le)
         return len(pcm_s16le)
 
+    def clear(self) -> int:
+        dropped_bytes = len(self.buffer)
+        self.buffer.clear()
+        return dropped_bytes
+
     def read_frame(self) -> bytes:
         if len(self.buffer) >= FRAME_BYTES:
             frame = bytes(self.buffer[:FRAME_BYTES])
@@ -393,6 +398,17 @@ class CallSession:
             "queued_tx_bytes": self.source.queued_bytes,
             "max_tx_queue_bytes": self.source.max_queue_bytes,
             "queued_rx_bytes": self.inbound.queued_bytes,
+            "audio": audio_contract(),
+        }
+
+    def clear_outbound_audio(self) -> dict[str, Any]:
+        """Drop queued outbound PCM while keeping the WebRTC call alive."""
+        dropped_bytes = self.source.clear()
+        return {
+            "call_id": self.call_id,
+            "dropped_tx_bytes": dropped_bytes,
+            "queued_tx_bytes": self.source.queued_bytes,
+            "max_tx_queue_bytes": self.source.max_queue_bytes,
             "audio": audio_contract(),
         }
 
@@ -615,6 +631,13 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
             }
         )
 
+    async def clear_audio(request: web.Request) -> web.Response:
+        call_id = request.match_info["call_id"]
+        session = sessions.get(call_id)
+        if session is None:
+            return json_error("unknown call_id", status=404)
+        return web.json_response(session.clear_outbound_audio())
+
     async def close_call(request: web.Request) -> web.Response:
         call_id = request.match_info["call_id"]
         session = sessions.pop(call_id, None)
@@ -634,6 +657,7 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
     app.router.add_get("/calls/{call_id}", call_status)
     app.router.add_get("/calls/{call_id}/audio", receive_audio)
     app.router.add_post("/calls/{call_id}/audio", send_audio)
+    app.router.add_post("/calls/{call_id}/audio/clear", clear_audio)
     app.router.add_post("/calls/{call_id}/close", close_call)
     app.on_cleanup.append(cleanup)
     return app

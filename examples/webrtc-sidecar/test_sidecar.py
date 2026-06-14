@@ -134,6 +134,9 @@ def test_contract_endpoint_returns_machine_readable_contract():
             assert body["contract"] == "voice.webrtc_sidecar"
             assert body["version"] == 1
             assert body["audio"]["frame_bytes"] == sidecar.FRAME_BYTES
+            assert body["endpoints"]["clear_audio"]["path"] == (
+                "/calls/{call_id}/audio/clear"
+            )
 
     asyncio.run(run())
 
@@ -189,6 +192,18 @@ def test_call_pcm_source_rejects_overflow():
     else:
         raise AssertionError("expected outbound queue overflow to be rejected")
     assert source.queued_bytes == 4
+
+
+def test_call_pcm_source_clear_drops_queued_audio():
+    sidecar = load_sidecar()
+
+    fallback = sidecar.PcmSource(None)
+    source = sidecar.CallPcmSource(fallback)
+    source.write_frame(b"\x01\x00\x02\x00")
+
+    assert source.clear() == 4
+    assert source.queued_bytes == 0
+    assert source.read_frame() == b"\x00" * sidecar.FRAME_BYTES
 
 
 def test_inbound_pcm_sink_drains_queued_audio():
@@ -332,6 +347,56 @@ def test_audio_endpoint_queues_pcm_for_call():
             frame = source.read_frame()
             assert frame.startswith(b"\x01\x00\xff\xff")
             assert frame[4:] == b"\x00" * (sidecar.FRAME_BYTES - 4)
+
+    asyncio.run(run())
+
+
+def test_clear_audio_endpoint_drops_queued_pcm_for_call():
+    sidecar = load_sidecar()
+
+    class FakeSession:
+        def __init__(self, source) -> None:
+            self.source = source
+
+        def clear_outbound_audio(self):
+            dropped_bytes = self.source.clear()
+            return {
+                "call_id": "call-1",
+                "dropped_tx_bytes": dropped_bytes,
+                "queued_tx_bytes": self.source.queued_bytes,
+                "max_tx_queue_bytes": self.source.max_queue_bytes,
+                "audio": sidecar.audio_contract(),
+            }
+
+        async def close(self) -> None:
+            pass
+
+    async def run():
+        from aiohttp.test_utils import TestClient, TestServer
+
+        fallback = sidecar.PcmSource(None)
+        source = sidecar.CallPcmSource(fallback)
+        source.write_frame(b"\x01\x00\xff\xff")
+        app = sidecar.create_app(fallback, None)
+        app[sidecar.SESSIONS_KEY]["call-1"] = FakeSession(source)
+
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/calls/call-1/audio/clear")
+            assert response.status == 200
+            body = await response.json()
+            assert body == {
+                "call_id": "call-1",
+                "dropped_tx_bytes": 4,
+                "queued_tx_bytes": 0,
+                "max_tx_queue_bytes": source.max_queue_bytes,
+                "audio": sidecar.audio_contract(),
+            }
+            assert source.queued_bytes == 0
+
+            missing_response = await client.post("/calls/missing/audio/clear")
+            assert missing_response.status == 404
+            missing_body = await missing_response.json()
+            assert missing_body == {"error": "unknown call_id"}
 
     asyncio.run(run())
 

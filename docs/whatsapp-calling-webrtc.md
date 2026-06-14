@@ -142,11 +142,12 @@ PCM and endpoint contract is machine-readable at
 installed `voice` binaries print the same object with `voice stream-contract`.
 The Python sidecar exposes the same object at `GET /contract`. The contract
 defines the fixed PCM audio shape plus the `/offer`, call-state, audio send,
-audio drain, close, and error payloads Hermes needs to drive WhatsApp Calling
-without hard-coding sidecar response shapes. Its `voice_surfaces` section also
-maps each local integration mode to the expected `voice` command: completed
-Ogg/Opus voice notes, streamed Ogg/Opus files, raw outbound PCM frames, raw
-inbound PCM transcription, and file-based inbound stream smokes.
+audio drain, outbound-audio clear, close, and error payloads Hermes needs to
+drive WhatsApp Calling without hard-coding sidecar response shapes. Its
+`voice_surfaces` section also maps each local integration mode to the expected
+`voice` command: completed Ogg/Opus voice notes, streamed Ogg/Opus files, raw
+outbound PCM frames, raw inbound PCM transcription, and file-based inbound
+stream smokes.
 
 The sidecar HTTP API is a local control plane, not a public web API. It should
 bind to localhost or a private socket, with Hermes as the caller. The Python
@@ -189,11 +190,13 @@ Response:
 
 Debug a live session with `GET /calls/{call_id}`. Drain decoded inbound audio
 with `GET /calls/{call_id}/audio`. Queue outbound audio for the WebRTC track
-with `POST /calls/{call_id}/audio`. Terminate a local session with
-`POST /calls/{call_id}/close`. The outbound queue is deliberately bounded;
-`POST /calls/{call_id}/audio` returns HTTP 429 when the sidecar is already
-holding `max_outbound_queue_bytes` for that call, which lets Hermes pause or
-cancel TTS instead of building an unbounded latency backlog.
+with `POST /calls/{call_id}/audio`. Drop queued outbound audio with
+`POST /calls/{call_id}/audio/clear` when inbound speech should barge in without
+tearing down the call. Terminate a local session with `POST
+/calls/{call_id}/close`. The outbound queue is deliberately bounded; `POST
+/calls/{call_id}/audio` returns HTTP 429 when the sidecar is already holding
+`max_outbound_queue_bytes` for that call, which lets Hermes pause or cancel TTS
+instead of building an unbounded latency backlog.
 
 Runtime events:
 
@@ -272,6 +275,33 @@ that the bridge can be mostly mechanical: Hermes can receive `stream_speak` raw
 frames, base64-encode each frame, and POST them to the sidecar while the WebRTC
 track sends per-call queued audio or silence.
 
+Barge-in / cancellation:
+
+```http
+POST /calls/{call_id}/audio/clear
+```
+
+Response:
+
+```json
+{
+  "call_id": "wamid-call-id",
+  "dropped_tx_bytes": 3840,
+  "queued_tx_bytes": 0,
+  "max_tx_queue_bytes": 960000,
+  "audio": {
+    "sample_rate": 48000,
+    "channels": 1,
+    "frame_ms": 20,
+    "encoding": "pcm_s16le"
+  }
+}
+```
+
+Hermes should call this when it decides inbound speech interrupts an in-flight
+spoken reply. That clears stale PCM already accepted by the sidecar while the
+WebRTC track keeps sending silence until fresh TTS arrives.
+
 ## Implementation Options
 
 ### Python `aiortc`
@@ -320,14 +350,15 @@ that path.
 4. Prototype a sidecar that accepts a synthetic SDP offer and round-trips PCM.
    The initial `examples/webrtc-sidecar` artifact covers the SDP answer,
    outbound PCM-to-Opus/WebRTC track, inbound decoded PCM sink, and local HTTP
-   send/drain endpoints. Done as a spike.
+   send/drain/clear endpoints. Done as a spike.
 5. Wire Hermes WhatsApp Cloud `connect` webhooks to the sidecar.
 6. Build an inbound-call echo bot: WhatsApp audio in, same audio out. The
    local `examples/webrtc-sidecar/echo_sidecar_audio.py` helper now covers the
    sidecar-local drain-and-post loop; exercising it against a real WhatsApp
    Cloud call still depends on a calling-enabled number.
 7. Replace echo with STT -> Hermes turn -> `stream_speak` TTS.
-8. Add interruption/barge-in: inbound voice cancels outbound TTS.
+8. Add interruption/barge-in: inbound voice clears queued outbound sidecar PCM
+   and cancels in-flight TTS.
 
 ## Open Questions
 
@@ -340,5 +371,5 @@ that path.
   sidecar keep one transcript per completed utterance?
 - How much silence should the sidecar send before the agent's first TTS frame
   is ready? WebRTC calls should have media flowing immediately after accept.
-- What barge-in policy should Hermes use: immediate cancel on VAD, cancel after
-  partial transcript, or full-duplex overlap?
+- What barge-in policy should Hermes use: immediate clear/cancel on VAD, cancel
+  after partial transcript, or full-duplex overlap?

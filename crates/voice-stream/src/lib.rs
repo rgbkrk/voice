@@ -125,6 +125,11 @@ pub fn webrtc_sidecar_contract() -> serde_json::Value {
                 "path": "/calls/{call_id}/audio",
                 "description": "Queue outbound PCM for a live call session."
             },
+            "clear_audio": {
+                "method": "POST",
+                "path": "/calls/{call_id}/audio/clear",
+                "description": "Drop queued outbound PCM for a live call session without closing the call. Use this for barge-in or call-turn cancellation."
+            },
             "close_call": {
                 "method": "POST",
                 "path": "/calls/{call_id}/close",
@@ -173,6 +178,13 @@ pub fn webrtc_sidecar_contract() -> serde_json::Value {
                 "call_id": "Call session identifier.",
                 "accepted_bytes": "Number of outbound PCM bytes accepted into the per-call queue.",
                 "queued_tx_bytes": "Outbound PCM bytes queued after this write.",
+                "max_tx_queue_bytes": "Maximum outbound PCM bytes this sidecar will queue for one call.",
+                "audio": "Full fixed audio contract object defined by audio."
+            },
+            "clear_audio_response": {
+                "call_id": "Call session identifier.",
+                "dropped_tx_bytes": "Number of queued outbound PCM bytes discarded.",
+                "queued_tx_bytes": "Outbound PCM bytes queued after the clear operation, normally 0.",
                 "max_tx_queue_bytes": "Maximum outbound PCM bytes this sidecar will queue for one call.",
                 "audio": "Full fixed audio contract object defined by audio."
             },
@@ -619,6 +631,10 @@ mod tests {
 
         let payloads = &contract["payloads"];
         assert_eq!(
+            contract["endpoints"]["clear_audio"]["path"],
+            "/calls/{call_id}/audio/clear"
+        );
+        assert_eq!(
             payloads["offer_request"]["call_id"],
             "Required call session identifier from the WhatsApp Calling webhook."
         );
@@ -629,6 +645,10 @@ mod tests {
         assert_eq!(
             payloads["call_state"]["queued_rx_bytes"],
             "Inbound decoded PCM bytes queued for Hermes to drain."
+        );
+        assert_eq!(
+            payloads["clear_audio_response"]["dropped_tx_bytes"],
+            "Number of queued outbound PCM bytes discarded."
         );
         assert_eq!(
             payloads["error_response"]["error"],

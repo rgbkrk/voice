@@ -183,6 +183,23 @@ require(
     "raw_inbound_pcm frame_bytes must be 1920",
 )
 
+endpoints = contract.get("endpoints") or {}
+clear_audio = endpoints.get("clear_audio") or {}
+require(
+    clear_audio.get("method") == "POST",
+    "clear_audio endpoint method must be POST",
+)
+require(
+    clear_audio.get("path") == "/calls/{call_id}/audio/clear",
+    "clear_audio endpoint path must be /calls/{call_id}/audio/clear",
+)
+payloads = contract.get("payloads") or {}
+clear_response = payloads.get("clear_audio_response") or {}
+require(
+    "dropped_tx_bytes" in clear_response,
+    "clear_audio_response must report dropped_tx_bytes",
+)
+
 if expected_path.is_file():
     expected = json.loads(expected_path.read_text(encoding="utf-8"))
     require(contract == expected, f"{contract_path} does not match {expected_path}")

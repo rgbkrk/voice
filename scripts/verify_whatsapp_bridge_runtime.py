@@ -18,6 +18,10 @@ from urllib.request import Request, urlopen
 
 DEFAULT_BRIDGE_URL = "http://127.0.0.1:3000"
 DEFAULT_SERVICE_NAME = "hermes-gateway.service"
+DEFAULT_WHATSAPP_CLOUD_WEBHOOK_HOST = "0.0.0.0"
+DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PORT = 8090
+DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PATH = "/whatsapp/webhook"
+DEFAULT_WHATSAPP_CLOUD_API_VERSION = "v20.0"
 
 WHATSAPP_CLOUD_REQUIRED_ENV = (
     "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
@@ -460,10 +464,68 @@ def missing_env_keys(env_sources: dict[str, dict[str, str]], keys: tuple[str, ..
     ]
 
 
+def build_cloud_webhook_summary(env_sources: dict[str, dict[str, str]]) -> dict[str, Any]:
+    host, host_sources = first_env_value(env_sources, "WHATSAPP_CLOUD_WEBHOOK_HOST")
+    raw_port, port_sources = first_env_value(env_sources, "WHATSAPP_CLOUD_WEBHOOK_PORT")
+    path, path_sources = first_env_value(env_sources, "WHATSAPP_CLOUD_WEBHOOK_PATH")
+    api_version, api_sources = first_env_value(env_sources, "WHATSAPP_CLOUD_API_VERSION")
+
+    invalid: list[str] = []
+    port: int | None = DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PORT
+    if raw_port is not None:
+        try:
+            port = int(raw_port)
+        except ValueError:
+            port = None
+            invalid.append("WHATSAPP_CLOUD_WEBHOOK_PORT")
+        else:
+            if port < 1 or port > 65535:
+                invalid.append("WHATSAPP_CLOUD_WEBHOOK_PORT")
+
+    resolved_path = path or DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PATH
+    if path is not None and not path.startswith("/"):
+        invalid.append("WHATSAPP_CLOUD_WEBHOOK_PATH")
+
+    resolved_api_version = api_version or DEFAULT_WHATSAPP_CLOUD_API_VERSION
+    if api_version is not None and not re.match(r"^v\d+\.\d+$", api_version):
+        invalid.append("WHATSAPP_CLOUD_API_VERSION")
+
+    return {
+        "host": host or DEFAULT_WHATSAPP_CLOUD_WEBHOOK_HOST,
+        "port": port,
+        "path": resolved_path,
+        "api_version": resolved_api_version,
+        "raw_port": raw_port,
+        "defaulted": [
+            key
+            for key, value in (
+                ("WHATSAPP_CLOUD_WEBHOOK_HOST", host),
+                ("WHATSAPP_CLOUD_WEBHOOK_PORT", raw_port),
+                ("WHATSAPP_CLOUD_WEBHOOK_PATH", path),
+                ("WHATSAPP_CLOUD_API_VERSION", api_version),
+            )
+            if value is None
+        ],
+        "sources": {
+            "WHATSAPP_CLOUD_WEBHOOK_HOST": host_sources,
+            "WHATSAPP_CLOUD_WEBHOOK_PORT": port_sources,
+            "WHATSAPP_CLOUD_WEBHOOK_PATH": path_sources,
+            "WHATSAPP_CLOUD_API_VERSION": api_sources,
+        },
+        "invalid": invalid,
+        "public_route_required": True,
+        "public_route_note": (
+            "Meta must be configured with a public HTTPS URL that forwards to "
+            "this local webhook path."
+        ),
+    }
+
+
 def build_cloud_summary(env_sources: dict[str, dict[str, str]]) -> dict[str, Any]:
     required_presence = env_presence(env_sources, WHATSAPP_CLOUD_REQUIRED_ENV)
     optional_presence = env_presence(env_sources, WHATSAPP_CLOUD_OPTIONAL_ENV)
     calling_presence = env_presence(env_sources, WHATSAPP_CALLING_ENV)
+    webhook = build_cloud_webhook_summary(env_sources)
     cloud_missing = [
         key for key, status in required_presence.items() if not status["present"]
     ]
@@ -476,14 +538,18 @@ def build_cloud_summary(env_sources: dict[str, dict[str, str]]) -> dict[str, Any
         if not calling_presence[key]["present"]
     ]
     calling_missing = cloud_missing + sidecar_missing
+    cloud_invalid = [str(key) for key in webhook["invalid"]]
     return {
-        "cloud_configured": not cloud_missing,
+        "cloud_configured": not cloud_missing and not cloud_invalid,
         "cloud_missing": cloud_missing,
+        "cloud_invalid": cloud_invalid,
         "cloud_required": required_presence,
         "cloud_optional": optional_presence,
+        "webhook": webhook,
         "calling_sidecar_configured": not sidecar_missing,
-        "calling_ready": not calling_missing,
+        "calling_ready": not calling_missing and not cloud_invalid,
         "calling_missing": calling_missing,
+        "calling_invalid": cloud_invalid,
         "calling": calling_presence,
     }
 
@@ -643,15 +709,25 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
                 )
 
     cloud = build_cloud_summary(env_sources)
-    if args.require_whatsapp_cloud and not cloud["cloud_configured"]:
+    if args.require_whatsapp_cloud and cloud["cloud_missing"]:
         failures.append(
             "WhatsApp Cloud credentials missing: "
             + ", ".join(cloud["cloud_missing"])
         )
-    if args.require_whatsapp_calling and not cloud["calling_ready"]:
+    if args.require_whatsapp_cloud and cloud["cloud_invalid"]:
+        failures.append(
+            "WhatsApp Cloud config invalid: "
+            + ", ".join(cloud["cloud_invalid"])
+        )
+    if args.require_whatsapp_calling and cloud["calling_missing"]:
         failures.append(
             "WhatsApp Cloud Calling not ready; missing: "
             + ", ".join(cloud["calling_missing"])
+        )
+    if args.require_whatsapp_calling and cloud["calling_invalid"]:
+        failures.append(
+            "WhatsApp Cloud Calling config invalid: "
+            + ", ".join(cloud["calling_invalid"])
         )
 
     checks: dict[str, Any] = {
@@ -708,6 +784,7 @@ def human_summary(result: dict[str, Any]) -> None:
     health = checks.get("bridge_health") or {}
     process = (checks.get("bridge_process") or {}).get("selected") or {}
     cloud = checks.get("whatsapp_cloud") or {}
+    webhook = cloud.get("webhook") or {}
     local_config = checks.get("whatsapp_local_config") or {}
 
     if result["success"]:
@@ -755,6 +832,19 @@ def human_summary(result: dict[str, Any]) -> None:
         + ("configured" if cloud.get("cloud_configured") else "not_configured")
         + " missing="
         + (",".join(cloud.get("cloud_missing") or []) or "none")
+        + " invalid="
+        + (",".join(cloud.get("cloud_invalid") or []) or "none")
+    )
+    print(
+        "whatsapp_cloud_webhook="
+        f"host={webhook.get('host') or '<unknown>'} "
+        f"port={webhook.get('port') or '<invalid>'} "
+        f"path={webhook.get('path') or '<unknown>'} "
+        f"api_version={webhook.get('api_version') or '<unknown>'} "
+        "defaulted="
+        + (",".join(webhook.get("defaulted") or []) or "none")
+        + " invalid="
+        + (",".join(webhook.get("invalid") or []) or "none")
     )
     print(
         "calling_sidecar="
@@ -763,6 +853,8 @@ def human_summary(result: dict[str, Any]) -> None:
         + ("yes" if cloud.get("calling_ready") else "no")
         + " missing="
         + (",".join(cloud.get("calling_missing") or []) or "none")
+        + " invalid="
+        + (",".join(cloud.get("calling_invalid") or []) or "none")
     )
     for warning in result["warnings"]:
         print(f"warning: {warning}", file=sys.stderr)

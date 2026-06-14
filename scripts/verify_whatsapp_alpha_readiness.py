@@ -557,7 +557,9 @@ def cloud_setup_handoff(
 ) -> dict[str, Any]:
     cloud = bridge_checks.get("whatsapp_cloud") or {}
     cloud_required = cloud.get("cloud_required") or {}
+    webhook = cloud.get("webhook") or {}
     missing = [str(key) for key in external_meta_setup.get("cloud_missing") or []]
+    invalid = [str(key) for key in external_meta_setup.get("cloud_invalid") or []]
     configured = bool(external_meta_setup.get("cloud_configured"))
     verify_command = [
         "scripts/verify_whatsapp_alpha_readiness.py",
@@ -574,10 +576,22 @@ def cloud_setup_handoff(
     return {
         "required_keys": list(CLOUD_REQUIRED_KEYS),
         "missing": missing,
+        "invalid": invalid,
         "configured": configured,
         "env_file": bridge_checks.get("env_file"),
         "credential_sources": presence_sources(cloud_required, CLOUD_REQUIRED_KEYS),
         "available_source_keys": source_key_inventory(bridge_checks),
+        "webhook": {
+            "host": webhook.get("host"),
+            "port": webhook.get("port"),
+            "path": webhook.get("path"),
+            "api_version": webhook.get("api_version"),
+            "defaulted": webhook.get("defaulted") or [],
+            "sources": webhook.get("sources") or {},
+            "invalid": webhook.get("invalid") or [],
+            "public_route_required": bool(webhook.get("public_route_required")),
+            "public_route_note": webhook.get("public_route_note"),
+        },
         "verify_command": verify_command,
         "steps": steps,
     }
@@ -593,6 +607,7 @@ def calling_setup_handoff(
     calling = cloud.get("calling") or {}
     cloud_required = cloud.get("cloud_required") or {}
     missing = [str(key) for key in external_meta_setup.get("calling_missing") or []]
+    invalid = [str(key) for key in external_meta_setup.get("calling_invalid") or []]
     sidecar_missing = [
         key
         for key in CALLING_SIDECAR_REQUIRED_KEYS
@@ -624,6 +639,7 @@ def calling_setup_handoff(
     return {
         "required_keys": [*CLOUD_REQUIRED_KEYS, *CALLING_SIDECAR_REQUIRED_KEYS],
         "missing": missing,
+        "invalid": invalid,
         "cloud_missing": [
             key for key in missing if key in CLOUD_REQUIRED_KEYS
         ],
@@ -655,8 +671,12 @@ def external_meta_gate(
     hermes_home: Path,
 ) -> dict[str, Any]:
     cloud_missing = [str(key) for key in external_meta_setup.get("cloud_missing") or []]
+    cloud_invalid = [str(key) for key in external_meta_setup.get("cloud_invalid") or []]
     calling_missing = [
         str(key) for key in external_meta_setup.get("calling_missing") or []
+    ]
+    calling_invalid = [
+        str(key) for key in external_meta_setup.get("calling_invalid") or []
     ]
     cloud_configured = bool(external_meta_setup.get("cloud_configured"))
     calling_ready = bool(external_meta_setup.get("calling_ready"))
@@ -674,11 +694,13 @@ def external_meta_gate(
         "whatsapp_cloud": {
             "status": "configured" if cloud_configured else "external_setup_required",
             "missing": cloud_missing,
+            "invalid": cloud_invalid,
             "setup_handoff": cloud_handoff,
         },
         "whatsapp_cloud_calling": {
             "status": "ready" if calling_ready else "external_setup_required",
             "missing": calling_missing,
+            "invalid": calling_invalid,
             "setup_steps": (
                 []
                 if calling_ready
@@ -697,6 +719,9 @@ def build_readiness_summary(
 ) -> dict[str, Any]:
     def missing_keys(handoff: dict[str, Any], fallback: Any) -> list[str]:
         return [str(key) for key in (handoff.get("missing") or fallback or [])]
+
+    def invalid_keys(handoff: dict[str, Any], fallback: Any) -> list[str]:
+        return [str(key) for key in (handoff.get("invalid") or fallback or [])]
 
     attended = pending_gates.get("attended_fresh_receive") or {}
     attended_verified = attended.get("status") == "verified"
@@ -755,9 +780,11 @@ def build_readiness_summary(
             "requires_operator": True,
             "description": "Complete external Meta WhatsApp Cloud and Calling setup, then rerun with Cloud/Calling requirements.",
             "missing": external_meta_setup.get("calling_missing") or [],
+            "invalid": external_meta_setup.get("calling_invalid") or [],
             "setup_steps": external_meta_setup.get("setup_steps") or [],
             "gates": [],
             "missing_by_gate": {},
+            "invalid_by_gate": {},
             "verify_commands": {},
         }
         if cloud_gate.get("status") != "configured":
@@ -765,6 +792,10 @@ def build_readiness_summary(
             action["missing_by_gate"]["whatsapp_cloud"] = missing_keys(
                 cloud_handoff,
                 external_meta_setup.get("cloud_missing"),
+            )
+            action["invalid_by_gate"]["whatsapp_cloud"] = invalid_keys(
+                cloud_handoff,
+                external_meta_setup.get("cloud_invalid"),
             )
             verify_command = cloud_handoff.get("verify_command")
             if verify_command:
@@ -774,6 +805,10 @@ def build_readiness_summary(
             action["missing_by_gate"]["whatsapp_cloud_calling"] = missing_keys(
                 calling_handoff,
                 external_meta_setup.get("calling_missing"),
+            )
+            action["invalid_by_gate"]["whatsapp_cloud_calling"] = invalid_keys(
+                calling_handoff,
+                external_meta_setup.get("calling_invalid"),
             )
             verify_command = calling_handoff.get("verify_command")
             if verify_command:
@@ -820,39 +855,49 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
     bridge_checks = bridge_runtime_checks(components)
     cloud = bridge_cloud_summary(components)
     cloud_missing = [str(key) for key in cloud.get("cloud_missing") or []]
+    cloud_invalid = [str(key) for key in cloud.get("cloud_invalid") or []]
     calling_missing = [str(key) for key in cloud.get("calling_missing") or []]
+    calling_invalid = [str(key) for key in cloud.get("calling_invalid") or []]
     external_meta_setup = {
         "cloud_configured": bool(cloud.get("cloud_configured")),
         "calling_sidecar_configured": bool(cloud.get("calling_sidecar_configured")),
         "calling_ready": bool(cloud.get("calling_ready")),
         "cloud_missing": cloud_missing,
+        "cloud_invalid": cloud_invalid,
         "calling_missing": calling_missing,
-        "setup_steps": list(META_SETUP_STEPS) if cloud_missing or calling_missing else [],
+        "calling_invalid": calling_invalid,
+        "setup_steps": (
+            list(META_SETUP_STEPS)
+            if cloud_missing or calling_missing or cloud_invalid or calling_invalid
+            else []
+        ),
     }
 
     external_failures: list[dict[str, Any]] = []
     success = not required_failures
     if args.require_whatsapp_calling and not external_meta_setup["calling_ready"]:
         success = False
+        calling_detail = ", ".join(calling_missing + calling_invalid)
         external_failures.append(
             {
                 "name": "whatsapp_cloud_calling",
                 "category": "external_meta_setup",
                 "failures": [
-                    "WhatsApp Cloud Calling not ready; missing: "
-                    + (", ".join(calling_missing) or "external Meta calling approval")
+                    "WhatsApp Cloud Calling not ready; missing/invalid: "
+                    + (calling_detail or "external Meta calling approval")
                 ],
             }
         )
     if args.require_whatsapp_cloud and not external_meta_setup["cloud_configured"]:
         success = False
+        cloud_detail = ", ".join(cloud_missing + cloud_invalid)
         external_failures.append(
             {
                 "name": "whatsapp_cloud",
                 "category": "external_meta_setup",
                 "failures": [
-                    "WhatsApp Cloud credentials missing: "
-                    + (", ".join(cloud_missing) or "external Meta Cloud setup")
+                    "WhatsApp Cloud config missing/invalid: "
+                    + (cloud_detail or "external Meta Cloud setup")
                 ],
             }
         )
@@ -1124,15 +1169,32 @@ def human_summary(result: dict[str, Any]) -> None:
         + ("configured" if external["cloud_configured"] else "not_configured")
         + " missing="
         + (",".join(external["cloud_missing"]) or "none")
+        + " invalid="
+        + (",".join(external.get("cloud_invalid") or []) or "none")
     )
     cloud_gate = pending.get("whatsapp_cloud") or {}
     cloud_handoff = cloud_gate.get("setup_handoff") or {}
+    cloud_webhook = cloud_handoff.get("webhook") or {}
+    if cloud_webhook:
+        print(
+            "whatsapp_cloud_webhook="
+            f"host={cloud_webhook.get('host') or '<unknown>'} "
+            f"port={cloud_webhook.get('port') or '<invalid>'} "
+            f"path={cloud_webhook.get('path') or '<unknown>'} "
+            f"api_version={cloud_webhook.get('api_version') or '<unknown>'} "
+            "defaulted="
+            + (",".join(cloud_webhook.get("defaulted") or []) or "none")
+            + " invalid="
+            + (",".join(cloud_webhook.get("invalid") or []) or "none")
+        )
     if cloud_gate.get("status") != "configured" and cloud_handoff:
         print(
             "whatsapp_cloud_setup="
             f"env_file={cloud_handoff.get('env_file') or '<unknown>'} "
             "missing="
             + (",".join(cloud_handoff.get("missing") or []) or "none")
+            + " invalid="
+            + (",".join(cloud_handoff.get("invalid") or []) or "none")
         )
         verify_command = cloud_handoff.get("verify_command") or []
         if verify_command:
@@ -1147,6 +1209,8 @@ def human_summary(result: dict[str, Any]) -> None:
         + ("ready" if external["calling_ready"] else "not_ready")
         + " missing="
         + (",".join(external["calling_missing"]) or "none")
+        + " invalid="
+        + (",".join(external.get("calling_invalid") or []) or "none")
     )
     calling_gate = pending.get("whatsapp_cloud_calling") or {}
     calling_handoff = calling_gate.get("setup_handoff") or {}
@@ -1156,6 +1220,8 @@ def human_summary(result: dict[str, Any]) -> None:
             f"sidecar_configured={calling_handoff.get('calling_sidecar_configured')} "
             "missing="
             + (",".join(calling_handoff.get("missing") or []) or "none")
+            + " invalid="
+            + (",".join(calling_handoff.get("invalid") or []) or "none")
         )
         verify_command = calling_handoff.get("verify_command") or []
         complete_command = calling_handoff.get("complete_verification_command") or []

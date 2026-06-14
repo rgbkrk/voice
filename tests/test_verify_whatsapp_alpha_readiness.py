@@ -43,6 +43,7 @@ def write_fake_helpers(
     directory: Path,
     *,
     cloud_configured: bool = False,
+    cloud_invalid: list[str] | None = None,
     voice_note_payload: dict | None = None,
     inbound_cache_payload: dict | None = None,
 ) -> None:
@@ -102,6 +103,28 @@ def write_fake_helpers(
         ],
         "systemd_service": list(calling),
     }
+    webhook = {
+        "host": "0.0.0.0",
+        "port": 8090,
+        "path": "/whatsapp/webhook",
+        "api_version": "v20.0",
+        "defaulted": [
+            "WHATSAPP_CLOUD_WEBHOOK_HOST",
+            "WHATSAPP_CLOUD_WEBHOOK_PORT",
+            "WHATSAPP_CLOUD_WEBHOOK_PATH",
+            "WHATSAPP_CLOUD_API_VERSION",
+        ],
+        "sources": {
+            "WHATSAPP_CLOUD_WEBHOOK_HOST": [],
+            "WHATSAPP_CLOUD_WEBHOOK_PORT": [],
+            "WHATSAPP_CLOUD_WEBHOOK_PATH": [],
+            "WHATSAPP_CLOUD_API_VERSION": [],
+        },
+        "invalid": cloud_invalid or [],
+        "public_route_required": True,
+        "public_route_note": "Meta must reach the configured webhook path.",
+    }
+    cloud_is_configured = cloud_configured and not cloud_invalid
     bridge_payload = {
         "success": True,
         "checks": {
@@ -119,13 +142,16 @@ def write_fake_helpers(
                 "allowed_users_count": 2,
             },
             "whatsapp_cloud": {
-                "cloud_configured": cloud_configured,
+                "cloud_configured": cloud_is_configured,
                 "calling_sidecar_configured": True,
-                "calling_ready": cloud_configured,
+                "calling_ready": cloud_is_configured,
                 "cloud_missing": cloud_missing,
+                "cloud_invalid": cloud_invalid or [],
                 "calling_missing": cloud_missing,
+                "calling_invalid": cloud_invalid or [],
                 "cloud_required": cloud_required,
                 "calling": calling,
+                "webhook": webhook,
             }
         },
         "failures": [],
@@ -147,6 +173,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         tmp_path: Path,
         *args: str,
         cloud_configured: bool = False,
+        cloud_invalid: list[str] | None = None,
         skip_voice_note_smoke: bool = True,
         voice_note_payload: dict | None = None,
         inbound_cache_payload: dict | None = None,
@@ -155,6 +182,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             tmp_path,
             *args,
             cloud_configured=cloud_configured,
+            cloud_invalid=cloud_invalid,
             skip_voice_note_smoke=skip_voice_note_smoke,
             voice_note_payload=voice_note_payload,
             inbound_cache_payload=inbound_cache_payload,
@@ -167,6 +195,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         tmp_path: Path,
         *args: str,
         cloud_configured: bool = False,
+        cloud_invalid: list[str] | None = None,
         skip_voice_note_smoke: bool = True,
         voice_note_payload: dict | None = None,
         inbound_cache_payload: dict | None = None,
@@ -176,6 +205,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         write_fake_helpers(
             helpers,
             cloud_configured=cloud_configured,
+            cloud_invalid=cloud_invalid,
             voice_note_payload=voice_note_payload,
             inbound_cache_payload=inbound_cache_payload,
         )
@@ -276,6 +306,14 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertIn("--require-whatsapp-cloud", cloud_handoff["verify_command"])
         self.assertEqual(len(cloud_handoff["steps"]), 4)
         self.assertNotIn("phone-id", json.dumps(cloud_handoff))
+        self.assertEqual(cloud_handoff["invalid"], [])
+        self.assertEqual(cloud_handoff["webhook"]["host"], "0.0.0.0")
+        self.assertEqual(cloud_handoff["webhook"]["port"], 8090)
+        self.assertEqual(cloud_handoff["webhook"]["path"], "/whatsapp/webhook")
+        self.assertIn(
+            "WHATSAPP_CLOUD_WEBHOOK_PORT",
+            cloud_handoff["webhook"]["defaulted"],
+        )
         self.assertIn(
             "WHATSAPP_CLOUD_ACCESS_TOKEN",
             gates["whatsapp_cloud_calling"]["missing"],
@@ -335,6 +373,11 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "WHATSAPP_CLOUD_ACCESS_TOKEN",
             meta_action["missing_by_gate"]["whatsapp_cloud_calling"],
         )
+        self.assertEqual(meta_action["invalid_by_gate"]["whatsapp_cloud"], [])
+        self.assertEqual(
+            meta_action["invalid_by_gate"]["whatsapp_cloud_calling"],
+            [],
+        )
         self.assertIn(
             "--require-whatsapp-cloud",
             meta_action["verify_commands"]["whatsapp_cloud"],
@@ -347,6 +390,30 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "--require-complete",
             meta_action["complete_verification_command"],
         )
+
+    def test_invalid_cloud_webhook_config_is_reported_in_alpha_handoff(self):
+        invalid = ["WHATSAPP_CLOUD_WEBHOOK_PORT", "WHATSAPP_CLOUD_WEBHOOK_PATH"]
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                cloud_configured=True,
+                cloud_invalid=invalid,
+            )
+
+        self.assertFalse(payload["external_meta_setup"]["cloud_configured"])
+        self.assertEqual(payload["external_meta_setup"]["cloud_missing"], [])
+        self.assertEqual(payload["external_meta_setup"]["cloud_invalid"], invalid)
+        cloud_gate = payload["pending_gates"]["whatsapp_cloud"]
+        self.assertEqual(cloud_gate["invalid"], invalid)
+        cloud_handoff = cloud_gate["setup_handoff"]
+        self.assertEqual(cloud_handoff["invalid"], invalid)
+        self.assertEqual(cloud_handoff["webhook"]["invalid"], invalid)
+        action = {
+            item["id"]: item
+            for item in payload["readiness_summary"]["next_actions"]
+        }["configure_whatsapp_cloud_calling"]
+        self.assertEqual(action["missing_by_gate"]["whatsapp_cloud"], [])
+        self.assertEqual(action["invalid_by_gate"]["whatsapp_cloud"], invalid)
 
     def test_require_complete_fails_when_alpha_gates_are_pending(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -483,6 +550,11 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "whatsapp_cloud_setup=env_file=",
             result.stdout,
         )
+        self.assertIn(
+            "whatsapp_cloud_webhook=host=0.0.0.0 port=8090 path=/whatsapp/webhook",
+            result.stdout,
+        )
+        self.assertIn("invalid=none", result.stdout)
         self.assertIn(
             "missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,WHATSAPP_CLOUD_ACCESS_TOKEN",
             result.stdout,

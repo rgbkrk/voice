@@ -181,6 +181,58 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
         self.assertTrue(summary["calling_sidecar_configured"])
         self.assertTrue(summary["calling_ready"])
         self.assertEqual(summary["calling_missing"], [])
+        self.assertEqual(summary["cloud_invalid"], [])
+        self.assertEqual(summary["webhook"]["host"], "0.0.0.0")
+        self.assertEqual(summary["webhook"]["port"], 8090)
+        self.assertEqual(summary["webhook"]["path"], "/whatsapp/webhook")
+        self.assertEqual(summary["webhook"]["api_version"], "v20.0")
+        self.assertIn(
+            "WHATSAPP_CLOUD_WEBHOOK_PORT",
+            summary["webhook"]["defaulted"],
+        )
+
+    def test_invalid_cloud_webhook_config_fails_strict_cloud_readiness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(tmp_path, require_whatsapp_cloud=True)
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text(
+                "\n".join(
+                    [
+                        "WHATSAPP_MODE=bot",
+                        "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                        "WHATSAPP_CLOUD_ACCESS_TOKEN=secret-token",
+                        "WHATSAPP_CLOUD_APP_SECRET=secret-app",
+                        "WHATSAPP_CLOUD_VERIFY_TOKEN=secret-verify",
+                        "WHATSAPP_CLOUD_WEBHOOK_PORT=not-a-port",
+                        "WHATSAPP_CLOUD_WEBHOOK_PATH=whatsapp/webhook",
+                        "WHATSAPP_CLOUD_API_VERSION=20",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.script.verify(args)
+
+        self.assertFalse(result["success"])
+        failures = "\n".join(result["failures"])
+        self.assertIn("WhatsApp Cloud config invalid", failures)
+        self.assertIn("WHATSAPP_CLOUD_WEBHOOK_PORT", failures)
+        self.assertIn("WHATSAPP_CLOUD_WEBHOOK_PATH", failures)
+        self.assertIn("WHATSAPP_CLOUD_API_VERSION", failures)
+        self.assertNotIn("secret-token", json.dumps(result))
+        webhook = result["checks"]["whatsapp_cloud"]["webhook"]
+        self.assertEqual(webhook["port"], None)
+        self.assertEqual(
+            webhook["invalid"],
+            [
+                "WHATSAPP_CLOUD_WEBHOOK_PORT",
+                "WHATSAPP_CLOUD_WEBHOOK_PATH",
+                "WHATSAPP_CLOUD_API_VERSION",
+            ],
+        )
 
     def test_cloud_calling_summary_can_use_running_gateway_process_env(self):
         with tempfile.TemporaryDirectory() as tmp:

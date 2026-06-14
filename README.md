@@ -437,7 +437,10 @@ voice note plus the required Meta WhatsApp Cloud and Calling credentials. The
 alpha output prints `whatsapp_cloud_setup`, `whatsapp_cloud_verify_command`,
 `whatsapp_calling_setup`, `whatsapp_calling_verify_command`, and
 `whatsapp_calling_complete_command` handoff lines so missing external setup is
-separated from local daemon, bridge, and Hermes failures.
+separated from local daemon, bridge, and Hermes failures. It also prints the
+resolved Cloud webhook bind defaults and malformed webhook keys, so strict
+Cloud/Calling failures can distinguish missing credentials from invalid
+`WHATSAPP_CLOUD_WEBHOOK_*` settings.
 
 When the WebRTC Python dependencies are installed, add
 `--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`

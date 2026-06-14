@@ -132,9 +132,13 @@ For the external Meta gates, the JSON report includes safe setup handoffs under
 `pending_gates.whatsapp_cloud_calling.setup_handoff`. These handoffs list the
 required key names, which keys are missing, redacted source labels for values
 that were found, and the exact follow-up verifier commands. Secret values are
-never printed. `readiness_summary.next_actions` repeats the same non-secret
-commands and missing-key groups so another agent can consume the report without
-scraping human output. The human output mirrors the same information with:
+never printed. The Cloud handoff also reports the resolved local webhook
+binding (`host`, `port`, `path`, and `api_version`), which values came from env
+sources versus Hermes defaults, and malformed webhook keys under `invalid`.
+`readiness_summary.next_actions` repeats the same non-secret commands,
+missing-key groups, and invalid-key groups so another agent can consume the
+report without scraping human output. The human output mirrors the same
+information with:
 
 - `whatsapp_cloud_setup`
 - `whatsapp_cloud_verify_command`
@@ -260,6 +264,12 @@ the local sidecar:
 - `WHATSAPP_CLOUD_VERIFY_TOKEN`
 - `WHATSAPP_CLOUD_CALLING_SIDECAR_URL`
 - `WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND`
+
+Hermes defaults the local Cloud webhook bind to `0.0.0.0:8090` at
+`/whatsapp/webhook` with Graph API version `v20.0` when the matching optional
+`WHATSAPP_CLOUD_WEBHOOK_*` keys are not set. The voice verifier reports those
+resolved defaults and fails strict Cloud/Calling gates if the configured
+webhook port, path, or API version is malformed.
 
 The external Meta setup behind those keys is:
 

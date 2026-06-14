@@ -460,7 +460,13 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                     "--skip-daemon",
                     "--skip-hermes-tts-smoke",
                     "--whatsapp-alpha-profile",
-                    "cached-receive",
+                    "attended-cache-receive",
+                    "--whatsapp-alpha-chat-id",
+                    "20530681934008@lid",
+                    "--whatsapp-alpha-wait-audio-cache-seconds",
+                    "7.5",
+                    "--whatsapp-alpha-wait-inbound-seconds",
+                    "8.5",
                     "--text",
                     "Alpha stack smoke.",
                 ],
@@ -481,7 +487,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
 
             entries = command_log_entries(log_path)
 
-        self.assertIn("whatsapp_alpha=cached-receive", result.stdout)
+        self.assertIn("whatsapp_alpha=attended-cache-receive", result.stdout)
         self.assertEqual([entry[0] for entry in entries], ["whatsapp", "alpha"])
         self.assertEqual(
             entries[1],
@@ -498,11 +504,17 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 "--sidecar-url",
                 "http://127.0.0.1:9999",
                 "--profile",
-                "cached-receive",
+                "attended-cache-receive",
                 "--text",
                 "Alpha stack smoke.",
                 "--whatsapp-audio-cache-dir",
                 str(audio_cache),
+                "--voice-note-chat-id",
+                "20530681934008@lid",
+                "--wait-audio-cache-seconds",
+                "7.5",
+                "--wait-inbound-seconds",
+                "8.5",
                 "--expected-agent-number",
                 "13236478455",
                 "--expected-agent-name",

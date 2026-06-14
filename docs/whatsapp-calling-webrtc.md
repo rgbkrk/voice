@@ -88,7 +88,10 @@ voice note through the paired bridge. Prefer
 while Hermes is already running; it watches `~/.hermes/audio_cache` for a fresh
 `aud_*` artifact and does not drain the bridge queue. Use
 `--whatsapp-alpha-profile attended-send-receive` only when the verifier itself
-should poll and drain the bridge `/messages` queue.
+should poll and drain the bridge `/messages` queue. The stack gate also accepts
+`--whatsapp-alpha-chat-id`, `--whatsapp-alpha-wait-audio-cache-seconds`, and
+`--whatsapp-alpha-wait-inbound-seconds` so attended tests do not need to drop
+down to the lower-level alpha script.
 
 For a categorized alpha-readiness report, use:
 

@@ -406,7 +406,10 @@ To include the categorized WhatsApp alpha report in the same command, add
 profiles perform real bridge operations. Prefer `attended-cache-receive` when
 Hermes is already watching the bridge; it waits for a fresh `aud_*` cache
 artifact without draining queued messages. Use `attended-send-receive` only when
-the verifier itself should poll and drain the bridge message queue.
+the verifier itself should poll and drain the bridge message queue. Add
+`--whatsapp-alpha-chat-id` to override `WHATSAPP_HOME_CHANNEL`, or adjust the
+attended wait with `--whatsapp-alpha-wait-audio-cache-seconds` /
+`--whatsapp-alpha-wait-inbound-seconds`.
 
 When the WebRTC Python dependencies are installed, add
 `--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`

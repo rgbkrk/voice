@@ -19,6 +19,9 @@ skip_daemon="${SKIP_DAEMON:-0}"
 skip_stt_smoke="${SKIP_STT_SMOKE:-0}"
 run_whatsapp_inbound_cache_smoke="${RUN_WHATSAPP_INBOUND_CACHE_SMOKE:-0}"
 whatsapp_alpha_profile="${WHATSAPP_ALPHA_PROFILE:-}"
+whatsapp_alpha_voice_note_chat_id="${WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID:-}"
+whatsapp_alpha_wait_audio_cache_seconds="${WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS:-}"
+whatsapp_alpha_wait_inbound_seconds="${WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS:-}"
 run_webrtc_loopback_smoke="${RUN_WEBRTC_LOOPBACK_SMOKE:-0}"
 webrtc_python="${VOICE_WEBRTC_PYTHON:-python3}"
 webrtc_timeout="${VOICE_WEBRTC_TIMEOUT:-60}"
@@ -84,6 +87,11 @@ Options:
                                run categorized alpha readiness profile:
                                unattended, cached-receive, send,
                                attended-cache-receive, attended-send-receive
+  --whatsapp-alpha-chat-id ID  override WHATSAPP_HOME_CHANNEL for alpha sends
+  --whatsapp-alpha-wait-audio-cache-seconds SECONDS
+                               override attended-cache-receive cache watch time
+  --whatsapp-alpha-wait-inbound-seconds SECONDS
+                               override attended-send-receive bridge poll time
   --run-webrtc-loopback-smoke  run one local full-duplex WebRTC media turn
   --webrtc-python PATH         Python used for the WebRTC smoke (default: python3)
   --webrtc-timeout SECONDS     timeout passed to the WebRTC smoke (default: 60)
@@ -99,6 +107,8 @@ Environment aliases:
   WHATSAPP_AUDIO_CACHE_DIR, WHATSAPP_AGENT_NUMBER, WHATSAPP_AGENT_NAME
   REQUIRE_WHATSAPP_CLOUD=1, REQUIRE_WHATSAPP_CALLING=1
   RUN_WHATSAPP_INBOUND_CACHE_SMOKE=1, WHATSAPP_ALPHA_PROFILE
+  WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID, WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS
+  WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS
   VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
 EOF
 }
@@ -248,6 +258,21 @@ while [[ $# -gt 0 ]]; do
     --whatsapp-alpha-profile)
       [[ $# -ge 2 ]] || fail "--whatsapp-alpha-profile requires a profile"
       whatsapp_alpha_profile="$2"
+      shift 2
+      ;;
+    --whatsapp-alpha-chat-id)
+      [[ $# -ge 2 ]] || fail "--whatsapp-alpha-chat-id requires a chat id"
+      whatsapp_alpha_voice_note_chat_id="$2"
+      shift 2
+      ;;
+    --whatsapp-alpha-wait-audio-cache-seconds)
+      [[ $# -ge 2 ]] || fail "--whatsapp-alpha-wait-audio-cache-seconds requires a value"
+      whatsapp_alpha_wait_audio_cache_seconds="$2"
+      shift 2
+      ;;
+    --whatsapp-alpha-wait-inbound-seconds)
+      [[ $# -ge 2 ]] || fail "--whatsapp-alpha-wait-inbound-seconds requires a value"
+      whatsapp_alpha_wait_inbound_seconds="$2"
       shift 2
       ;;
     --run-webrtc-loopback-smoke)
@@ -479,6 +504,15 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
   )
   if [[ -n "$whatsapp_audio_cache_dir" ]]; then
     whatsapp_alpha_args+=(--whatsapp-audio-cache-dir "$whatsapp_audio_cache_dir")
+  fi
+  if [[ -n "$whatsapp_alpha_voice_note_chat_id" ]]; then
+    whatsapp_alpha_args+=(--voice-note-chat-id "$whatsapp_alpha_voice_note_chat_id")
+  fi
+  if [[ -n "$whatsapp_alpha_wait_audio_cache_seconds" ]]; then
+    whatsapp_alpha_args+=(--wait-audio-cache-seconds "$whatsapp_alpha_wait_audio_cache_seconds")
+  fi
+  if [[ -n "$whatsapp_alpha_wait_inbound_seconds" ]]; then
+    whatsapp_alpha_args+=(--wait-inbound-seconds "$whatsapp_alpha_wait_inbound_seconds")
   fi
   if [[ -n "$expected_whatsapp_agent_number" ]]; then
     whatsapp_alpha_args+=(--expected-agent-number "$expected_whatsapp_agent_number")

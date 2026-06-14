@@ -122,6 +122,33 @@ still report `pending_gates.attended_fresh_receive.status=pending_attended`
 until someone sends a fresh WhatsApp voice note during the guarded receive
 window.
 
+For the external Meta gates, the JSON report includes safe setup handoffs under
+`pending_gates.whatsapp_cloud.setup_handoff` and
+`pending_gates.whatsapp_cloud_calling.setup_handoff`. These handoffs list the
+required key names, which keys are missing, redacted source labels for values
+that were found, and the exact follow-up verifier commands. Secret values are
+never printed. The human output mirrors the same information with:
+
+- `whatsapp_cloud_setup`
+- `whatsapp_cloud_verify_command`
+- `whatsapp_calling_setup`
+- `whatsapp_calling_verify_command`
+- `whatsapp_calling_complete_command`
+
+Use the complete gate only when the local bridge, attended receive, Cloud API,
+and Calling setup are all expected to pass:
+
+```bash
+scripts/verify_whatsapp_alpha_readiness.py \
+  --hermes-home ~/.hermes \
+  --profile attended-cache-receive \
+  --require-complete
+```
+
+Until Meta Cloud/Calling credentials are installed, that command should fail
+with the missing external keys instead of reporting a local Baileys or voice
+runtime regression.
+
 The same alpha report can also drive the real bridge voice-note operation when
 running an attended test. Add `--send-voice-note` to post the generated
 Ogg/Opus note to `WHATSAPP_HOME_CHANNEL`, or pass `--voice-note-chat-id` to

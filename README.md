@@ -418,6 +418,22 @@ the verifier itself should poll and drain the bridge message queue. Add
 attended wait with `--whatsapp-alpha-wait-audio-cache-seconds` /
 `--whatsapp-alpha-wait-inbound-seconds`.
 
+To fail unless every alpha gate is complete, include the strict completion flag:
+
+```bash
+scripts/verify_local_hermes_voice_stack.sh \
+  --hermes-home ~/.hermes \
+  --whatsapp-alpha-profile attended-cache-receive \
+  --require-whatsapp-alpha-complete
+```
+
+That strict gate is expected to fail until the host has a fresh attended inbound
+voice note plus the required Meta WhatsApp Cloud and Calling credentials. The
+alpha output prints `whatsapp_cloud_setup`, `whatsapp_cloud_verify_command`,
+`whatsapp_calling_setup`, `whatsapp_calling_verify_command`, and
+`whatsapp_calling_complete_command` handoff lines so missing external setup is
+separated from local daemon, bridge, and Hermes failures.
+
 When the WebRTC Python dependencies are installed, add
 `--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`
 to run one full-duplex local media turn through the sidecar spike as well.

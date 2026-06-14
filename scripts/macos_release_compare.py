@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import statistics
 import struct
@@ -30,6 +31,9 @@ DEFAULT_PHRASES = [
     "The nteract runtime should pronounce technical identifiers clearly.",
     "Streaming audio frames need predictable timing for WebRTC clients.",
 ]
+
+DEFAULT_ARTICULATION_PHRASE = "Wait, what. Wait what?"
+DEFAULT_ARTICULATION_EXPECTED_WORDS = ["wait", "wait", "what", "what"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,6 +62,25 @@ def parse_args() -> argparse.Namespace:
         "--require-daemon",
         action="store_true",
         help="Fail if a daemon is not available for the daemon-backed stream smoke check",
+    )
+    parser.add_argument(
+        "--skip-articulation-smoke",
+        action="store_true",
+        help="Skip generated-audio STT smoke for leading-word articulation",
+    )
+    parser.add_argument(
+        "--articulation-phrase",
+        default=DEFAULT_ARTICULATION_PHRASE,
+        help="Phrase to synthesize and transcribe for the articulation smoke",
+    )
+    parser.add_argument(
+        "--articulation-expected-word",
+        action="append",
+        default=None,
+        help=(
+            "Expected word in the articulation transcript; repeat to require "
+            "multiple occurrences. Defaults to wait, wait, what, what."
+        ),
     )
     parser.add_argument(
         "--threshold",
@@ -331,8 +354,74 @@ def compare_summary(
     return f"{kind}: {status}, new/old mean elapsed = {ratio:.2f}x", ok
 
 
+def normalized_words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def missing_expected_words(transcript: str, expected_words: list[str]) -> list[str]:
+    available = normalized_words(transcript)
+    missing: list[str] = []
+    for word in expected_words:
+        normalized = normalized_words(word)
+        if len(normalized) != 1:
+            raise ValueError(f"expected word must normalize to one token: {word!r}")
+        token = normalized[0]
+        if token in available:
+            available.remove(token)
+        else:
+            missing.append(token)
+    return missing
+
+
+def articulation_smoke_check(
+    new_voice: Path,
+    work_dir: Path,
+    *,
+    phrase: str,
+    expected_words: list[str],
+) -> dict[str, object]:
+    env = missing_daemon_env(work_dir)
+    wav = work_dir / "smoke-leading-articulation.wav"
+    run(
+        [
+            str(new_voice),
+            "say",
+            "-q",
+            "--deterministic",
+            "-o",
+            str(wav),
+            phrase,
+        ],
+        env=env,
+        timeout=240,
+    )
+    transcript = run(
+        [str(new_voice), "transcribe", "-q", str(wav)],
+        env=env,
+        capture=True,
+        timeout=300,
+    ).stdout.strip()
+    missing = missing_expected_words(transcript, expected_words)
+    return {
+        "name": "leading_articulation_transcribes_expected_words",
+        "ok": not missing,
+        "path": str(wav),
+        "phrase": phrase,
+        "expected_words": expected_words,
+        "transcript": transcript,
+        "missing_words": missing,
+        "note": "guards issue #110: leading 'Wait, what. Wait what?' articulation",
+    }
+
+
 def smoke_checks(
-    new_voice: Path, work_dir: Path, *, require_daemon: bool
+    new_voice: Path,
+    work_dir: Path,
+    *,
+    require_daemon: bool,
+    skip_articulation_smoke: bool,
+    articulation_phrase: str,
+    articulation_expected_words: list[str],
 ) -> list[dict[str, object]]:
     checks: list[dict[str, object]] = []
     env = missing_daemon_env(work_dir)
@@ -390,6 +479,25 @@ def smoke_checks(
             "note": "voice stream is daemon-backed only",
         }
     )
+
+    if skip_articulation_smoke:
+        checks.append(
+            {
+                "name": "leading_articulation_transcribes_expected_words",
+                "ok": True,
+                "skipped": True,
+                "note": "skipped by --skip-articulation-smoke",
+            }
+        )
+    else:
+        checks.append(
+            articulation_smoke_check(
+                new_voice,
+                work_dir,
+                phrase=articulation_phrase,
+                expected_words=articulation_expected_words,
+            )
+        )
 
     daemon = subprocess.run(
         [str(new_voice), "daemon", "status", "--json"],
@@ -477,7 +585,17 @@ def main() -> int:
         "stt:new": summarize(all_rows, "stt", "new"),
     }
 
-    checks = smoke_checks(new_voice, work_dir, require_daemon=args.require_daemon)
+    articulation_expected_words = (
+        args.articulation_expected_word or DEFAULT_ARTICULATION_EXPECTED_WORDS
+    )
+    checks = smoke_checks(
+        new_voice,
+        work_dir,
+        require_daemon=args.require_daemon,
+        skip_articulation_smoke=args.skip_articulation_smoke,
+        articulation_phrase=args.articulation_phrase,
+        articulation_expected_words=articulation_expected_words,
+    )
     comparisons = []
     ok = True
     for kind in ["tts", "stt"]:

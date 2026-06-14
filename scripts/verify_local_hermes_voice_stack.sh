@@ -10,6 +10,7 @@ sidecar_url="${SIDECAR_URL:-http://127.0.0.1:8787}"
 text="${TEXT:-Local Hermes voice stack smoke test.}"
 skip_hermes_config="${SKIP_HERMES_CONFIG:-0}"
 skip_hermes_tts_smoke="${SKIP_HERMES_TTS_SMOKE:-0}"
+skip_hermes_stt_smoke="${SKIP_HERMES_STT_SMOKE:-0}"
 skip_hermes_gateway="${SKIP_HERMES_GATEWAY:-0}"
 skip_sidecar="${SKIP_SIDECAR:-0}"
 skip_whatsapp_bridge="${SKIP_WHATSAPP_BRIDGE:-0}"
@@ -64,6 +65,7 @@ Options:
   --text TEXT                  smoke text used by TTS checks
   --skip-hermes-config         skip Hermes config validation and TTS command smoke
   --skip-hermes-tts-smoke      validate Hermes config without executing TTS
+  --skip-hermes-stt-smoke      keep alpha cached-receive Hermes STT validation shape-only
   --skip-hermes-gateway        skip running Hermes gateway service verification
   --skip-cli-mcp               skip plain CLI/MCP daemon surface verification
   --skip-whatsapp-bridge       skip local WhatsApp bridge identity verification
@@ -103,9 +105,10 @@ Options:
 
 Environment aliases:
   VOICE_BIN, HERMES_CONFIG, SIDECAR_URL, TEXT
-  SKIP_HERMES_CONFIG=1, SKIP_HERMES_TTS_SMOKE=1, SKIP_SIDECAR=1
-  SKIP_HERMES_GATEWAY=1, SKIP_WHATSAPP_BRIDGE=1, SKIP_SYSTEMD=1, SKIP_CLI_MCP=1
-  SKIP_DAEMON=1, SKIP_STT_SMOKE=1, RUN_WEBRTC_LOOPBACK_SMOKE=1
+  SKIP_HERMES_CONFIG=1, SKIP_HERMES_TTS_SMOKE=1, SKIP_HERMES_STT_SMOKE=1
+  SKIP_SIDECAR=1, SKIP_HERMES_GATEWAY=1, SKIP_WHATSAPP_BRIDGE=1
+  SKIP_SYSTEMD=1, SKIP_CLI_MCP=1, SKIP_DAEMON=1, SKIP_STT_SMOKE=1
+  RUN_WEBRTC_LOOPBACK_SMOKE=1
   WHATSAPP_BRIDGE_URL, WHATSAPP_SESSION_DIR, WHATSAPP_ENV_FILE
   WHATSAPP_AUDIO_CACHE_DIR, WHATSAPP_AGENT_NUMBER, WHATSAPP_AGENT_NAME
   REQUIRE_WHATSAPP_CLOUD=1, REQUIRE_WHATSAPP_CALLING=1
@@ -187,6 +190,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-hermes-tts-smoke)
       skip_hermes_tts_smoke=1
+      shift
+      ;;
+    --skip-hermes-stt-smoke)
+      skip_hermes_stt_smoke=1
       shift
       ;;
     --skip-hermes-gateway)
@@ -544,6 +551,9 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
   fi
   if [[ "$skip_hermes_tts_smoke" == "1" ]]; then
     whatsapp_alpha_args+=(--skip-hermes-tts-smoke)
+  fi
+  if [[ "$skip_hermes_stt_smoke" == "1" ]]; then
+    whatsapp_alpha_args+=(--skip-hermes-stt-smoke)
   fi
   if [[ "$require_whatsapp_cloud" == "1" ]]; then
     whatsapp_alpha_args+=(--require-whatsapp-cloud)

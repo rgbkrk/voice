@@ -93,6 +93,11 @@ should poll and drain the bridge `/messages` queue. The stack gate also accepts
 `--whatsapp-alpha-wait-inbound-seconds` so attended tests do not need to drop
 down to the lower-level alpha script.
 
+Cached receive profiles also pass the newest cached inbound `aud_*` file to
+the Hermes config verifier, so the configured STT command provider is exercised
+against bridge-downloaded audio when a cache file is available. Add
+`--skip-hermes-stt-smoke` when that part should remain shape-only.
+
 For a categorized alpha-readiness report, use:
 
 ```bash

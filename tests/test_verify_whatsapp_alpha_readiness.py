@@ -546,17 +546,42 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
 
     def test_cached_receive_profile_adds_receive_component(self):
         with tempfile.TemporaryDirectory() as tmp:
+            audio_cache = Path(tmp) / "audio_cache"
+            audio_cache.mkdir()
+            cached_audio = audio_cache / "aud_cached.ogg"
+            cached_audio.write_bytes(b"OggSfake")
             payload = self.run_readiness(
                 Path(tmp),
                 "--profile",
                 "cached-receive",
                 "--whatsapp-audio-cache-dir",
-                str(Path(tmp) / "audio_cache"),
+                str(audio_cache),
             )
 
         self.assertEqual(payload["profile"], "cached-receive")
         components = {item["name"]: item for item in payload["components"]}
         self.assertIn("whatsapp_inbound_cache_stt", components)
+        hermes_command = components["hermes_voice_config"]["command"]
+        self.assertIn("--stt-audio", hermes_command)
+        self.assertIn(str(cached_audio.resolve()), hermes_command)
+        self.assertIn("--stt-timeout", hermes_command)
+
+    def test_cached_receive_profile_can_skip_hermes_stt_smoke(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_cache = Path(tmp) / "audio_cache"
+            audio_cache.mkdir()
+            (audio_cache / "aud_cached.ogg").write_bytes(b"OggSfake")
+            payload = self.run_readiness(
+                Path(tmp),
+                "--profile",
+                "cached-receive",
+                "--whatsapp-audio-cache-dir",
+                str(audio_cache),
+                "--skip-hermes-stt-smoke",
+            )
+
+        components = {item["name"]: item for item in payload["components"]}
+        self.assertNotIn("--stt-audio", components["hermes_voice_config"]["command"])
 
     def test_send_profile_posts_real_voice_note(self):
         with tempfile.TemporaryDirectory() as tmp:

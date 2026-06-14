@@ -158,10 +158,32 @@ def script_path(name: str) -> str:
     return str(path)
 
 
+def audio_cache_dir(args: argparse.Namespace, hermes_home: Path) -> Path:
+    if args.whatsapp_audio_cache_dir:
+        return args.whatsapp_audio_cache_dir.expanduser().resolve()
+    return hermes_home / "audio_cache"
+
+
+def latest_cached_inbound_audio(audio_dir: Path) -> Path | None:
+    if not audio_dir.is_dir():
+        return None
+    candidates = [
+        path
+        for path in audio_dir.iterdir()
+        if path.is_file()
+        and path.name.startswith("aud_")
+        and path.suffix.lower() in {".ogg", ".opus", ".m4a"}
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
 def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
     voice_bin = resolve_executable(args.voice_bin, label="voice binary")
     hermes_home = args.hermes_home.expanduser().resolve()
     hermes_config = args.hermes_config.expanduser().resolve()
+    cache_dir = audio_cache_dir(args, hermes_home)
     components: list[dict[str, Any]] = []
 
     hermes_config_cmd = [
@@ -175,6 +197,12 @@ def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
     ]
     if args.skip_hermes_tts_smoke:
         hermes_config_cmd.append("--skip-tts-smoke")
+    if args.run_inbound_cache_smoke and not args.skip_hermes_stt_smoke:
+        cached_audio = latest_cached_inbound_audio(cache_dir)
+        if cached_audio is not None:
+            hermes_config_cmd.extend(
+                ["--stt-audio", str(cached_audio), "--stt-timeout", str(args.stt_timeout)]
+            )
     components.append(
         component(
             name="hermes_voice_config",
@@ -320,7 +348,7 @@ def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
             "--json",
         ]
         if args.whatsapp_audio_cache_dir:
-            inbound_cmd.extend(["--audio-cache-dir", str(args.whatsapp_audio_cache_dir)])
+            inbound_cmd.extend(["--audio-cache-dir", str(cache_dir)])
         if args.wait_audio_cache_seconds > 0:
             inbound_name = "whatsapp_inbound_cache_fresh_stt"
             inbound_cmd.extend(["--wait-fresh-seconds", str(args.wait_audio_cache_seconds)])
@@ -914,6 +942,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-daemon", action="store_true")
     parser.add_argument("--skip-sidecar", action="store_true")
     parser.add_argument("--skip-hermes-tts-smoke", action="store_true")
+    parser.add_argument(
+        "--skip-hermes-stt-smoke",
+        action="store_true",
+        help=(
+            "do not execute the configured Hermes STT provider against cached "
+            "inbound audio when a cached receive profile is active"
+        ),
+    )
     parser.add_argument("--skip-voice-note-smoke", action="store_true")
     parser.add_argument(
         "--send-voice-note",

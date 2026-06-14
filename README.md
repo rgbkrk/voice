@@ -411,11 +411,14 @@ daemon and sidecar by default. For narrower checks, run
 
 To include the categorized WhatsApp alpha report in the same command, add
 `--whatsapp-alpha-profile unattended`, `cached-receive`, `send`,
-`attended-cache-receive`, or `attended-send-receive`. The `send` and attended
-profiles perform real bridge operations. Prefer `attended-cache-receive` when
-Hermes is already watching the bridge; it waits for a fresh `aud_*` cache
-artifact without draining queued messages. Use `attended-send-receive` only when
-the verifier itself should poll and drain the bridge message queue. Add
+`attended-cache-receive`, or `attended-send-receive`. Cached receive profiles
+automatically run the configured Hermes STT command against the newest cached
+inbound `aud_*` file when one is present; add `--skip-hermes-stt-smoke` to keep
+the Hermes config check shape-only. The `send` and attended profiles perform
+real bridge operations. Prefer `attended-cache-receive` when Hermes is already
+watching the bridge; it waits for a fresh `aud_*` cache artifact without
+draining queued messages. Use `attended-send-receive` only when the verifier
+itself should poll and drain the bridge message queue. Add
 `--whatsapp-alpha-chat-id` to override `WHATSAPP_HOME_CHANNEL`, or adjust the
 attended wait with `--whatsapp-alpha-wait-audio-cache-seconds` /
 `--whatsapp-alpha-wait-inbound-seconds`.

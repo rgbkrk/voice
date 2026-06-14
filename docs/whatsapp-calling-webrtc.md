@@ -74,6 +74,19 @@ voice-stream service, and the WebRTC sidecar contract. Add
 `--require-whatsapp-cloud` or `--require-whatsapp-calling` only when the host is
 expected to have real Meta Cloud credentials.
 
+For a categorized alpha-readiness report, use:
+
+```bash
+scripts/verify_whatsapp_alpha_readiness.py --hermes-home ~/.hermes
+```
+
+That report runs the voice/Hermes/bridge/sidecar checks as separate components
+and groups failures as voice runtime, Hermes runtime/config, bridge pairing,
+voice-note, live-call local sidecar, or external Meta setup. Use
+`--require-whatsapp-calling` when a host is expected to be ready for real Cloud
+Calling; otherwise missing Meta credentials are reported as external setup
+still required, not as a local Baileys voice-note failure.
+
 To prove the outbound voice-note path without sending a WhatsApp message, run:
 
 ```bash
@@ -124,6 +137,15 @@ the local sidecar:
 - `WHATSAPP_CLOUD_VERIFY_TOKEN`
 - `WHATSAPP_CLOUD_CALLING_SIDECAR_URL`
 - `WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND`
+
+The external Meta setup behind those keys is:
+
+- create or select a WhatsApp Business Platform app and WABA
+- attach a phone number that is eligible for WhatsApp Cloud API
+- generate a permanent System User access token with WhatsApp permissions
+- configure webhook verify token and app secret for signed inbound webhooks
+- enable or approve WhatsApp Calling for the Cloud phone number
+- route Cloud Calling webhooks to the Hermes WhatsApp Cloud adapter
 
 ## Deployment Split
 

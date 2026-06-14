@@ -465,6 +465,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    voice_note_options = [
+        args.send_voice_note,
+        args.voice_note_chat_id is not None,
+        args.wait_inbound_seconds != 0,
+        args.require_inbound_audio,
+        args.drain_bridge_messages,
+    ]
+    if args.skip_voice_note_smoke and any(voice_note_options):
+        parser.error(
+            "voice-note send/receive flags cannot be used with --skip-voice-note-smoke"
+        )
+    if args.wait_inbound_seconds < 0:
+        parser.error("--wait-inbound-seconds must be non-negative")
+    if args.voice_note_chat_id and not args.send_voice_note:
+        parser.error("--voice-note-chat-id requires --send-voice-note")
+    if args.require_inbound_audio and args.wait_inbound_seconds <= 0:
+        parser.error("--require-inbound-audio requires --wait-inbound-seconds")
+    if args.drain_bridge_messages and args.wait_inbound_seconds <= 0:
+        parser.error("--drain-bridge-messages requires --wait-inbound-seconds")
+    if args.wait_inbound_seconds > 0 and not args.drain_bridge_messages:
+        parser.error(
+            "--wait-inbound-seconds polls the bridge /messages queue; "
+            "add --drain-bridge-messages only during an attended receive test"
+        )
+
+
 def human_summary(result: dict[str, Any]) -> None:
     if result["success"]:
         print("ok: WhatsApp alpha readiness passed")
@@ -500,7 +527,9 @@ def human_summary(result: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    validate_args(parser, args)
     result = build_readiness(args)
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))

@@ -72,6 +72,14 @@ def write_fake_helpers(directory: Path, *, cloud_configured: bool = False) -> No
 
 
 class WhatsAppAlphaReadinessTests(unittest.TestCase):
+    def run_invalid(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(SCRIPT_PATH), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     def run_readiness(
         self,
         tmp_path: Path,
@@ -172,6 +180,33 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertIn("5.0", command)
         self.assertIn("--require-inbound-audio", command)
         self.assertIn("--drain-bridge-messages", command)
+
+    def test_voice_note_flags_cannot_be_used_when_voice_note_smoke_is_skipped(self):
+        result = self.run_invalid("--skip-voice-note-smoke", "--send-voice-note")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("cannot be used with --skip-voice-note-smoke", result.stderr)
+
+    def test_wait_inbound_requires_explicit_drain_flag(self):
+        result = self.run_invalid("--wait-inbound-seconds", "5")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("add --drain-bridge-messages", result.stderr)
+
+    def test_require_inbound_audio_requires_wait_window(self):
+        result = self.run_invalid("--require-inbound-audio")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "--require-inbound-audio requires --wait-inbound-seconds",
+            result.stderr,
+        )
+
+    def test_voice_note_chat_id_requires_real_send(self):
+        result = self.run_invalid("--voice-note-chat-id", "20530681934008@lid")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--voice-note-chat-id requires --send-voice-note", result.stderr)
 
     def test_require_cloud_calling_fails_when_meta_credentials_are_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

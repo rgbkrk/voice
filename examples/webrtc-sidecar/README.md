@@ -214,7 +214,13 @@ set:
 ```bash
 python3 -m venv /tmp/voice-webrtc-venv
 /tmp/voice-webrtc-venv/bin/pip install -r examples/webrtc-sidecar/requirements.txt pytest
+/tmp/voice-webrtc-venv/bin/python examples/webrtc-sidecar/loopback_smoke.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_sidecar.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_post_voice_stream.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_drain_sidecar_audio.py
 ```
+
+`loopback_smoke.py` starts the sidecar in-process, completes a local SDP
+offer/answer, verifies that HTTP-queued PCM reaches a WebRTC audio track, and
+verifies that inbound WebRTC audio can be drained back as local PCM. It does
+not contact WhatsApp or the Graph API.

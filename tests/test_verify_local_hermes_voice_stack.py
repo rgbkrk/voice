@@ -69,6 +69,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             gateway = tmp_path / "verify_gateway.py"
             cli_mcp = tmp_path / "verify_cli_mcp.py"
             whatsapp = tmp_path / "verify_whatsapp.sh"
+            bridge = tmp_path / "verify_whatsapp_bridge.py"
             sidecar = tmp_path / "verify_sidecar.py"
             voice = tmp_path / "voice"
             config = tmp_path / "config.yaml"
@@ -77,6 +78,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             write_helper(gateway, "gateway", log_path)
             write_helper(cli_mcp, "cli_mcp", log_path)
             write_helper(whatsapp, "whatsapp", log_path)
+            write_helper(bridge, "bridge", log_path)
             write_helper(sidecar, "sidecar", log_path)
             write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
             config.write_text("tts: {}\n", encoding="utf-8")
@@ -103,6 +105,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                     "HERMES_GATEWAY_VERIFY_SCRIPT": str(gateway),
                     "CLI_MCP_SURFACE_VERIFY_SCRIPT": str(cli_mcp),
                     "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_BRIDGE_VERIFY_SCRIPT": str(bridge),
                     "SIDECAR_SERVICE_VERIFY_SCRIPT": str(sidecar),
                 },
             )
@@ -112,10 +115,11 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("ok: local Hermes voice stack verifier passed", result.stdout)
         self.assertIn("hermes_gateway=skipped", result.stdout)
         self.assertIn("cli_mcp=checked", result.stdout)
+        self.assertIn("whatsapp_bridge=checked", result.stdout)
         self.assertIn("webrtc_loopback=skipped", result.stdout)
         self.assertEqual(
             [entry[0] for entry in entries],
-            ["hermes", "cli_mcp", "whatsapp", "sidecar"],
+            ["hermes", "cli_mcp", "whatsapp", "bridge", "sidecar"],
         )
         self.assertEqual(
             entries[0],
@@ -152,6 +156,17 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         )
         self.assertEqual(
             entries[3],
+            [
+                "bridge",
+                "--hermes-home",
+                str(Path.home() / ".hermes"),
+                "--bridge-url",
+                "http://127.0.0.1:3000",
+                "--skip-systemd",
+            ],
+        )
+        self.assertEqual(
+            entries[4],
             [
                 "sidecar",
                 "--voice-bin",
@@ -192,6 +207,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                     "--skip-hermes-tts-smoke",
                     "--skip-hermes-gateway",
                     "--skip-sidecar",
+                    "--skip-whatsapp-bridge",
                     "--skip-daemon",
                     "--skip-stt-smoke",
                 ],
@@ -212,6 +228,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
 
         self.assertIn("sidecar_service=skipped", result.stdout)
         self.assertIn("hermes_gateway=skipped", result.stdout)
+        self.assertIn("whatsapp_bridge=skipped", result.stdout)
         self.assertEqual([entry[0] for entry in entries], ["hermes", "cli_mcp", "whatsapp"])
         self.assertIn("--skip-tts-smoke", entries[0])
         self.assertIn("--skip-daemon", entries[1])
@@ -226,6 +243,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             gateway = tmp_path / "verify_gateway.py"
             cli_mcp = tmp_path / "verify_cli_mcp.py"
             whatsapp = tmp_path / "verify_whatsapp.sh"
+            bridge = tmp_path / "verify_whatsapp_bridge.py"
             sidecar = tmp_path / "verify_sidecar.py"
             python = tmp_path / "python"
             smoke = tmp_path / "full_duplex_loopback_smoke.py"
@@ -236,6 +254,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             write_helper(gateway, "gateway", log_path)
             write_helper(cli_mcp, "cli_mcp", log_path)
             write_helper(whatsapp, "whatsapp", log_path)
+            write_helper(bridge, "bridge", log_path)
             write_helper(sidecar, "sidecar", log_path)
             write_fake_python(python, "webrtc", log_path)
             write_executable(smoke, "#!/usr/bin/env python3\n")
@@ -271,6 +290,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                     "HERMES_GATEWAY_VERIFY_SCRIPT": str(gateway),
                     "CLI_MCP_SURFACE_VERIFY_SCRIPT": str(cli_mcp),
                     "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_BRIDGE_VERIFY_SCRIPT": str(bridge),
                     "SIDECAR_SERVICE_VERIFY_SCRIPT": str(sidecar),
                     "WEBRTC_LOOPBACK_SMOKE_SCRIPT": str(smoke),
                 },
@@ -281,10 +301,10 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("webrtc_loopback=checked", result.stdout)
         self.assertEqual(
             [entry[0] for entry in entries],
-            ["hermes", "gateway", "cli_mcp", "whatsapp", "webrtc"],
+            ["hermes", "gateway", "cli_mcp", "whatsapp", "bridge", "webrtc"],
         )
         self.assertEqual(
-            entries[4],
+            entries[5],
             [
                 "webrtc",
                 str(smoke),
@@ -309,6 +329,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             gateway = tmp_path / "verify_gateway.py"
             cli_mcp = tmp_path / "verify_cli_mcp.py"
             whatsapp = tmp_path / "verify_whatsapp.sh"
+            bridge = tmp_path / "verify_whatsapp_bridge.py"
             sidecar = tmp_path / "verify_sidecar.py"
             voice = tmp_path / "voice"
 
@@ -316,6 +337,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             write_helper(gateway, "gateway", log_path)
             write_helper(cli_mcp, "cli_mcp", log_path)
             write_helper(whatsapp, "whatsapp", log_path)
+            write_helper(bridge, "bridge", log_path)
             write_helper(sidecar, "sidecar", log_path)
             write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
 
@@ -340,6 +362,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                     "HERMES_GATEWAY_VERIFY_SCRIPT": str(gateway),
                     "CLI_MCP_SURFACE_VERIFY_SCRIPT": str(cli_mcp),
                     "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_BRIDGE_VERIFY_SCRIPT": str(bridge),
                     "SIDECAR_SERVICE_VERIFY_SCRIPT": str(sidecar),
                 },
             )
@@ -349,7 +372,8 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("hermes_config=skipped", result.stdout)
         self.assertIn("hermes_gateway=checked", result.stdout)
         self.assertIn("cli_mcp=skipped", result.stdout)
-        self.assertEqual([entry[0] for entry in entries], ["gateway", "whatsapp"])
+        self.assertIn("whatsapp_bridge=checked", result.stdout)
+        self.assertEqual([entry[0] for entry in entries], ["gateway", "whatsapp", "bridge"])
 
     def test_gateway_service_check_runs_when_systemd_checks_enabled(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -359,6 +383,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             gateway = tmp_path / "verify_gateway.py"
             cli_mcp = tmp_path / "verify_cli_mcp.py"
             whatsapp = tmp_path / "verify_whatsapp.sh"
+            bridge = tmp_path / "verify_whatsapp_bridge.py"
             sidecar = tmp_path / "verify_sidecar.py"
             voice = tmp_path / "voice"
             config = tmp_path / "config.yaml"
@@ -368,6 +393,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             write_helper(gateway, "gateway", log_path)
             write_helper(cli_mcp, "cli_mcp", log_path)
             write_helper(whatsapp, "whatsapp", log_path)
+            write_helper(bridge, "bridge", log_path)
             write_helper(sidecar, "sidecar", log_path)
             write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
             config.write_text("tts: {}\n", encoding="utf-8")
@@ -397,6 +423,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                     "HERMES_GATEWAY_VERIFY_SCRIPT": str(gateway),
                     "CLI_MCP_SURFACE_VERIFY_SCRIPT": str(cli_mcp),
                     "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_BRIDGE_VERIFY_SCRIPT": str(bridge),
                     "SIDECAR_SERVICE_VERIFY_SCRIPT": str(sidecar),
                 },
             )
@@ -406,7 +433,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("hermes_gateway=checked", result.stdout)
         self.assertEqual(
             [entry[0] for entry in entries],
-            ["hermes", "gateway", "cli_mcp", "whatsapp", "sidecar"],
+            ["hermes", "gateway", "cli_mcp", "whatsapp", "bridge", "sidecar"],
         )
         self.assertEqual(
             entries[1],

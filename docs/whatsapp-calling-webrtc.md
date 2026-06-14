@@ -40,6 +40,50 @@ file-based voice notes. The short version:
 
 The streaming frame contract is documented in [streaming.md](streaming.md).
 
+## Local WhatsApp Runtime Check
+
+The local Hermes bridge uses Baileys multi-file auth, not the WhatsApp Cloud
+API. A paired Baileys session is enough for text messages, inbound voice-note
+downloads, and outbound native voice notes. It is not proof that the Meta Cloud
+webhook or WhatsApp Calling product is configured.
+
+Use the voice-owned verifier to inspect the local bridge without printing auth
+keys or session material:
+
+```bash
+scripts/verify_whatsapp_bridge_runtime.py --hermes-home ~/.hermes
+```
+
+The verifier checks:
+
+- the bridge health endpoint is connected
+- `~/.hermes/whatsapp/session/creds.json` has a paired WhatsApp identity
+- the running `whatsapp-bridge/bridge.js` process uses the expected session
+- LID-to-phone mapping files match the paired identity
+- WhatsApp Cloud and Calling environment keys are present or missing
+
+For a full local release gate, use:
+
+```bash
+scripts/verify_local_hermes_voice_stack.sh --hermes-home ~/.hermes
+```
+
+That command verifies installed `voice`, daemon-aware CLI/MCP behavior,
+WhatsApp-ready Ogg/Opus output, the Baileys bridge identity, the Hermes gateway
+voice-stream service, and the WebRTC sidecar contract. Add
+`--require-whatsapp-cloud` or `--require-whatsapp-calling` only when the host is
+expected to have real Meta Cloud credentials.
+
+Cloud/Calling readiness requires these external Meta settings in addition to
+the local sidecar:
+
+- `WHATSAPP_CLOUD_PHONE_NUMBER_ID`
+- `WHATSAPP_CLOUD_ACCESS_TOKEN`
+- `WHATSAPP_CLOUD_APP_SECRET`
+- `WHATSAPP_CLOUD_VERIFY_TOKEN`
+- `WHATSAPP_CLOUD_CALLING_SIDECAR_URL`
+- `WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND`
+
 ## Deployment Split
 
 ### Voice Notes

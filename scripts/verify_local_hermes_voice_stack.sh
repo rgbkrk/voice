@@ -12,6 +12,7 @@ skip_hermes_config="${SKIP_HERMES_CONFIG:-0}"
 skip_hermes_tts_smoke="${SKIP_HERMES_TTS_SMOKE:-0}"
 skip_hermes_gateway="${SKIP_HERMES_GATEWAY:-0}"
 skip_sidecar="${SKIP_SIDECAR:-0}"
+skip_whatsapp_bridge="${SKIP_WHATSAPP_BRIDGE:-0}"
 skip_systemd="${SKIP_SYSTEMD:-0}"
 skip_cli_mcp="${SKIP_CLI_MCP:-0}"
 skip_daemon="${SKIP_DAEMON:-0}"
@@ -20,11 +21,19 @@ run_webrtc_loopback_smoke="${RUN_WEBRTC_LOOPBACK_SMOKE:-0}"
 webrtc_python="${VOICE_WEBRTC_PYTHON:-python3}"
 webrtc_timeout="${VOICE_WEBRTC_TIMEOUT:-60}"
 max_queued_tx_ms="${MAX_QUEUED_TX_MS:-1000}"
+whatsapp_bridge_url="${WHATSAPP_BRIDGE_URL:-http://127.0.0.1:3000}"
+whatsapp_session_dir="${WHATSAPP_SESSION_DIR:-}"
+whatsapp_env_file="${WHATSAPP_ENV_FILE:-}"
+expected_whatsapp_agent_number="${WHATSAPP_AGENT_NUMBER:-}"
+expected_whatsapp_agent_name="${WHATSAPP_AGENT_NAME:-}"
+require_whatsapp_cloud="${REQUIRE_WHATSAPP_CLOUD:-0}"
+require_whatsapp_calling="${REQUIRE_WHATSAPP_CALLING:-0}"
 
 hermes_config_verify_script="${HERMES_CONFIG_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_voice_config.py}"
 hermes_gateway_verify_script="${HERMES_GATEWAY_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_gateway_service.py}"
 cli_mcp_surface_verify_script="${CLI_MCP_SURFACE_VERIFY_SCRIPT:-$repo_root/scripts/verify_cli_mcp_surface.py}"
 whatsapp_contract_verify_script="${WHATSAPP_CONTRACT_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_voice_contract.sh}"
+whatsapp_bridge_verify_script="${WHATSAPP_BRIDGE_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_bridge_runtime.py}"
 sidecar_service_verify_script="${SIDECAR_SERVICE_VERIFY_SCRIPT:-$repo_root/scripts/verify_webrtc_sidecar_service.py}"
 webrtc_loopback_smoke_script="${WEBRTC_LOOPBACK_SMOKE_SCRIPT:-$repo_root/examples/webrtc-sidecar/full_duplex_loopback_smoke.py}"
 
@@ -48,10 +57,20 @@ Options:
   --skip-hermes-tts-smoke      validate Hermes config without executing TTS
   --skip-hermes-gateway        skip running Hermes gateway service verification
   --skip-cli-mcp               skip plain CLI/MCP daemon surface verification
+  --skip-whatsapp-bridge       skip local WhatsApp bridge identity verification
   --skip-sidecar               skip WebRTC sidecar service verification
   --skip-systemd               skip Hermes gateway, sidecar, and daemon systemd service checks
   --skip-daemon                skip daemon-backed stream checks
   --skip-stt-smoke             skip stream-transcribe smoke
+  --whatsapp-bridge-url URL    Baileys bridge URL (default: http://127.0.0.1:3000)
+  --whatsapp-session-dir PATH  Baileys multi-file auth session directory
+  --whatsapp-env-file PATH     Hermes env file with WhatsApp settings
+  --expected-whatsapp-agent-number NUMBER
+                               require Baileys creds to be paired to this number
+  --expected-whatsapp-agent-name NAME
+                               require Baileys creds to expose this profile name
+  --require-whatsapp-cloud     fail when WhatsApp Cloud credentials are missing
+  --require-whatsapp-calling   fail when Cloud Calling credentials/readiness are missing
   --run-webrtc-loopback-smoke  run one local full-duplex WebRTC media turn
   --webrtc-python PATH         Python used for the WebRTC smoke (default: python3)
   --webrtc-timeout SECONDS     timeout passed to the WebRTC smoke (default: 60)
@@ -61,8 +80,11 @@ Options:
 Environment aliases:
   VOICE_BIN, HERMES_CONFIG, SIDECAR_URL, TEXT
   SKIP_HERMES_CONFIG=1, SKIP_HERMES_TTS_SMOKE=1, SKIP_SIDECAR=1
-  SKIP_HERMES_GATEWAY=1, SKIP_SYSTEMD=1, SKIP_CLI_MCP=1
+  SKIP_HERMES_GATEWAY=1, SKIP_WHATSAPP_BRIDGE=1, SKIP_SYSTEMD=1, SKIP_CLI_MCP=1
   SKIP_DAEMON=1, SKIP_STT_SMOKE=1, RUN_WEBRTC_LOOPBACK_SMOKE=1
+  WHATSAPP_BRIDGE_URL, WHATSAPP_SESSION_DIR, WHATSAPP_ENV_FILE
+  WHATSAPP_AGENT_NUMBER, WHATSAPP_AGENT_NAME
+  REQUIRE_WHATSAPP_CLOUD=1, REQUIRE_WHATSAPP_CALLING=1
   VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
 EOF
 }
@@ -147,6 +169,10 @@ while [[ $# -gt 0 ]]; do
       skip_sidecar=1
       shift
       ;;
+    --skip-whatsapp-bridge)
+      skip_whatsapp_bridge=1
+      shift
+      ;;
     --skip-cli-mcp)
       skip_cli_mcp=1
       shift
@@ -161,6 +187,39 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-stt-smoke)
       skip_stt_smoke=1
+      shift
+      ;;
+    --whatsapp-bridge-url)
+      [[ $# -ge 2 ]] || fail "--whatsapp-bridge-url requires a URL"
+      whatsapp_bridge_url="$2"
+      shift 2
+      ;;
+    --whatsapp-session-dir)
+      [[ $# -ge 2 ]] || fail "--whatsapp-session-dir requires a path"
+      whatsapp_session_dir="$2"
+      shift 2
+      ;;
+    --whatsapp-env-file)
+      [[ $# -ge 2 ]] || fail "--whatsapp-env-file requires a path"
+      whatsapp_env_file="$2"
+      shift 2
+      ;;
+    --expected-whatsapp-agent-number)
+      [[ $# -ge 2 ]] || fail "--expected-whatsapp-agent-number requires a value"
+      expected_whatsapp_agent_number="$2"
+      shift 2
+      ;;
+    --expected-whatsapp-agent-name)
+      [[ $# -ge 2 ]] || fail "--expected-whatsapp-agent-name requires a value"
+      expected_whatsapp_agent_name="$2"
+      shift 2
+      ;;
+    --require-whatsapp-cloud)
+      require_whatsapp_cloud=1
+      shift
+      ;;
+    --require-whatsapp-calling)
+      require_whatsapp_calling=1
       shift
       ;;
     --run-webrtc-loopback-smoke)
@@ -200,6 +259,9 @@ elif ! command -v "$voice_bin" >/dev/null 2>&1; then
 fi
 
 require_executable "$whatsapp_contract_verify_script" "WhatsApp voice contract verifier"
+if [[ "$skip_whatsapp_bridge" != "1" ]]; then
+  require_executable "$whatsapp_bridge_verify_script" "WhatsApp bridge runtime verifier"
+fi
 if [[ "$skip_hermes_config" != "1" ]]; then
   require_executable "$hermes_config_verify_script" "Hermes voice config verifier"
   require_file "$hermes_config" "Hermes config"
@@ -282,6 +344,39 @@ else
 fi
 run_step "Voice WhatsApp and streaming contract" "${whatsapp_args[@]}"
 
+if [[ "$skip_whatsapp_bridge" != "1" ]]; then
+  whatsapp_bridge_args=(
+    "$whatsapp_bridge_verify_script"
+    --hermes-home "$hermes_home"
+    --bridge-url "$whatsapp_bridge_url"
+  )
+  if [[ -n "$whatsapp_session_dir" ]]; then
+    whatsapp_bridge_args+=(--session-dir "$whatsapp_session_dir")
+  fi
+  if [[ -n "$whatsapp_env_file" ]]; then
+    whatsapp_bridge_args+=(--env-file "$whatsapp_env_file")
+  fi
+  if [[ -n "$expected_whatsapp_agent_number" ]]; then
+    whatsapp_bridge_args+=(--expected-agent-number "$expected_whatsapp_agent_number")
+  fi
+  if [[ -n "$expected_whatsapp_agent_name" ]]; then
+    whatsapp_bridge_args+=(--expected-agent-name "$expected_whatsapp_agent_name")
+  fi
+  if [[ "$skip_systemd" == "1" ]]; then
+    whatsapp_bridge_args+=(--skip-systemd)
+  fi
+  if [[ "$require_whatsapp_cloud" == "1" ]]; then
+    whatsapp_bridge_args+=(--require-whatsapp-cloud)
+  fi
+  if [[ "$require_whatsapp_calling" == "1" ]]; then
+    whatsapp_bridge_args+=(--require-whatsapp-calling)
+  fi
+  run_step "WhatsApp bridge identity and credential readiness" "${whatsapp_bridge_args[@]}"
+  whatsapp_bridge_status="checked"
+else
+  whatsapp_bridge_status="skipped"
+fi
+
 if [[ "$skip_sidecar" != "1" ]]; then
   sidecar_args=(
     "$sidecar_service_verify_script"
@@ -317,5 +412,6 @@ echo "hermes_config=$hermes_status"
 echo "hermes_gateway=$hermes_gateway_status"
 echo "cli_mcp=$cli_mcp_status"
 echo "whatsapp_contract=checked"
+echo "whatsapp_bridge=$whatsapp_bridge_status"
 echo "sidecar_service=$sidecar_status"
 echo "webrtc_loopback=$webrtc_loopback_status"

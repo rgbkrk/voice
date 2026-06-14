@@ -99,6 +99,18 @@ Pass `--stt-audio ~/.hermes/audio_cache/aud_...ogg` to execute the configured
 STT command against a cached inbound WhatsApp voice note; the verifier only
 reports transcript size, not transcript text.
 
+To generate or install the voice-owned provider blocks, run:
+
+```bash
+scripts/install_hermes_voice_config.py --print-snippet --voice-bin "$(command -v voice)"
+scripts/install_hermes_voice_config.py --config ~/.hermes/config.yaml --voice-bin "$(command -v voice)"
+scripts/install_hermes_voice_config.py --config ~/.hermes/config.yaml --voice-bin "$(command -v voice)" --apply
+```
+
+The default run is a dry run: it patches a temporary copy and verifies the
+resulting shape. `--apply` writes the config, keeps a timestamped backup unless
+`--no-backup` is passed, and reruns the Hermes config verifier.
+
 Validate the command-provider shape locally before wiring or restarting
 Hermes:
 

@@ -390,6 +390,19 @@ stt:
       format: txt
 ```
 
+To avoid hand-editing `~/.hermes/config.yaml`, generate or install the same
+voice-native provider blocks with:
+
+```bash
+scripts/install_hermes_voice_config.py --print-snippet --voice-bin "$(command -v voice)"
+scripts/install_hermes_voice_config.py --config ~/.hermes/config.yaml --voice-bin "$(command -v voice)"
+scripts/install_hermes_voice_config.py --config ~/.hermes/config.yaml --voice-bin "$(command -v voice)" --apply
+```
+
+Without `--apply`, the installer performs a dry run and verifies the patched
+config in a temporary file. With `--apply`, it keeps a timestamped backup and
+runs `scripts/verify_hermes_voice_config.py` on the result.
+
 `scripts/verify_hermes_voice_config.py` accepts either these shims or direct
 `voice say --format ogg-opus` / `voice stream-transcribe --quiet` commands, and
 rejects arbitrary wrappers so config drift is caught locally. Add

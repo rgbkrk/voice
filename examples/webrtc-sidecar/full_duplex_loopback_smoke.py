@@ -23,6 +23,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import uuid
 from typing import Any
 
 from aiohttp import ClientSession, web
@@ -191,13 +192,25 @@ async def post_offer(
         return body
 
 
+async def close_sidecar_call(
+    session: ClientSession,
+    base_url: str,
+    call_id: str,
+) -> dict[str, Any]:
+    async with session.post(f"{base_url}/calls/{call_id}/close") as response:
+        body = await response.json()
+        if response.status != 200:
+            raise RuntimeError(f"close call failed ({response.status}): {body}")
+        return body
+
+
 async def verify_full_duplex_call(
     *,
     args: argparse.Namespace,
     base_url: str,
     inbound_pcm: bytes,
 ) -> dict[str, Any]:
-    call_id = "full-duplex-loopback"
+    call_id = args.call_id
     pc = sidecar.RTCPeerConnection()
     track_future = asyncio.get_running_loop().create_future()
 
@@ -209,78 +222,91 @@ async def verify_full_duplex_call(
     pc.addTrack(PcmBytesTrack(inbound_pcm))
     try:
         async with ClientSession() as session:
-            answer = await post_offer(session, base_url, call_id, pc)
-            await pc.setRemoteDescription(
-                sidecar.RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
-            )
-            track = await asyncio.wait_for(track_future, timeout=args.timeout)
-
-            post_task = asyncio.create_task(
-                run_post_voice_stream(
-                    call_id=call_id,
-                    sidecar_url=base_url,
-                    voice_bin=args.voice_bin,
-                    text=args.outbound_text,
-                    voice=args.voice,
-                    speed=args.speed,
-                    timeout_s=args.timeout,
-                )
-            )
-            drain_task = asyncio.create_task(
-                drain_decoded_pcm(
-                    session,
-                    base_url,
-                    call_id,
-                    target_bytes=len(inbound_pcm),
-                    timeout_s=args.timeout,
-                )
-            )
+            result: dict[str, Any] | None = None
             try:
-                outbound_webrtc_bytes = await wait_for_non_silent_track(
-                    track,
-                    timeout_s=args.timeout,
+                answer = await post_offer(session, base_url, call_id, pc)
+                await pc.setRemoteDescription(
+                    sidecar.RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
                 )
-                decoded_pcm = await drain_task
-                return_code, stderr = await post_task
-            except Exception:
-                for task in (post_task, drain_task):
-                    task.cancel()
-                await asyncio.gather(post_task, drain_task, return_exceptions=True)
-                raise
+                track = await asyncio.wait_for(track_future, timeout=args.timeout)
 
-            if return_code != 0:
-                raise RuntimeError(
-                    f"post_voice_stream.py exited with {return_code}: {stderr.strip()}"
+                post_task = asyncio.create_task(
+                    run_post_voice_stream(
+                        call_id=call_id,
+                        sidecar_url=base_url,
+                        voice_bin=args.voice_bin,
+                        text=args.outbound_text,
+                        voice=args.voice,
+                        speed=args.speed,
+                        timeout_s=args.timeout,
+                    )
                 )
-
-            async with session.get(f"{base_url}/calls/{call_id}") as response:
-                status = await response.json()
-                if response.status != 200:
-                    raise RuntimeError(f"status failed ({response.status}): {status}")
-
-            clear_audio = None
-            if not args.skip_clear_audio_smoke:
-                clear_audio = await verify_clear_audio(
-                    session,
-                    base_url,
-                    call_id,
-                    status["audio"],
+                drain_task = asyncio.create_task(
+                    drain_decoded_pcm(
+                        session,
+                        base_url,
+                        call_id,
+                        target_bytes=len(inbound_pcm),
+                        timeout_s=args.timeout,
+                    )
                 )
+                try:
+                    outbound_webrtc_bytes = await wait_for_non_silent_track(
+                        track,
+                        timeout_s=args.timeout,
+                    )
+                    decoded_pcm = await drain_task
+                    return_code, stderr = await post_task
+                except Exception:
+                    for task in (post_task, drain_task):
+                        task.cancel()
+                    await asyncio.gather(post_task, drain_task, return_exceptions=True)
+                    raise
 
-            return {
-                "call_id": call_id,
-                "decoded_pcm": decoded_pcm,
-                "outbound_webrtc_bytes": outbound_webrtc_bytes,
-                "queued_tx_bytes": status.get("queued_tx_bytes"),
-                "queued_tx_ms": status.get("queued_tx_ms"),
-                "queued_rx_bytes": status.get("queued_rx_bytes"),
-                "queued_rx_ms": status.get("queued_rx_ms"),
-                "max_tx_queue_ms": status.get("max_tx_queue_ms"),
-                "max_rx_queue_bytes": status.get("max_rx_queue_bytes"),
-                "max_rx_queue_ms": status.get("max_rx_queue_ms"),
-                "audio": sidecar.audio_contract(),
-                "clear_audio": clear_audio if clear_audio is not None else "skipped",
-            }
+                if return_code != 0:
+                    raise RuntimeError(
+                        f"post_voice_stream.py exited with {return_code}: {stderr.strip()}"
+                    )
+
+                async with session.get(f"{base_url}/calls/{call_id}") as response:
+                    status = await response.json()
+                    if response.status != 200:
+                        raise RuntimeError(f"status failed ({response.status}): {status}")
+
+                clear_audio = None
+                if not args.skip_clear_audio_smoke:
+                    clear_audio = await verify_clear_audio(
+                        session,
+                        base_url,
+                        call_id,
+                        status["audio"],
+                    )
+
+                result = {
+                    "call_id": call_id,
+                    "decoded_pcm": decoded_pcm,
+                    "outbound_webrtc_bytes": outbound_webrtc_bytes,
+                    "queued_tx_bytes": status.get("queued_tx_bytes"),
+                    "queued_tx_ms": status.get("queued_tx_ms"),
+                    "queued_rx_bytes": status.get("queued_rx_bytes"),
+                    "queued_rx_ms": status.get("queued_rx_ms"),
+                    "max_tx_queue_ms": status.get("max_tx_queue_ms"),
+                    "max_rx_queue_bytes": status.get("max_rx_queue_bytes"),
+                    "max_rx_queue_ms": status.get("max_rx_queue_ms"),
+                    "audio": sidecar.audio_contract(),
+                    "clear_audio": clear_audio if clear_audio is not None else "skipped",
+                }
+                return result
+            finally:
+                try:
+                    close_result = await close_sidecar_call(session, base_url, call_id)
+                except Exception as exc:
+                    if result is not None:
+                        result["close_call"] = {"success": False, "error": str(exc)}
+                        raise
+                else:
+                    if result is not None:
+                        result["close_call"] = close_result
     finally:
         await pc.close()
 
@@ -298,7 +324,11 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 
     inbound_path = workdir / "inbound-source.s16le"
     decoded_path = workdir / "sidecar-decoded.s16le"
-    runner, base_url = await start_sidecar_app()
+    runner: web.AppRunner | None = None
+    if args.sidecar_url:
+        base_url = args.sidecar_url.rstrip("/")
+    else:
+        runner, base_url = await start_sidecar_app()
     try:
         run_voice_stream(
             voice_bin=voice_bin,
@@ -359,7 +389,8 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "stt": transcript_event["data"],
         }
     finally:
-        await runner.cleanup()
+        if runner is not None:
+            await runner.cleanup()
         if remove_workdir:
             shutil.rmtree(workdir, ignore_errors=True)
 
@@ -367,6 +398,17 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--voice-bin", default=os.environ.get("VOICE_BIN", "voice"))
+    parser.add_argument(
+        "--sidecar-url",
+        help=(
+            "use an already running sidecar service instead of starting an "
+            "in-process sidecar"
+        ),
+    )
+    parser.add_argument(
+        "--call-id",
+        help="call ID to use for the smoke; defaults to a unique local ID",
+    )
     parser.add_argument("--voice", default="af_heart")
     parser.add_argument("--speed", default="1.0")
     parser.add_argument("--timeout", type=float, default=60.0)
@@ -399,6 +441,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-queued-tx-ms must be non-negative")
     if args.expect_word is None:
         args.expect_word = list(DEFAULT_EXPECT_WORDS)
+    if args.call_id is None:
+        args.call_id = f"full-duplex-loopback-{uuid.uuid4().hex[:8]}"
     return args
 
 

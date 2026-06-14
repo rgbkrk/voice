@@ -290,6 +290,8 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 str(smoke),
                 "--voice-bin",
                 str(voice),
+                "--sidecar-url",
+                "http://127.0.0.1:8787",
                 "--timeout",
                 "12.5",
                 "--outbound-text",

@@ -86,8 +86,10 @@ scripts/verify_local_hermes_voice_stack.sh --voice-bin "$(command -v voice)"
 
 The aggregate stack verifier checks the Hermes config, the running
 `hermes-gateway.service` drop-in, CLI/MCP daemon behavior, Ogg/Opus voice-note
-output, raw stream frames, stream STT, and the WebRTC sidecar service. Use
-`--skip-systemd` only for non-service CI-style runs.
+output, raw stream frames, stream STT, and the WebRTC sidecar service. When
+`--run-webrtc-loopback-smoke` is enabled, the media smoke targets the configured
+sidecar service URL instead of an in-process sidecar. Use `--skip-systemd` only
+for non-service CI-style runs.
 
 ---
 

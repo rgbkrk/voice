@@ -30,6 +30,8 @@ def test_parse_args_uses_default_expected_words(monkeypatch):
     assert args.expect_word == ["hello", "world"]
     assert args.max_queued_tx_ms == smoke.DEFAULT_MAX_QUEUED_TX_MS
     assert args.skip_clear_audio_smoke is False
+    assert args.sidecar_url is None
+    assert args.call_id.startswith("full-duplex-loopback-")
 
 
 def test_parse_args_replaces_default_expected_words(monkeypatch):
@@ -48,6 +50,10 @@ def test_parse_args_replaces_default_expected_words(monkeypatch):
             "--max-queued-tx-ms",
             "250",
             "--skip-clear-audio-smoke",
+            "--sidecar-url",
+            "http://127.0.0.1:8787/",
+            "--call-id",
+            "call-123",
         ],
     )
 
@@ -57,6 +63,8 @@ def test_parse_args_replaces_default_expected_words(monkeypatch):
     assert args.expect_word == ["testing", "two"]
     assert args.max_queued_tx_ms == 250
     assert args.skip_clear_audio_smoke is True
+    assert args.sidecar_url == "http://127.0.0.1:8787/"
+    assert args.call_id == "call-123"
 
 
 def test_parse_args_rejects_negative_queue_budget(monkeypatch):

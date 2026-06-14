@@ -301,6 +301,7 @@ if [[ "$run_webrtc_loopback_smoke" == "1" ]]; then
   run_step "Full-duplex WebRTC media smoke" \
     "$webrtc_python" "$webrtc_loopback_smoke_script" \
     --voice-bin "$voice_bin" \
+    --sidecar-url "$sidecar_url" \
     --timeout "$webrtc_timeout" \
     --outbound-text "$text" \
     --max-queued-tx-ms "$max_queued_tx_ms"

@@ -774,6 +774,10 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         components = {item["name"]: item for item in payload["components"]}
         command = components["whatsapp_voice_note_send_receive"]["command"]
         self.assertIn("--send", command)
+        self.assertIn(
+            "Please reply with a fresh WhatsApp voice note so I can verify the voice runtime.",
+            command,
+        )
         self.assertIn("--wait-inbound-seconds", command)
         self.assertIn("60.0", command)
         self.assertIn("--require-inbound-audio", command)
@@ -836,6 +840,11 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         components = {item["name"]: item for item in payload["components"]}
         self.assertIn("whatsapp_voice_note_send", components)
         self.assertIn("whatsapp_inbound_cache_fresh_stt", components)
+        send_command = components["whatsapp_voice_note_send"]["command"]
+        self.assertIn(
+            "Please reply with a fresh WhatsApp voice note so I can verify the voice runtime.",
+            send_command,
+        )
         command = components["whatsapp_inbound_cache_fresh_stt"]["command"]
         self.assertIn("--wait-fresh-seconds", command)
         self.assertIn("60.0", command)
@@ -863,6 +872,39 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertEqual(
             [action["id"] for action in summary["next_actions"]],
             ["configure_whatsapp_cloud_calling"],
+        )
+
+    def test_attended_profile_keeps_explicit_text(self):
+        inbound_cache_payload = {
+            "success": True,
+            "checks": {
+                "selected_files": [],
+                "audio": [],
+                "fresh_watch": {
+                    "drains_bridge_messages": False,
+                    "fresh_files": [],
+                    "fresh_count": 0,
+                },
+            },
+            "failures": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                "--profile",
+                "attended-cache-receive",
+                "--text",
+                "Custom attended prompt.",
+                skip_voice_note_smoke=False,
+                inbound_cache_payload=inbound_cache_payload,
+            )
+
+        components = {item["name"]: item for item in payload["components"]}
+        send_command = components["whatsapp_voice_note_send"]["command"]
+        self.assertIn("Custom attended prompt.", send_command)
+        self.assertNotIn(
+            "Please reply with a fresh WhatsApp voice note so I can verify the voice runtime.",
+            send_command,
         )
 
     def test_cached_receive_verified_survives_optional_fresh_watch_timeout(self):

@@ -8,6 +8,8 @@ hermes_config="${HERMES_CONFIG:-${HOME:-}/.hermes/config.yaml}"
 hermes_home="${HERMES_HOME:-${HOME:-}/.hermes}"
 sidecar_url="${SIDECAR_URL:-http://127.0.0.1:8787}"
 text="${TEXT:-Local Hermes voice stack smoke test.}"
+default_stack_text="Local Hermes voice stack smoke test."
+default_attended_alpha_text="Please reply with a fresh WhatsApp voice note so I can verify the voice runtime."
 skip_hermes_config="${SKIP_HERMES_CONFIG:-0}"
 skip_hermes_tts_smoke="${SKIP_HERMES_TTS_SMOKE:-0}"
 skip_hermes_stt_smoke="${SKIP_HERMES_STT_SMOKE:-0}"
@@ -20,6 +22,7 @@ skip_daemon="${SKIP_DAEMON:-0}"
 skip_stt_smoke="${SKIP_STT_SMOKE:-0}"
 run_whatsapp_inbound_cache_smoke="${RUN_WHATSAPP_INBOUND_CACHE_SMOKE:-0}"
 whatsapp_alpha_profile="${WHATSAPP_ALPHA_PROFILE:-}"
+whatsapp_alpha_text="${WHATSAPP_ALPHA_TEXT:-}"
 whatsapp_alpha_voice_note_chat_id="${WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID:-}"
 whatsapp_alpha_wait_audio_cache_seconds="${WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS:-}"
 whatsapp_alpha_wait_inbound_seconds="${WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS:-}"
@@ -96,6 +99,9 @@ Options:
                                run categorized alpha readiness profile:
                                unattended, cached-receive, send,
                                attended-cache-receive, attended-send-receive
+  --whatsapp-alpha-text TEXT   override only the alpha profile TTS text; useful
+                               for attended prompts without changing generic
+                               stack smoke text
   --whatsapp-alpha-chat-id ID  override WHATSAPP_HOME_CHANNEL for alpha sends
   --whatsapp-alpha-wait-audio-cache-seconds SECONDS
                                override attended-cache-receive cache watch time
@@ -120,8 +126,9 @@ Environment aliases:
   REQUIRE_WHATSAPP_CLOUD=1, REQUIRE_WHATSAPP_CALLING=1
   REQUIRE_WHATSAPP_ALPHA_COMPLETE=1, CHECK_WHATSAPP_CLOUD_API=1
   RUN_WHATSAPP_INBOUND_CACHE_SMOKE=1, WHATSAPP_ALPHA_PROFILE
-  WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID, WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS
-  WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS, WHATSAPP_ALPHA_JSON_OUTPUT
+  WHATSAPP_ALPHA_TEXT, WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID
+  WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS, WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS
+  WHATSAPP_ALPHA_JSON_OUTPUT
   VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
 EOF
 }
@@ -390,6 +397,11 @@ while [[ $# -gt 0 ]]; do
       whatsapp_alpha_profile="$2"
       shift 2
       ;;
+    --whatsapp-alpha-text)
+      [[ $# -ge 2 ]] || fail "--whatsapp-alpha-text requires a value"
+      whatsapp_alpha_text="$2"
+      shift 2
+      ;;
     --whatsapp-alpha-chat-id)
       [[ $# -ge 2 ]] || fail "--whatsapp-alpha-chat-id requires a chat id"
       whatsapp_alpha_voice_note_chat_id="$2"
@@ -636,6 +648,16 @@ else
 fi
 
 if [[ -n "$whatsapp_alpha_profile" ]]; then
+  alpha_text="$text"
+  if [[ -n "$whatsapp_alpha_text" ]]; then
+    alpha_text="$whatsapp_alpha_text"
+  elif [[ "$text" == "$default_stack_text" ]]; then
+    case "$whatsapp_alpha_profile" in
+      attended-cache-receive|attended-send-receive)
+        alpha_text="$default_attended_alpha_text"
+        ;;
+    esac
+  fi
   whatsapp_alpha_args=(
     "$whatsapp_alpha_readiness_script"
     --voice-bin "$voice_bin"
@@ -644,7 +666,7 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
     --bridge-url "$whatsapp_bridge_url"
     --sidecar-url "$sidecar_url"
     --profile "$whatsapp_alpha_profile"
-    --text "$text"
+    --text "$alpha_text"
   )
   if [[ -n "$whatsapp_audio_cache_dir" ]]; then
     whatsapp_alpha_args+=(--whatsapp-audio-cache-dir "$whatsapp_audio_cache_dir")

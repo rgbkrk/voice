@@ -534,6 +534,64 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             ],
         )
 
+    def test_whatsapp_alpha_text_overrides_only_alpha_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            hermes = tmp_path / "verify_hermes.py"
+            cli_mcp = tmp_path / "verify_cli_mcp.py"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            alpha = tmp_path / "verify_alpha.py"
+            voice = tmp_path / "voice"
+            config = tmp_path / "config.yaml"
+
+            write_helper(hermes, "hermes", log_path)
+            write_helper(cli_mcp, "cli_mcp", log_path)
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_helper(alpha, "alpha", log_path)
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+            config.write_text("tts: {}\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-config",
+                    str(config),
+                    "--skip-hermes-gateway",
+                    "--skip-whatsapp-bridge",
+                    "--skip-sidecar",
+                    "--skip-systemd",
+                    "--skip-daemon",
+                    "--whatsapp-alpha-profile",
+                    "attended-cache-receive",
+                    "--whatsapp-alpha-text",
+                    "Please send a short test voice note back to Quill.",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "HERMES_CONFIG_VERIFY_SCRIPT": str(hermes),
+                    "CLI_MCP_SURFACE_VERIFY_SCRIPT": str(cli_mcp),
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_ALPHA_READINESS_SCRIPT": str(alpha),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+
+        self.assertIn("whatsapp_alpha=attended-cache-receive", result.stdout)
+        self.assertEqual([entry[0] for entry in entries], ["hermes", "cli_mcp", "whatsapp", "alpha"])
+        self.assertIn("--text", entries[0])
+        self.assertIn("Local Hermes voice stack smoke test.", entries[0])
+        alpha_entry = entries[3]
+        self.assertIn("--text", alpha_entry)
+        self.assertIn("Please send a short test voice note back to Quill.", alpha_entry)
+        self.assertNotIn("Local Hermes voice stack smoke test.", alpha_entry)
+
     def test_require_whatsapp_alpha_complete_requires_alpha_profile(self):
         result = subprocess.run(
             [

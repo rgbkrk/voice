@@ -95,9 +95,13 @@ while Hermes is already running; it watches `~/.hermes/audio_cache` for a fresh
 should poll and drain the bridge `/messages` queue. The stack gate also accepts
 `--whatsapp-alpha-chat-id`, `--whatsapp-alpha-wait-audio-cache-seconds`, and
 `--whatsapp-alpha-wait-inbound-seconds` so attended tests do not need to drop
-down to the lower-level alpha script. When `--whatsapp-alpha-json-output` is
-set, the stack gate runs the alpha profile with `--json` and saves that
-structured report for another agent or runbook step to consume.
+down to the lower-level alpha script. For attended profiles, the default alpha
+voice note asks the recipient to reply with a fresh voice note. Use
+`--whatsapp-alpha-text` when the prompt should be different without changing
+the generic stack smoke text used by the other checks. When
+`--whatsapp-alpha-json-output` is set, the stack gate runs the alpha profile
+with `--json` and saves that structured report for another agent or runbook
+step to consume.
 
 Cached receive profiles also pass the newest cached inbound `aud_*` file to
 the Hermes config verifier, so the configured STT command provider is exercised
@@ -209,7 +213,9 @@ fresh inbound `aud_*` file without polling the bridge message queue. If Hermes
 is not running and the verifier itself must consume bridge events, use the
 draining profile instead. The alpha readiness handoff prints both commands with
 explicit 60-second wait windows so copied commands and saved JSON artifacts are
-self-contained:
+self-contained. By default, attended profiles synthesize a clear reply prompt;
+pass `--text` to the lower-level alpha script when you want different spoken
+prompt text:
 
 ```bash
 scripts/verify_whatsapp_alpha_readiness.py \

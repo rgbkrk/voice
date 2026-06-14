@@ -16,6 +16,10 @@ from typing import Any
 
 DEFAULT_BRIDGE_URL = "http://127.0.0.1:3000"
 DEFAULT_SIDECAR_URL = "http://127.0.0.1:8787"
+DEFAULT_TEXT = "WhatsApp alpha readiness smoke."
+DEFAULT_ATTENDED_PROMPT_TEXT = (
+    "Please reply with a fresh WhatsApp voice note so I can verify the voice runtime."
+)
 PROFILE_CHOICES = (
     "unattended",
     "cached-receive",
@@ -1101,7 +1105,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--whatsapp-audio-cache-dir", type=Path, default=None)
     parser.add_argument("--expected-agent-number", default=os.environ.get("WHATSAPP_AGENT_NUMBER"))
     parser.add_argument("--expected-agent-name", default=os.environ.get("WHATSAPP_AGENT_NAME"))
-    parser.add_argument("--text", default="WhatsApp alpha readiness smoke.")
+    parser.add_argument("--text", default=DEFAULT_TEXT)
+    parser.add_argument(
+        "--attended-prompt-text",
+        default=DEFAULT_ATTENDED_PROMPT_TEXT,
+        help=(
+            "voice-note text to synthesize for attended receive profiles when "
+            "--text is left at the default"
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--voice-timeout", type=float, default=180.0)
     parser.add_argument("--stt-timeout", type=float, default=180.0)
@@ -1172,11 +1184,15 @@ def apply_profile(args: argparse.Namespace) -> None:
     elif args.profile == "attended-cache-receive":
         args.send_voice_note = True
         args.run_inbound_cache_smoke = True
+        if args.text == DEFAULT_TEXT:
+            args.text = args.attended_prompt_text
         if args.wait_audio_cache_seconds == 0:
             args.wait_audio_cache_seconds = DEFAULT_ATTENDED_CACHE_RECEIVE_SECONDS
         args.require_fresh_cache_audio = True
     elif args.profile == "attended-send-receive":
         args.send_voice_note = True
+        if args.text == DEFAULT_TEXT:
+            args.text = args.attended_prompt_text
         if args.wait_inbound_seconds == 0:
             args.wait_inbound_seconds = DEFAULT_ATTENDED_DRAIN_RECEIVE_SECONDS
         args.require_inbound_audio = True

@@ -102,6 +102,8 @@ voice stream-contract
 The contract includes `voice_surfaces`, a machine-readable map from integration
 mode to command: completed Ogg/Opus voice notes, streamed Ogg/Opus files, raw
 outbound PCM, raw inbound PCM, and file-based stream-transcribe smokes.
+`post_voice_stream.py` validates the raw PCM surface metadata when it is
+present so frame-size or transport drift fails before a live call.
 
 Post a remote offer:
 

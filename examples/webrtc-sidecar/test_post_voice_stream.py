@@ -35,6 +35,12 @@ def test_load_audio_contract_matches_sidecar_contract():
     assert contract.default_drain_bytes == 96_000
     assert contract.max_outbound_queue_bytes == 960_000
     assert contract.max_drain_wait_ms == 5_000
+    assert "voice say" in contract.completed_voice_note_command
+    assert "--format ogg-opus" in contract.completed_voice_note_command
+    assert "voice stream" in contract.raw_outbound_pcm_command
+    assert "--raw-output" in contract.raw_outbound_pcm_command
+    assert "voice stream-transcribe" in contract.raw_inbound_pcm_command
+    assert "--raw-input" in contract.raw_inbound_pcm_command
 
 
 def test_load_audio_contract_falls_back_to_voice_stream_contract(monkeypatch, tmp_path: Path):
@@ -70,6 +76,54 @@ def test_load_audio_contract_falls_back_to_voice_stream_contract(monkeypatch, tm
     assert contract.sample_rate == 48_000
     assert contract.frame_bytes == 1_920
     assert calls == [(["/opt/voice", "stream-contract"], True, True, 5, True)]
+
+
+def test_load_audio_contract_validates_voice_surfaces(tmp_path: Path):
+    bridge = load_bridge()
+    contract_path = tmp_path / "contract.json"
+    contract_path.write_text(
+        json.dumps(
+            {
+                "audio": {
+                    "sample_rate": 48_000,
+                    "channels": 1,
+                    "frame_ms": 20,
+                    "encoding": "pcm_s16le",
+                    "frame_bytes": 1_920,
+                    "default_drain_bytes": 96_000,
+                    "max_outbound_queue_bytes": 960_000,
+                    "max_drain_wait_ms": 5_000,
+                },
+                "voice_surfaces": {
+                    "completed_voice_note": {
+                        "command": 'voice say --format ogg-opus --output reply.ogg "hello"',
+                        "output": "audio/ogg; codecs=opus",
+                        "transport": "completed_file",
+                    },
+                    "raw_outbound_pcm": {
+                        "command": 'voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "hello"',
+                        "output": "pcm_s16le",
+                        "transport": "stdout_pcm_frames",
+                        "frame_bytes": 960,
+                    },
+                    "raw_inbound_pcm": {
+                        "command": "voice stream-transcribe --raw-input - --sample-rate 48000 --frame-ms 20",
+                        "input": "pcm_s16le",
+                        "transport": "stdin_pcm_frames",
+                        "frame_bytes": 1_920,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        bridge.load_audio_contract(contract_path)
+    except ValueError as exc:
+        assert "raw_outbound_pcm frame_bytes" in str(exc)
+    else:
+        raise AssertionError("expected mismatched surface frame_bytes to be rejected")
 
 
 def test_load_audio_contract_rejects_invalid_audio_shape(tmp_path: Path):

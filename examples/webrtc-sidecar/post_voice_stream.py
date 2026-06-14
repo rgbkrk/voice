@@ -39,6 +39,9 @@ class AudioContract:
     default_drain_bytes: int = 0
     max_outbound_queue_bytes: int = 0
     max_drain_wait_ms: int = 0
+    completed_voice_note_command: str = ""
+    raw_outbound_pcm_command: str = ""
+    raw_inbound_pcm_command: str = ""
 
 
 class SidecarAudioPostError(RuntimeError):
@@ -67,6 +70,9 @@ def load_audio_contract(
     if not isinstance(audio, dict):
         raise ValueError("contract audio section must be an object")
 
+    surfaces = contract.get("voice_surfaces")
+    surface_commands = validate_voice_surfaces(surfaces, audio)
+
     parsed = AudioContract(
         sample_rate=int(audio["sample_rate"]),
         channels=int(audio["channels"]),
@@ -78,6 +84,9 @@ def load_audio_contract(
         ),
         max_outbound_queue_bytes=int(audio.get("max_outbound_queue_bytes") or 0),
         max_drain_wait_ms=int(audio.get("max_drain_wait_ms") or 0),
+        completed_voice_note_command=surface_commands.get("completed_voice_note", ""),
+        raw_outbound_pcm_command=surface_commands.get("raw_outbound_pcm", ""),
+        raw_inbound_pcm_command=surface_commands.get("raw_inbound_pcm", ""),
     )
 
     if parsed.sample_rate <= 0:
@@ -102,6 +111,88 @@ def load_audio_contract(
         raise ValueError("contract max_drain_wait_ms must be non-negative")
 
     return parsed
+
+
+def validate_voice_surfaces(
+    surfaces: object,
+    audio: dict[str, object],
+) -> dict[str, str]:
+    """Validate optional `voice_surfaces` metadata against the PCM contract."""
+    if surfaces is None:
+        return {}
+    if not isinstance(surfaces, dict):
+        raise ValueError("contract voice_surfaces section must be an object")
+
+    frame_bytes = int(audio["frame_bytes"])
+    encoding = str(audio["encoding"])
+    commands: dict[str, str] = {}
+
+    completed = surface_object(surfaces, "completed_voice_note")
+    if completed.get("output") != "audio/ogg; codecs=opus":
+        raise ValueError("completed_voice_note output must be audio/ogg; codecs=opus")
+    if completed.get("transport") != "completed_file":
+        raise ValueError("completed_voice_note transport must be completed_file")
+    completed_command = surface_command(completed, "completed_voice_note")
+    require_command_parts(
+        completed_command,
+        "completed_voice_note",
+        ["voice say", "--format ogg-opus", "--output"],
+    )
+    commands["completed_voice_note"] = completed_command
+
+    outbound = surface_object(surfaces, "raw_outbound_pcm")
+    if outbound.get("output") != encoding:
+        raise ValueError("raw_outbound_pcm output must match audio.encoding")
+    if outbound.get("transport") != "stdout_pcm_frames":
+        raise ValueError("raw_outbound_pcm transport must be stdout_pcm_frames")
+    if int(outbound.get("frame_bytes") or 0) != frame_bytes:
+        raise ValueError("raw_outbound_pcm frame_bytes must match audio.frame_bytes")
+    outbound_command = surface_command(outbound, "raw_outbound_pcm")
+    require_command_parts(
+        outbound_command,
+        "raw_outbound_pcm",
+        ["voice stream", "--raw-output", "--sample-rate", "--frame-ms"],
+    )
+    commands["raw_outbound_pcm"] = outbound_command
+
+    inbound = surface_object(surfaces, "raw_inbound_pcm")
+    if inbound.get("input") != encoding:
+        raise ValueError("raw_inbound_pcm input must match audio.encoding")
+    if inbound.get("transport") != "stdin_pcm_frames":
+        raise ValueError("raw_inbound_pcm transport must be stdin_pcm_frames")
+    if int(inbound.get("frame_bytes") or 0) != frame_bytes:
+        raise ValueError("raw_inbound_pcm frame_bytes must match audio.frame_bytes")
+    inbound_command = surface_command(inbound, "raw_inbound_pcm")
+    require_command_parts(
+        inbound_command,
+        "raw_inbound_pcm",
+        ["voice stream-transcribe", "--raw-input", "--sample-rate", "--frame-ms"],
+    )
+    commands["raw_inbound_pcm"] = inbound_command
+
+    return commands
+
+
+def surface_object(surfaces: dict[str, object], name: str) -> dict[str, object]:
+    surface = surfaces.get(name)
+    if not isinstance(surface, dict):
+        raise ValueError(f"contract voice_surfaces.{name} must be an object")
+    return surface
+
+
+def surface_command(surface: dict[str, object], name: str) -> str:
+    command = str(surface.get("command") or "")
+    if not command:
+        raise ValueError(f"contract voice_surfaces.{name}.command must be non-empty")
+    return command
+
+
+def require_command_parts(command: str, name: str, parts: list[str]) -> None:
+    missing = [part for part in parts if part not in command]
+    if missing:
+        raise ValueError(
+            f"contract voice_surfaces.{name}.command is missing: {', '.join(missing)}"
+        )
 
 
 def load_contract_from_voice(voice_bin: str | None = None) -> dict[str, object]:

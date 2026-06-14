@@ -182,7 +182,9 @@ Options:
 
 Prints the machine-readable WebRTC sidecar v1 contract generated from the
 `voice-stream` constants. Use this when Hermes, a sidecar, or a test harness is
-installed without a source checkout but still needs the exact PCM frame shape.
+installed without a source checkout but still needs the exact PCM frame shape
+and the `voice_surfaces` command map for voice notes, raw PCM, WebRTC, and
+streaming smokes.
 
 ```
 Usage: voice stream-contract

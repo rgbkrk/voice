@@ -143,7 +143,10 @@ installed `voice` binaries print the same object with `voice stream-contract`.
 The Python sidecar exposes the same object at `GET /contract`. The contract
 defines the fixed PCM audio shape plus the `/offer`, call-state, audio send,
 audio drain, close, and error payloads Hermes needs to drive WhatsApp Calling
-without hard-coding sidecar response shapes.
+without hard-coding sidecar response shapes. Its `voice_surfaces` section also
+maps each local integration mode to the expected `voice` command: completed
+Ogg/Opus voice notes, streamed Ogg/Opus files, raw outbound PCM frames, raw
+inbound PCM transcription, and file-based inbound stream smokes.
 
 The sidecar HTTP API is a local control plane, not a public web API. It should
 bind to localhost or a private socket, with Hermes as the caller. The Python

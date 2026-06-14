@@ -106,6 +106,7 @@ conversion.
 Use `voice stream` to inspect the streaming event flow:
 
 ```bash
+voice stream-contract
 voice stream "Hello from the stream"
 voice stream --json "Hello from the stream"
 voice say --format ogg-opus -o reply.ogg "Hello"
@@ -134,6 +135,15 @@ Ogg/Opus and other compressed formats use `ffmpeg` when available. Use
 `--raw-input -` to pipe decoded WebRTC PCM directly from another process. It is
 a transport smoke test; `voice transcribe` remains the direct file transcription
 command.
+
+`voice stream-contract` prints the same machine-readable sidecar contract used
+by the Python WebRTC example. Besides the fixed PCM shape and HTTP endpoint
+schema, the `voice_surfaces` object maps integration modes to commands:
+`completed_voice_note` for WhatsApp-ready Ogg/Opus files, `streamed_voice_note`
+for Ogg/Opus encoded from daemon frames, `raw_outbound_pcm` for WebRTC TTS
+frames, `raw_inbound_pcm` for decoded WebRTC audio entering STT, and
+`file_transcription_smoke` for replaying an audio file through the inbound
+stream contract.
 
 ## Daemon Protocol
 

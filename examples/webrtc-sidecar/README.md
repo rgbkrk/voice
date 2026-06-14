@@ -99,6 +99,10 @@ curl -sS http://127.0.0.1:8787/health
 voice stream-contract
 ```
 
+The contract includes `voice_surfaces`, a machine-readable map from integration
+mode to command: completed Ogg/Opus voice notes, streamed Ogg/Opus files, raw
+outbound PCM, raw inbound PCM, and file-based stream-transcribe smokes.
+
 Post a remote offer:
 
 ```bash

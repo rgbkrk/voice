@@ -54,6 +54,42 @@ pub fn webrtc_sidecar_contract() -> serde_json::Value {
             "max_inbound_queue_bytes": WEBRTC_MAX_INBOUND_QUEUE_BYTES,
             "max_drain_wait_ms": WEBRTC_MAX_DRAIN_WAIT_MS
         },
+        "voice_surfaces": {
+            "completed_voice_note": {
+                "command": "voice say --format ogg-opus --output reply.ogg \"hello\"",
+                "output": "audio/ogg; codecs=opus",
+                "transport": "completed_file",
+                "use": "WhatsApp voice notes and other upload paths that need an Ogg/Opus file.",
+                "requires": ["ffmpeg for Ogg/Opus encoding"]
+            },
+            "streamed_voice_note": {
+                "command": "voice stream --output reply.ogg --format ogg-opus \"hello\"",
+                "output": "audio/ogg; codecs=opus",
+                "transport": "daemon_stream_encoded_file",
+                "use": "Smoke tests or integrations that want Ogg/Opus encoded from daemon PCM frames without a WAV intermediate.",
+                "requires": ["voice daemon", "ffmpeg for Ogg/Opus encoding"]
+            },
+            "raw_outbound_pcm": {
+                "command": "voice stream --sample-rate 48000 --frame-ms 20 --raw-output - \"hello\"",
+                "output": "pcm_s16le",
+                "transport": "stdout_pcm_frames",
+                "frame_bytes": WEBRTC_FRAME_BYTES,
+                "use": "Outbound WebRTC sidecar audio; stdout contains headerless fixed-size PCM frames."
+            },
+            "raw_inbound_pcm": {
+                "command": "voice stream-transcribe --raw-input - --sample-rate 48000 --frame-ms 20",
+                "input": "pcm_s16le",
+                "transport": "stdin_pcm_frames",
+                "frame_bytes": WEBRTC_FRAME_BYTES,
+                "use": "Inbound WebRTC sidecar audio after RTP/Opus has been decoded to local PCM."
+            },
+            "file_transcription_smoke": {
+                "command": "voice stream-transcribe recording.ogg",
+                "input": "audio_file",
+                "transport": "decoded_file_to_daemon_frames",
+                "use": "Testing the inbound stream-transcribe contract from WAV, Ogg/Opus, or another audio file."
+            }
+        },
         "endpoints": {
             "contract": {
                 "method": "GET",
@@ -554,6 +590,32 @@ mod tests {
             WEBRTC_MAX_INBOUND_QUEUE_BYTES
         );
         assert_eq!(audio["max_drain_wait_ms"], WEBRTC_MAX_DRAIN_WAIT_MS);
+
+        let surfaces = &contract["voice_surfaces"];
+        assert_eq!(
+            surfaces["completed_voice_note"]["output"],
+            "audio/ogg; codecs=opus"
+        );
+        assert_eq!(
+            surfaces["completed_voice_note"]["transport"],
+            "completed_file"
+        );
+        assert_eq!(
+            surfaces["streamed_voice_note"]["transport"],
+            "daemon_stream_encoded_file"
+        );
+        assert_eq!(
+            surfaces["raw_outbound_pcm"]["frame_bytes"],
+            WEBRTC_FRAME_BYTES
+        );
+        assert_eq!(
+            surfaces["raw_inbound_pcm"]["frame_bytes"],
+            WEBRTC_FRAME_BYTES
+        );
+        assert_eq!(
+            surfaces["file_transcription_smoke"]["transport"],
+            "decoded_file_to_daemon_frames"
+        );
 
         let payloads = &contract["payloads"];
         assert_eq!(

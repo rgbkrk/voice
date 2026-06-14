@@ -16,6 +16,47 @@
     "max_inbound_queue_bytes": 960000,
     "max_drain_wait_ms": 5000
   },
+  "voice_surfaces": {
+    "completed_voice_note": {
+      "command": "voice say --format ogg-opus --output reply.ogg \"hello\"",
+      "output": "audio/ogg; codecs=opus",
+      "transport": "completed_file",
+      "use": "WhatsApp voice notes and other upload paths that need an Ogg/Opus file.",
+      "requires": [
+        "ffmpeg for Ogg/Opus encoding"
+      ]
+    },
+    "streamed_voice_note": {
+      "command": "voice stream --output reply.ogg --format ogg-opus \"hello\"",
+      "output": "audio/ogg; codecs=opus",
+      "transport": "daemon_stream_encoded_file",
+      "use": "Smoke tests or integrations that want Ogg/Opus encoded from daemon PCM frames without a WAV intermediate.",
+      "requires": [
+        "voice daemon",
+        "ffmpeg for Ogg/Opus encoding"
+      ]
+    },
+    "raw_outbound_pcm": {
+      "command": "voice stream --sample-rate 48000 --frame-ms 20 --raw-output - \"hello\"",
+      "output": "pcm_s16le",
+      "transport": "stdout_pcm_frames",
+      "frame_bytes": 1920,
+      "use": "Outbound WebRTC sidecar audio; stdout contains headerless fixed-size PCM frames."
+    },
+    "raw_inbound_pcm": {
+      "command": "voice stream-transcribe --raw-input - --sample-rate 48000 --frame-ms 20",
+      "input": "pcm_s16le",
+      "transport": "stdin_pcm_frames",
+      "frame_bytes": 1920,
+      "use": "Inbound WebRTC sidecar audio after RTP/Opus has been decoded to local PCM."
+    },
+    "file_transcription_smoke": {
+      "command": "voice stream-transcribe recording.ogg",
+      "input": "audio_file",
+      "transport": "decoded_file_to_daemon_frames",
+      "use": "Testing the inbound stream-transcribe contract from WAV, Ogg/Opus, or another audio file."
+    }
+  },
   "endpoints": {
     "contract": {
       "method": "GET",

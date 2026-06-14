@@ -1,0 +1,81 @@
+{
+  "contract": "voice.webrtc_sidecar",
+  "version": 1,
+  "status": "experimental",
+  "summary": "Local HTTP/WebRTC bridge contract for WhatsApp Calling and voice streaming experiments.",
+  "audio": {
+    "sample_rate": 48000,
+    "channels": 1,
+    "frame_ms": 20,
+    "encoding": "pcm_s16le",
+    "bytes_per_sample": 2,
+    "samples_per_frame": 960,
+    "frame_bytes": 1920,
+    "default_drain_bytes": 96000,
+    "max_inbound_queue_bytes": 960000,
+    "max_drain_wait_ms": 5000
+  },
+  "endpoints": {
+    "contract": {
+      "method": "GET",
+      "path": "/contract",
+      "description": "Return this machine-readable contract."
+    },
+    "health": {
+      "method": "GET",
+      "path": "/health",
+      "description": "Return process health, active call IDs, and the fixed audio shape."
+    },
+    "offer": {
+      "method": "POST",
+      "path": "/offer",
+      "description": "Create or replace a call session from a remote SDP offer and return a local SDP answer."
+    },
+    "call_status": {
+      "method": "GET",
+      "path": "/calls/{call_id}",
+      "description": "Inspect a live call session and queue depths."
+    },
+    "receive_audio": {
+      "method": "GET",
+      "path": "/calls/{call_id}/audio",
+      "query": {
+        "max_bytes": "Positive byte count aligned to whole s16le samples. Defaults to audio.default_drain_bytes and is capped by audio.max_inbound_queue_bytes.",
+        "wait_ms": "Optional non-negative long-poll timeout. Capped by audio.max_drain_wait_ms."
+      },
+      "description": "Drain decoded inbound PCM from a live call session."
+    },
+    "send_audio": {
+      "method": "POST",
+      "path": "/calls/{call_id}/audio",
+      "description": "Queue outbound PCM for a live call session."
+    },
+    "close_call": {
+      "method": "POST",
+      "path": "/calls/{call_id}/close",
+      "description": "Close and remove a live call session."
+    }
+  },
+  "payloads": {
+    "send_audio_request": {
+      "sample_rate": "audio.sample_rate",
+      "channels": "audio.channels",
+      "frame_ms": "audio.frame_ms",
+      "encoding": "audio.encoding",
+      "pcm_s16le_base64": "Required base64 encoded signed 16-bit little-endian mono PCM."
+    },
+    "receive_audio_response": {
+      "call_id": "Call session identifier.",
+      "returned_bytes": "Number of decoded PCM bytes returned.",
+      "queued_rx_bytes": "Remaining inbound decoded PCM bytes queued after this drain.",
+      "pcm_s16le_base64": "Base64 encoded signed 16-bit little-endian mono PCM.",
+      "audio": "Fixed audio shape: sample_rate, channels, frame_ms, encoding."
+    },
+    "audio_shape": {
+      "sample_rate": "audio.sample_rate",
+      "channels": "audio.channels",
+      "frame_ms": "audio.frame_ms",
+      "encoding": "audio.encoding"
+    }
+  }
+}

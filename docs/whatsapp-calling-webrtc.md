@@ -136,7 +136,15 @@ common failure mode, and their API rejects mismatched SDP answers between
 ## Sidecar API Sketch
 
 The exact transport can be Unix socket, local HTTP, or WebSocket. The first
-implementation should favor debuggability over abstraction.
+implementation should favor debuggability over abstraction. The canonical v1
+PCM and endpoint contract is machine-readable at
+[`docs/contracts/webrtc-sidecar-v1.json`](contracts/webrtc-sidecar-v1.json), and
+the Python sidecar exposes the same object at `GET /contract`.
+
+The sidecar HTTP API is a local control plane, not a public web API. It should
+bind to localhost or a private socket, with Hermes as the caller. Only the
+WebRTC media negotiation needs normal network access for ICE, DTLS, SRTP, and
+possibly TURN.
 
 ```http
 POST /offer

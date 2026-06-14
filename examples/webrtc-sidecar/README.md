@@ -6,10 +6,16 @@ boundary without pulling WebRTC into the Rust workspace yet.
 It accepts a remote SDP offer over local HTTP, creates a WebRTC answer, sends a
 48 kHz mono 20 ms PCM source as an outbound audio track, and writes decoded
 inbound audio to a raw PCM file. `aiortc` handles Opus RTP, ICE, DTLS, and SRTP.
+The machine-readable v1 contract lives at
+[`docs/contracts/webrtc-sidecar-v1.json`](../../docs/contracts/webrtc-sidecar-v1.json)
+and is also exposed by the sidecar at `GET /contract`.
 
 This is a spike. It does not call the WhatsApp Graph API, authenticate requests,
 run VAD, or manage Hermes sessions. Hermes should still own WhatsApp Cloud
 webhooks and Graph actions such as `pre_accept`, `accept`, and `terminate`.
+Do not expose the HTTP control API publicly; bind it to localhost or a private
+socket and let only the local Hermes process call it. The WebRTC media path may
+still need normal outbound ICE/STUN/TURN network access.
 
 ## Install
 
@@ -63,6 +69,7 @@ call timing before TTS is wired in.
 Check process health and the fixed local audio contract:
 
 ```bash
+curl -sS http://127.0.0.1:8787/contract
 curl -sS http://127.0.0.1:8787/health
 ```
 

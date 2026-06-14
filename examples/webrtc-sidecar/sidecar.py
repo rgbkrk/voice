@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import base64
 import binascii
+import copy
 from fractions import Fraction
 import json
 import logging
@@ -38,15 +39,67 @@ except ImportError as exc:  # pragma: no cover - depends on optional extras
 
 
 LOGGER = logging.getLogger("voice-webrtc-sidecar")
-SAMPLE_RATE = 48_000
-FRAME_MS = 20
-CHANNELS = 1
-SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1_000
-BYTES_PER_SAMPLE = 2
-FRAME_BYTES = SAMPLES_PER_FRAME * CHANNELS * BYTES_PER_SAMPLE
-DEFAULT_DRAIN_BYTES = FRAME_BYTES * 50
-MAX_INBOUND_QUEUE_BYTES = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * 10
-MAX_DRAIN_WAIT_MS = 5_000
+CONTRACT_PATH = Path(__file__).resolve().parents[2] / "docs/contracts/webrtc-sidecar-v1.json"
+
+
+def load_contract() -> dict[str, Any]:
+    with CONTRACT_PATH.open(encoding="utf-8") as contract_file:
+        contract = json.load(contract_file)
+    validate_contract(contract)
+    return contract
+
+
+def validate_contract(contract: dict[str, Any]) -> None:
+    audio = contract.get("audio")
+    if not isinstance(audio, dict):
+        raise ValueError("contract audio section must be an object")
+
+    sample_rate = int(audio["sample_rate"])
+    channels = int(audio["channels"])
+    frame_ms = int(audio["frame_ms"])
+    bytes_per_sample = int(audio["bytes_per_sample"])
+    samples_per_frame = int(audio["samples_per_frame"])
+    frame_bytes = int(audio["frame_bytes"])
+    default_drain_bytes = int(audio["default_drain_bytes"])
+    max_inbound_queue_bytes = int(audio["max_inbound_queue_bytes"])
+    max_drain_wait_ms = int(audio["max_drain_wait_ms"])
+    encoding = str(audio["encoding"])
+
+    if encoding != "pcm_s16le":
+        raise ValueError("contract audio.encoding must be pcm_s16le")
+    if min(
+        sample_rate,
+        channels,
+        frame_ms,
+        bytes_per_sample,
+        samples_per_frame,
+        frame_bytes,
+        default_drain_bytes,
+        max_inbound_queue_bytes,
+        max_drain_wait_ms,
+    ) <= 0:
+        raise ValueError("contract audio integer fields must be positive")
+    if samples_per_frame != sample_rate * frame_ms // 1_000:
+        raise ValueError("contract samples_per_frame does not match sample_rate/frame_ms")
+    if frame_bytes != samples_per_frame * channels * bytes_per_sample:
+        raise ValueError("contract frame_bytes does not match audio shape")
+    if default_drain_bytes % frame_bytes != 0:
+        raise ValueError("contract default_drain_bytes must align to whole frames")
+    if max_inbound_queue_bytes < default_drain_bytes:
+        raise ValueError("contract max_inbound_queue_bytes is smaller than default drain size")
+
+
+CONTRACT = load_contract()
+AUDIO_CONTRACT = CONTRACT["audio"]
+SAMPLE_RATE = int(AUDIO_CONTRACT["sample_rate"])
+FRAME_MS = int(AUDIO_CONTRACT["frame_ms"])
+CHANNELS = int(AUDIO_CONTRACT["channels"])
+SAMPLES_PER_FRAME = int(AUDIO_CONTRACT["samples_per_frame"])
+BYTES_PER_SAMPLE = int(AUDIO_CONTRACT["bytes_per_sample"])
+FRAME_BYTES = int(AUDIO_CONTRACT["frame_bytes"])
+DEFAULT_DRAIN_BYTES = int(AUDIO_CONTRACT["default_drain_bytes"])
+MAX_INBOUND_QUEUE_BYTES = int(AUDIO_CONTRACT["max_inbound_queue_bytes"])
+MAX_DRAIN_WAIT_MS = int(AUDIO_CONTRACT["max_drain_wait_ms"])
 
 
 class PcmSource:
@@ -318,8 +371,12 @@ def audio_contract() -> dict[str, Any]:
         "sample_rate": SAMPLE_RATE,
         "channels": CHANNELS,
         "frame_ms": FRAME_MS,
-        "encoding": "pcm_s16le",
+        "encoding": str(AUDIO_CONTRACT["encoding"]),
     }
+
+
+def webrtc_contract() -> dict[str, Any]:
+    return copy.deepcopy(CONTRACT)
 
 
 def required_int(body: dict[str, Any], key: str, default: int | None = None) -> int:
@@ -397,6 +454,9 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
                 "audio": audio_contract(),
             }
         )
+
+    async def contract(_: web.Request) -> web.Response:
+        return web.json_response(webrtc_contract())
 
     async def offer(request: web.Request) -> web.Response:
         try:
@@ -503,6 +563,7 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
             await session.close()
         source.close()
 
+    app.router.add_get("/contract", contract)
     app.router.add_get("/health", health)
     app.router.add_post("/offer", offer)
     app.router.add_get("/calls/{call_id}", call_status)

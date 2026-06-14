@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -58,12 +59,41 @@ def synthetic_pcm_track(sidecar):
 def test_audio_contract_is_voice_pcm_shape():
     sidecar = load_sidecar()
 
+    contract = json.loads(sidecar.CONTRACT_PATH.read_text(encoding="utf-8"))
+    audio = contract["audio"]
+
     assert sidecar.audio_contract() == {
-        "sample_rate": 48000,
-        "channels": 1,
-        "frame_ms": 20,
-        "encoding": "pcm_s16le",
+        "sample_rate": audio["sample_rate"],
+        "channels": audio["channels"],
+        "frame_ms": audio["frame_ms"],
+        "encoding": audio["encoding"],
     }
+    assert sidecar.SAMPLES_PER_FRAME == audio["samples_per_frame"]
+    assert sidecar.FRAME_BYTES == audio["frame_bytes"]
+    assert sidecar.DEFAULT_DRAIN_BYTES == audio["default_drain_bytes"]
+    assert sidecar.MAX_INBOUND_QUEUE_BYTES == audio["max_inbound_queue_bytes"]
+    assert sidecar.MAX_DRAIN_WAIT_MS == audio["max_drain_wait_ms"]
+    assert sidecar.FRAME_BYTES == 1920
+
+
+def test_contract_endpoint_returns_machine_readable_contract():
+    sidecar = load_sidecar()
+
+    async def run():
+        from aiohttp.test_utils import TestClient, TestServer
+
+        source = sidecar.PcmSource(None)
+        app = sidecar.create_app(source, None)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get("/contract")
+            assert response.status == 200
+            body = await response.json()
+            assert body == sidecar.webrtc_contract()
+            assert body["contract"] == "voice.webrtc_sidecar"
+            assert body["version"] == 1
+            assert body["audio"]["frame_bytes"] == sidecar.FRAME_BYTES
+
+    asyncio.run(run())
 
 
 def test_pcm_source_pads_partial_frame(tmp_path: Path):

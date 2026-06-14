@@ -124,6 +124,15 @@ Drain decoded inbound PCM for a live session:
 curl -sS 'http://127.0.0.1:8787/calls/local-test/audio?max_bytes=1920&wait_ms=500'
 ```
 
+For raw PCM output that can be piped into STT tooling:
+
+```bash
+python examples/webrtc-sidecar/drain_sidecar_audio.py local-test \
+  --duration-ms 5000 \
+  --stop-after-empty 3 \
+  --output /tmp/voice-webrtc-in.s16le
+```
+
 Queue outbound PCM for a live session:
 
 ```bash
@@ -158,7 +167,15 @@ voice stream-transcribe \
   --frame-ms 20
 ```
 
-Use `--raw-input -` when piping decoded PCM from another process.
+Use `--raw-input -` when piping decoded PCM from another process:
+
+```bash
+python examples/webrtc-sidecar/drain_sidecar_audio.py local-test \
+  --duration-ms 5000 \
+  --stop-after-empty 3 \
+  --quiet \
+| voice stream-transcribe --raw-input - --sample-rate 48000 --frame-ms 20
+```
 
 ## Tests
 
@@ -170,4 +187,5 @@ python3 -m venv /tmp/voice-webrtc-venv
 /tmp/voice-webrtc-venv/bin/pip install -r examples/webrtc-sidecar/requirements.txt pytest
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_sidecar.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_post_voice_stream.py
+/tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_drain_sidecar_audio.py
 ```

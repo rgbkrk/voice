@@ -60,8 +60,7 @@ voice say --format ogg-opus -o speech.ogg "Good morning everyone."
 # Stream daemon TTS frames for bridge/WebRTC experiments
 voice stream-contract
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output speech.s16le "Good morning everyone."
-voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "Good morning everyone." \
-  | ffmpeg -f s16le -ar 48000 -ac 1 -i - -c:a libopus speech.ogg
+voice stream --sample-rate 48000 --frame-ms 20 --output streamed.ogg --format ogg-opus "Good morning everyone."
 
 # Replay a WAV through daemon streaming STT
 voice stream-transcribe recording.wav
@@ -155,7 +154,8 @@ Options:
 
 Streams ordered PCM frames from a daemon started with `voice daemon start`. Use
 this for bridge and WebRTC experiments where clients need audio chunks instead
-of a completed WAV file.
+of a completed WAV file. `--raw-output` writes headerless PCM for a sidecar or
+test harness; `--output` writes streamed Ogg/Opus without first creating a WAV.
 
 ```
 Usage: voice stream [OPTIONS] [TEXT]...
@@ -168,6 +168,10 @@ Options:
       --frame-ms <FRAME_MS>        Target frame duration in milliseconds [default: 20]
   -o, --raw-output <PATH>          Write raw signed 16-bit little-endian mono PCM
                                    (use - for stdout)
+      --output <PATH>              Write streamed audio to an Ogg/Opus file
+                                   (use - for stdout with --format ogg-opus)
+      --format <FORMAT>            Output container/codec for --output
+                                   [possible values: ogg-opus]
       --json                       Print full JSON stream events
       --markdown                   Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>     Word substitution (repeatable)

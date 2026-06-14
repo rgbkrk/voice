@@ -193,6 +193,19 @@ impl From<SayOutputFormat> for voice_audio::AudioOutputFormat {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum StreamOutputFormat {
+    OggOpus,
+}
+
+impl From<StreamOutputFormat> for voice_audio::AudioOutputFormat {
+    fn from(format: StreamOutputFormat) -> Self {
+        match format {
+            StreamOutputFormat::OggOpus => Self::OggOpus,
+        }
+    }
+}
+
 #[derive(clap::Args, Debug)]
 struct StreamArgs {
     /// Text to stream
@@ -229,7 +242,7 @@ struct StreamArgs {
 
     /// Output container/codec for --output. Defaults from extension: .ogg, .opus
     #[arg(long = "format", value_enum, requires = "output")]
-    format: Option<SayOutputFormat>,
+    format: Option<StreamOutputFormat>,
 
     /// Print full JSON stream events instead of compact summaries
     #[arg(long)]
@@ -1755,7 +1768,7 @@ fn validate_stream_frame_params(sample_rate: u32, frame_ms: u32) -> Result<(), S
 
 fn resolve_stream_output_format(
     path: &Path,
-    explicit: Option<SayOutputFormat>,
+    explicit: Option<StreamOutputFormat>,
 ) -> Result<voice_audio::AudioOutputFormat, String> {
     let explicit = explicit.map(voice_audio::AudioOutputFormat::from);
     let format = if path.as_os_str() == std::ffi::OsStr::new("-") {
@@ -2389,7 +2402,7 @@ mod tests {
             voice_audio::AudioOutputFormat::OggOpus
         );
         assert_eq!(
-            resolve_stream_output_format(Path::new("reply"), Some(SayOutputFormat::OggOpus))
+            resolve_stream_output_format(Path::new("reply"), Some(StreamOutputFormat::OggOpus))
                 .unwrap(),
             voice_audio::AudioOutputFormat::OggOpus
         );
@@ -2401,7 +2414,8 @@ mod tests {
         assert!(resolve_stream_output_format(Path::new("reply"), None).is_err());
         assert!(resolve_stream_output_format(Path::new("-"), None).is_err());
         assert_eq!(
-            resolve_stream_output_format(Path::new("-"), Some(SayOutputFormat::OggOpus)).unwrap(),
+            resolve_stream_output_format(Path::new("-"), Some(StreamOutputFormat::OggOpus))
+                .unwrap(),
             voice_audio::AudioOutputFormat::OggOpus
         );
     }

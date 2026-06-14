@@ -172,7 +172,10 @@ status, completion state, next action IDs, attended receive status, and
 Cloud/Calling missing or invalid key groups. When a gate is still pending, the
 same summary also echoes the copyable attended receive command, fallback
 draining command, Cloud verification command, Calling verification command, and
-complete-alpha command if those commands are present in the saved JSON.
+complete-alpha command if those commands are present in the saved JSON. If the
+alpha profile exits non-zero while writing a valid JSON report, such as a
+`--require-complete` run with pending gates, the stack gate still prints this
+summary before returning the alpha failure status.
 
 Use the complete gate only when the local bridge, attended receive, Cloud API,
 and Calling setup are all expected to pass:

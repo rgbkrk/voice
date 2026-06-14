@@ -41,6 +41,7 @@ require_whatsapp_cloud="${REQUIRE_WHATSAPP_CLOUD:-0}"
 require_whatsapp_calling="${REQUIRE_WHATSAPP_CALLING:-0}"
 require_whatsapp_alpha_complete="${REQUIRE_WHATSAPP_ALPHA_COMPLETE:-0}"
 check_whatsapp_cloud_api="${CHECK_WHATSAPP_CLOUD_API:-0}"
+overall_status=0
 
 hermes_config_verify_script="${HERMES_CONFIG_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_voice_config.py}"
 hermes_gateway_verify_script="${HERMES_GATEWAY_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_gateway_service.py}"
@@ -723,19 +724,33 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
     whatsapp_alpha_args+=(--json)
     echo
     echo "==> WhatsApp alpha readiness profile ($whatsapp_alpha_profile)"
+    set +e
     "${whatsapp_alpha_args[@]}" >"$whatsapp_alpha_json_output"
+    whatsapp_alpha_exit=$?
+    set -e
     echo "whatsapp_alpha_json=$whatsapp_alpha_json_output"
     print_whatsapp_alpha_json_summary "$whatsapp_alpha_json_output"
+    if [[ "$whatsapp_alpha_exit" != "0" ]]; then
+      echo "error: WhatsApp alpha readiness profile failed with exit $whatsapp_alpha_exit" >&2
+      overall_status="$whatsapp_alpha_exit"
+      whatsapp_alpha_status="$whatsapp_alpha_profile:failed"
+    else
+      whatsapp_alpha_status="$whatsapp_alpha_profile"
+    fi
   else
     run_step "WhatsApp alpha readiness profile ($whatsapp_alpha_profile)" "${whatsapp_alpha_args[@]}"
+    whatsapp_alpha_status="$whatsapp_alpha_profile"
   fi
-  whatsapp_alpha_status="$whatsapp_alpha_profile"
 else
   whatsapp_alpha_status="skipped"
 fi
 
 echo
-echo "ok: local Hermes voice stack verifier passed"
+if [[ "$overall_status" == "0" ]]; then
+  echo "ok: local Hermes voice stack verifier passed"
+else
+  echo "error: local Hermes voice stack verifier failed" >&2
+fi
 echo "voice_bin=$voice_bin"
 echo "hermes_config=$hermes_status"
 echo "hermes_gateway=$hermes_gateway_status"
@@ -749,3 +764,4 @@ if [[ -n "$whatsapp_alpha_json_output" ]]; then
 fi
 echo "sidecar_service=$sidecar_status"
 echo "webrtc_loopback=$webrtc_loopback_status"
+exit "$overall_status"

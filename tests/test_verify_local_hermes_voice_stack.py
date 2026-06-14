@@ -938,6 +938,143 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             result.stdout,
         )
 
+    def test_whatsapp_alpha_json_output_summarizes_nonzero_alpha(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            alpha = tmp_path / "verify_alpha.py"
+            voice = tmp_path / "voice"
+            json_output = tmp_path / "alpha.json"
+
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_executable(
+                alpha,
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    printf 'alpha' >> {str(log_path)!r}
+                    printf '\\0' >> {str(log_path)!r}
+                    printf '%s\\0' "$@" >> {str(log_path)!r}
+                    printf '\\n' >> {str(log_path)!r}
+                    cat <<'JSON'
+                    {{
+                      "profile": "attended-cache-receive",
+                      "readiness_summary": {{
+                        "status": "local_ready_pending_gates",
+                        "complete": false,
+                        "local_checks_passed": true,
+                        "attended_fresh_receive_verified": false,
+                        "external_meta_setup_required": true,
+                        "operator_action_required": true,
+                        "next_actions": [
+                          {{"id": "run_attended_fresh_receive"}},
+                          {{"id": "configure_whatsapp_cloud_calling"}}
+                        ]
+                      }},
+                      "pending_gates": {{
+                        "attended_fresh_receive": {{
+                          "status": "not_verified",
+                          "cached_receive_verified": true,
+                          "command": [
+                            "scripts/verify_whatsapp_alpha_readiness.py",
+                            "--hermes-home",
+                            "/home/ubuntu/.hermes",
+                            "--profile",
+                            "attended-cache-receive",
+                            "--wait-audio-cache-seconds",
+                            "60.0"
+                          ]
+                        }},
+                        "whatsapp_cloud": {{
+                          "status": "external_setup_required",
+                          "setup_handoff": {{
+                            "missing": ["WHATSAPP_CLOUD_PHONE_NUMBER_ID"],
+                            "invalid": []
+                          }}
+                        }},
+                        "whatsapp_cloud_calling": {{
+                          "status": "external_setup_required",
+                          "setup_handoff": {{
+                            "missing": ["WHATSAPP_CLOUD_PHONE_NUMBER_ID"],
+                            "invalid": [],
+                            "complete_verification_command": [
+                              "scripts/verify_whatsapp_alpha_readiness.py",
+                              "--hermes-home",
+                              "/home/ubuntu/.hermes",
+                              "--profile",
+                              "attended-cache-receive",
+                              "--require-complete"
+                            ]
+                          }}
+                        }}
+                      }}
+                    }}
+                    JSON
+                    exit 3
+                    """
+                ),
+            )
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-whatsapp-bridge",
+                    "--skip-systemd",
+                    "--skip-daemon",
+                    "--whatsapp-alpha-profile",
+                    "attended-cache-receive",
+                    "--require-whatsapp-alpha-complete",
+                    "--whatsapp-alpha-json-output",
+                    str(json_output),
+                ],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_ALPHA_READINESS_SCRIPT": str(alpha),
+                },
+            )
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn(f"whatsapp_alpha_json={json_output}", result.stdout)
+        self.assertIn("whatsapp_alpha_json_profile=attended-cache-receive", result.stdout)
+        self.assertIn(
+            "whatsapp_alpha_json_readiness=local_ready_pending_gates complete=False",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_next_actions=run_attended_fresh_receive,"
+            "configure_whatsapp_cloud_calling",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_attended_command="
+            "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
+            "/home/ubuntu/.hermes --profile attended-cache-receive "
+            "--wait-audio-cache-seconds 60.0",
+            result.stdout,
+        )
+        self.assertIn("whatsapp_alpha=attended-cache-receive:failed", result.stdout)
+        self.assertNotIn("ok: local Hermes voice stack verifier passed", result.stdout)
+        self.assertIn(
+            "error: WhatsApp alpha readiness profile failed with exit 3",
+            result.stderr,
+        )
+        self.assertIn(
+            "error: local Hermes voice stack verifier failed",
+            result.stderr,
+        )
+
     def test_skip_hermes_config_does_not_require_config_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

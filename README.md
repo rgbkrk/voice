@@ -18,8 +18,9 @@ cargo install cargo-binstall
 cargo binstall voice
 ```
 
-The tagged macOS release archive also includes `voiced`, the optional daemon
-used by `voice stream` and daemon-backed file synthesis.
+The tagged macOS release archive includes the `voice` binary. Its optional
+daemon runs through `voice daemon start` and is used by `voice stream` and
+daemon-backed file synthesis.
 
 ### Build from source
 
@@ -34,12 +35,11 @@ git lfs install
 git clone https://github.com/rgbkrk/voice.git
 cd voice
 cargo install --path crates/voice-cli
-cargo install --path crates/voice-daemon
 ```
 
 > **Why git-lfs?** Voice data (`.safetensors`) and tagger weights are stored with Git LFS. Without it, those files are tiny pointers instead of actual data — the build will catch this and tell you what to do.
 
-This puts the `voice` and `voiced` binaries on your `$PATH`. Model weights are downloaded from HuggingFace Hub on first run and cached in `~/.cache/huggingface/hub/`. Seven popular voices and the model config are embedded in the binary — no network needed for common use.
+This puts the `voice` binary on your `$PATH`. Model weights are downloaded from HuggingFace Hub on first run and cached in `~/.cache/huggingface/hub/`. Seven popular voices and the model config are embedded in the binary — no network needed for common use.
 
 ## Usage
 
@@ -152,9 +152,9 @@ Options:
 
 ### `voice stream`
 
-Streams ordered PCM frames from a running `voiced` daemon. Use this for bridge
-and WebRTC experiments where clients need audio chunks instead of a completed
-WAV file.
+Streams ordered PCM frames from a daemon started with `voice daemon start`. Use
+this for bridge and WebRTC experiments where clients need audio chunks instead
+of a completed WAV file.
 
 ```
 Usage: voice stream [OPTIONS] [TEXT]...
@@ -175,9 +175,9 @@ Options:
 
 ### `voice stream-transcribe`
 
-Replays WAV or raw PCM audio as ordered frames into a running `voiced` daemon.
-Use this to smoke-test the inbound STT stream contract that WebRTC and bridge
-clients use.
+Replays WAV or raw PCM audio as ordered frames into a daemon started with
+`voice daemon start`. Use this to smoke-test the inbound STT stream contract
+that WebRTC and bridge clients use.
 
 ```
 Usage: voice stream-transcribe [OPTIONS] [FILE]
@@ -300,16 +300,16 @@ See [`examples/conversation.py`](examples/conversation.py) for a full speak/list
 
 ## Daemon TTS for Hermes and Streaming
 
-Run `voiced --tts-only` to keep Kokoro warm without eagerly loading STT. When the
+Run `voice daemon start --tts-only` to keep Kokoro warm without eagerly loading STT. When the
 daemon is running, `voice say -o output.wav ...` uses the daemon `synthesize`
 RPC and waits until the WAV exists. For WhatsApp-ready voice notes, use
 `voice say --format ogg-opus -o output.ogg ...` or an `.ogg` / `.opus` output
 path; the CLI writes real `audio/ogg; codecs=opus` instead of a WAV with a
 misleading extension. OGG/Opus output requires `ffmpeg` on `PATH`.
 
-The macOS release archive includes both `voice` and `voiced`. Source installs
-should install both `crates/voice-cli` and `crates/voice-daemon` when the daemon
-or `voice stream` surface is needed.
+The macOS release archive and source install both expose the daemon through the
+single `voice` binary. Use `voice daemon install` to register the daemon as a
+service when the daemon or `voice stream` surface is needed.
 
 See [docs/daemon.md](docs/daemon.md) for systemd user service and macOS
 LaunchAgent examples.

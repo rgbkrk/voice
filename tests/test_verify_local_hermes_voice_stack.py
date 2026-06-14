@@ -138,6 +138,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("hermes_gateway=skipped", result.stdout)
         self.assertIn("cli_mcp=checked", result.stdout)
         self.assertIn("whatsapp_bridge=checked", result.stdout)
+        self.assertIn("telegram_voice_contract=skipped", result.stdout)
         self.assertIn("whatsapp_inbound_cache=skipped", result.stdout)
         self.assertIn("whatsapp_alpha=skipped", result.stdout)
         self.assertIn("webrtc_loopback=skipped", result.stdout)
@@ -362,6 +363,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("hermes_config_install=skipped", result.stdout)
         self.assertIn("hermes_gateway=skipped", result.stdout)
         self.assertIn("whatsapp_bridge=skipped", result.stdout)
+        self.assertIn("telegram_voice_contract=skipped", result.stdout)
         self.assertIn("whatsapp_inbound_cache=skipped", result.stdout)
         self.assertIn("whatsapp_alpha=skipped", result.stdout)
         self.assertEqual([entry[0] for entry in entries], ["hermes", "cli_mcp", "whatsapp"])
@@ -533,6 +535,123 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 str(audio_cache),
             ],
         )
+
+    def test_telegram_voice_contract_runs_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            telegram = tmp_path / "verify_telegram.sh"
+            voice = tmp_path / "voice"
+            config = tmp_path / "config.yaml"
+            env_file = tmp_path / ".env"
+
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_helper(telegram, "telegram", log_path)
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+            config.write_text("tts: {}\n", encoding="utf-8")
+            env_file.write_text("TELEGRAM_BOT_TOKEN=123:abc\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-config",
+                    str(config),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-daemon",
+                    "--skip-whatsapp-bridge",
+                    "--run-telegram-voice-contract",
+                    "--telegram-env-file",
+                    str(env_file),
+                    "--require-telegram-credentials",
+                    "--text",
+                    "Telegram stack smoke.",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "TELEGRAM_CONTRACT_VERIFY_SCRIPT": str(telegram),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+
+        self.assertIn("telegram_voice_contract=checked", result.stdout)
+        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "telegram"])
+        self.assertEqual(
+            entries[1],
+            [
+                "telegram",
+                "--voice-bin",
+                str(voice),
+                "--text",
+                "Telegram stack smoke.",
+                "--hermes-config",
+                str(config),
+                "--hermes-env",
+                str(env_file),
+                "--skip-hermes-config",
+                "--require-telegram-credentials",
+                "--skip-daemon",
+            ],
+        )
+
+    def test_step_failure_reports_telegram_setup_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            telegram = tmp_path / "verify_telegram.sh"
+            voice = tmp_path / "voice"
+
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_failing_helper(telegram, "telegram", log_path, status=31)
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-config",
+                    str(tmp_path / "missing.yaml"),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-daemon",
+                    "--skip-whatsapp-bridge",
+                    "--run-telegram-voice-contract",
+                ],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "TELEGRAM_CONTRACT_VERIFY_SCRIPT": str(telegram),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+
+        self.assertEqual(result.returncode, 31)
+        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "telegram"])
+        self.assertIn(
+            "error: local Hermes voice stack step failed: Telegram voice contract",
+            result.stderr,
+        )
+        self.assertIn("failure_category=telegram_setup", result.stderr)
+        self.assertIn("failure_step=Telegram voice contract", result.stderr)
+        self.assertIn("failure_status=31", result.stderr)
+        self.assertNotIn("ok: local Hermes voice stack verifier passed", result.stdout)
 
     def test_whatsapp_alpha_profile_runs_when_requested(self):
         with tempfile.TemporaryDirectory() as tmp:

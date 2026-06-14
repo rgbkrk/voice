@@ -22,6 +22,9 @@ skip_cli_mcp="${SKIP_CLI_MCP:-0}"
 skip_daemon="${SKIP_DAEMON:-0}"
 skip_stt_smoke="${SKIP_STT_SMOKE:-0}"
 run_whatsapp_inbound_cache_smoke="${RUN_WHATSAPP_INBOUND_CACHE_SMOKE:-0}"
+run_telegram_voice_contract="${RUN_TELEGRAM_VOICE_CONTRACT:-0}"
+telegram_env_file="${TELEGRAM_ENV_FILE:-${HERMES_ENV:-}}"
+require_telegram_credentials="${REQUIRE_TELEGRAM_CREDENTIALS:-0}"
 whatsapp_alpha_profile="${WHATSAPP_ALPHA_PROFILE:-}"
 whatsapp_alpha_text="${WHATSAPP_ALPHA_TEXT:-}"
 whatsapp_alpha_voice_note_chat_id="${WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID:-}"
@@ -52,6 +55,7 @@ whatsapp_contract_verify_script="${WHATSAPP_CONTRACT_VERIFY_SCRIPT:-$repo_root/s
 whatsapp_bridge_verify_script="${WHATSAPP_BRIDGE_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_bridge_runtime.py}"
 whatsapp_inbound_cache_verify_script="${WHATSAPP_INBOUND_CACHE_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_inbound_audio_cache.py}"
 whatsapp_alpha_readiness_script="${WHATSAPP_ALPHA_READINESS_SCRIPT:-$repo_root/scripts/verify_whatsapp_alpha_readiness.py}"
+telegram_contract_verify_script="${TELEGRAM_CONTRACT_VERIFY_SCRIPT:-$repo_root/scripts/verify_telegram_voice_contract.sh}"
 sidecar_service_verify_script="${SIDECAR_SERVICE_VERIFY_SCRIPT:-$repo_root/scripts/verify_webrtc_sidecar_service.py}"
 webrtc_loopback_smoke_script="${WEBRTC_LOOPBACK_SMOKE_SCRIPT:-$repo_root/examples/webrtc-sidecar/full_duplex_loopback_smoke.py}"
 
@@ -100,6 +104,11 @@ Options:
                                credentials are configured
   --run-whatsapp-inbound-cache-smoke
                                transcribe a bridge-downloaded aud_* file from the audio cache
+  --run-telegram-voice-contract
+                               run the Telegram bot voice-message preflight
+  --telegram-env-file PATH     Hermes env file with Telegram settings
+  --require-telegram-credentials
+                               fail when TELEGRAM_BOT_TOKEN is missing from the Telegram env file
   --whatsapp-alpha-profile PROFILE
                                run categorized alpha readiness profile:
                                unattended, cached-receive, send,
@@ -135,6 +144,8 @@ Environment aliases:
   WHATSAPP_ALPHA_TEXT, WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID
   WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS, WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS
   WHATSAPP_ALPHA_JSON_OUTPUT
+  RUN_TELEGRAM_VOICE_CONTRACT=1, TELEGRAM_ENV_FILE, HERMES_ENV
+  REQUIRE_TELEGRAM_CREDENTIALS=1
   VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
 EOF
 }
@@ -203,6 +214,9 @@ step_failure_category() {
       ;;
     "WhatsApp inbound cached audio STT smoke")
       echo "whatsapp_inbound_audio"
+      ;;
+    "Telegram voice contract")
+      echo "telegram_setup"
       ;;
     "Voice WebRTC sidecar service"|"Full-duplex WebRTC media smoke")
       echo "webrtc_sidecar"
@@ -442,6 +456,19 @@ while [[ $# -gt 0 ]]; do
       run_whatsapp_inbound_cache_smoke=1
       shift
       ;;
+    --run-telegram-voice-contract)
+      run_telegram_voice_contract=1
+      shift
+      ;;
+    --telegram-env-file)
+      [[ $# -ge 2 ]] || fail "--telegram-env-file requires a path"
+      telegram_env_file="$2"
+      shift 2
+      ;;
+    --require-telegram-credentials)
+      require_telegram_credentials=1
+      shift
+      ;;
     --whatsapp-alpha-profile)
       [[ $# -ge 2 ]] || fail "--whatsapp-alpha-profile requires a profile"
       whatsapp_alpha_profile="$2"
@@ -530,6 +557,9 @@ if [[ "$skip_whatsapp_bridge" != "1" ]]; then
 fi
 if [[ "$run_whatsapp_inbound_cache_smoke" == "1" ]]; then
   require_executable "$whatsapp_inbound_cache_verify_script" "WhatsApp inbound audio cache verifier"
+fi
+if [[ "$run_telegram_voice_contract" == "1" ]]; then
+  require_executable "$telegram_contract_verify_script" "Telegram voice contract verifier"
 fi
 if [[ -n "$whatsapp_alpha_profile" ]]; then
   require_executable "$whatsapp_alpha_readiness_script" "WhatsApp alpha readiness verifier"
@@ -630,6 +660,38 @@ else
   fi
 fi
 run_step "Voice WhatsApp and streaming contract" "${whatsapp_args[@]}"
+
+if [[ "$run_telegram_voice_contract" == "1" ]]; then
+  telegram_args=(
+    "$telegram_contract_verify_script"
+    --voice-bin "$voice_bin"
+    --text "$text"
+    --hermes-config "$hermes_config"
+  )
+  if [[ -n "$telegram_env_file" ]]; then
+    telegram_args+=(--hermes-env "$telegram_env_file")
+  fi
+  if [[ "$skip_hermes_config" == "1" ]]; then
+    telegram_args+=(--skip-hermes-config)
+  elif [[ "$skip_hermes_tts_smoke" == "1" ]]; then
+    telegram_args+=(--skip-hermes-tts-smoke)
+  fi
+  if [[ "$require_telegram_credentials" == "1" ]]; then
+    telegram_args+=(--require-telegram-credentials)
+  fi
+  if [[ "$skip_daemon" == "1" ]]; then
+    telegram_args+=(--skip-daemon)
+  else
+    telegram_args+=(--require-daemon)
+    if [[ "$skip_stt_smoke" != "1" ]]; then
+      telegram_args+=(--run-stt-smoke)
+    fi
+  fi
+  run_step "Telegram voice contract" "${telegram_args[@]}"
+  telegram_voice_contract_status="checked"
+else
+  telegram_voice_contract_status="skipped"
+fi
 
 if [[ "$skip_whatsapp_bridge" != "1" ]]; then
   whatsapp_bridge_args=(
@@ -821,6 +883,7 @@ echo "hermes_config_install=$hermes_install_status"
 echo "hermes_gateway=$hermes_gateway_status"
 echo "cli_mcp=$cli_mcp_status"
 echo "whatsapp_contract=checked"
+echo "telegram_voice_contract=$telegram_voice_contract_status"
 echo "whatsapp_bridge=$whatsapp_bridge_status"
 echo "whatsapp_inbound_cache=$whatsapp_inbound_cache_status"
 echo "whatsapp_alpha=$whatsapp_alpha_status"

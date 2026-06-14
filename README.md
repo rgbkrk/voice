@@ -429,9 +429,12 @@ sidecar service. It requires the daemon and sidecar by default. For narrower che
 `scripts/verify_whatsapp_voice_contract.sh`,
 `scripts/verify_telegram_voice_contract.sh`, or
 `scripts/verify_webrtc_sidecar_service.py` directly.
+Add `--run-telegram-voice-contract` to include Telegram bot voice-message
+preflight output in the aggregate gate; add `--require-telegram-credentials`
+when the local Telegram bot token should already be configured.
 When a step fails, the aggregate verifier prints `failure_category=...` with
 values such as `voice_runtime`, `hermes_config`, `upstream_hermes`,
-`whatsapp_bridge_or_credentials`, or `webrtc_sidecar`.
+`whatsapp_bridge_or_credentials`, `telegram_setup`, or `webrtc_sidecar`.
 
 To include the categorized WhatsApp alpha report in the same command, add
 `--whatsapp-alpha-profile unattended`, `cached-receive`, `send`,

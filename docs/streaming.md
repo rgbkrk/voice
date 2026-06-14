@@ -190,6 +190,10 @@ VOICE_BIN=/path/to/voice scripts/verify_telegram_voice_contract.sh
 VOICE_BIN=/path/to/voice scripts/verify_telegram_voice_contract.sh --require-telegram-credentials
 ```
 
+The aggregate local stack gate can include the same check with
+`--run-telegram-voice-contract`; add `--require-telegram-credentials` when the
+configured Hermes env file should already contain `TELEGRAM_BOT_TOKEN`.
+
 Those verifiers check `voice stream-contract` against the checked-in sidecar
 contract, prove `voice say --format ogg-opus` and `.ogg` extension inference
 write real mono 48 kHz Ogg/Opus, verify misleading `.wav`/`ogg-opus`

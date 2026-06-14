@@ -174,6 +174,52 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             gates["whatsapp_cloud_calling"]["missing"],
         )
 
+    def test_default_voice_bin_prefers_installed_voice_on_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            helpers = tmp_path / "helpers"
+            bin_dir = tmp_path / "bin"
+            helpers.mkdir()
+            bin_dir.mkdir()
+            write_fake_helpers(helpers)
+            voice = bin_dir / "voice"
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+            config = tmp_path / "config.yaml"
+            config.write_text("tts: {}\n", encoding="utf-8")
+
+            env = {**os.environ}
+            env.pop("VOICE_BIN", None)
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env["VOICE_READINESS_SCRIPT_DIR"] = str(helpers)
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--hermes-home",
+                    str(tmp_path / "hermes"),
+                    "--hermes-config",
+                    str(config),
+                    "--skip-systemd",
+                    "--skip-daemon",
+                    "--skip-sidecar",
+                    "--skip-voice-note-smoke",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        expected = str(voice.resolve())
+        for component in payload["components"]:
+            command = component["command"]
+            if "--voice-bin" in command:
+                index = command.index("--voice-bin")
+                self.assertEqual(command[index + 1], expected)
+
     def test_human_summary_prints_non_draining_attended_next_step(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

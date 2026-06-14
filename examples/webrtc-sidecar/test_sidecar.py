@@ -294,3 +294,87 @@ def test_offer_loopback_receives_http_queued_audio():
                 await pc.close()
 
     asyncio.run(run())
+
+
+def test_offer_loopback_writes_inbound_audio_to_pcm_sink(tmp_path: Path):
+    sidecar = load_sidecar()
+    rx_path = tmp_path / "inbound.s16le"
+
+    class SyntheticPcmTrack(sidecar.MediaStreamTrack):
+        kind = "audio"
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.pts = 0
+            samples = [
+                (12_000 if index % 2 == 0 else -12_000).to_bytes(
+                    2,
+                    byteorder="little",
+                    signed=True,
+                )
+                for index in range(sidecar.SAMPLES_PER_FRAME)
+            ]
+            self.frame_bytes = b"".join(samples)
+
+        async def recv(self):
+            await asyncio.sleep(sidecar.FRAME_MS / 1_000)
+            frame = sidecar.av.AudioFrame(
+                format="s16",
+                layout="mono",
+                samples=sidecar.SAMPLES_PER_FRAME,
+            )
+            frame.planes[0].update(self.frame_bytes)
+            frame.sample_rate = sidecar.SAMPLE_RATE
+            frame.time_base = sidecar.Fraction(1, sidecar.SAMPLE_RATE)
+            frame.pts = self.pts
+            self.pts += sidecar.SAMPLES_PER_FRAME
+            return frame
+
+    async def wait_for_non_silent_pcm() -> None:
+        deadline = asyncio.get_running_loop().time() + 5
+        while asyncio.get_running_loop().time() < deadline:
+            if rx_path.exists():
+                data = rx_path.read_bytes()
+                if len(data) >= sidecar.FRAME_BYTES and any(data):
+                    return
+            await asyncio.sleep(0.05)
+        size = rx_path.stat().st_size if rx_path.exists() else 0
+        pytest.fail(f"inbound PCM sink stayed silent or empty (bytes={size})")
+
+    async def run():
+        from aiohttp.test_utils import TestClient, TestServer
+
+        source = sidecar.PcmSource(None)
+        app = sidecar.create_app(source, str(rx_path))
+        pc = sidecar.RTCPeerConnection()
+        pc.addTrack(SyntheticPcmTrack())
+
+        async with TestClient(TestServer(app)) as client:
+            try:
+                offer = await pc.createOffer()
+                await pc.setLocalDescription(offer)
+                await sidecar.wait_for_ice_complete(pc)
+                assert pc.localDescription is not None
+
+                offer_response = await client.post(
+                    "/offer",
+                    json={
+                        "call_id": "call-1",
+                        "type": pc.localDescription.type,
+                        "sdp": pc.localDescription.sdp,
+                    },
+                )
+                assert offer_response.status == 200
+                answer = await offer_response.json()
+                await pc.setRemoteDescription(
+                    sidecar.RTCSessionDescription(
+                        sdp=answer["sdp"],
+                        type=answer["type"],
+                    )
+                )
+
+                await wait_for_non_silent_pcm()
+            finally:
+                await pc.close()
+
+    asyncio.run(run())

@@ -177,6 +177,34 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             payload["by_category"]["voice_note"]["components"],
         )
 
+    def test_cached_receive_profile_adds_receive_component(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                "--profile",
+                "cached-receive",
+                "--whatsapp-audio-cache-dir",
+                str(Path(tmp) / "audio_cache"),
+            )
+
+        self.assertEqual(payload["profile"], "cached-receive")
+        components = {item["name"]: item for item in payload["components"]}
+        self.assertIn("whatsapp_inbound_cache_stt", components)
+
+    def test_send_profile_posts_real_voice_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                "--profile",
+                "send",
+                skip_voice_note_smoke=False,
+            )
+
+        self.assertEqual(payload["profile"], "send")
+        components = {item["name"]: item for item in payload["components"]}
+        self.assertIn("whatsapp_voice_note_send", components)
+        self.assertIn("--send", components["whatsapp_voice_note_send"]["command"])
+
     def test_voice_note_send_receive_flags_are_passed_to_bridge_smoke(self):
         with tempfile.TemporaryDirectory() as tmp:
             payload = self.run_readiness(
@@ -200,6 +228,35 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertIn("20530681934008@lid", command)
         self.assertIn("--wait-inbound-seconds", command)
         self.assertIn("5.0", command)
+        self.assertIn("--require-inbound-audio", command)
+        self.assertIn("--drain-bridge-messages", command)
+
+    def test_attended_send_receive_profile_expands_guarded_receive_flags(self):
+        voice_note_payload = {
+            "success": True,
+            "checks": {
+                "inbound_audio": {
+                    "drains_bridge_messages": True,
+                    "audio_events": [{"mediaType": "ptt"}],
+                }
+            },
+            "failures": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                "--profile",
+                "attended-send-receive",
+                skip_voice_note_smoke=False,
+                voice_note_payload=voice_note_payload,
+            )
+
+        self.assertEqual(payload["profile"], "attended-send-receive")
+        components = {item["name"]: item for item in payload["components"]}
+        command = components["whatsapp_voice_note_send_receive"]["command"]
+        self.assertIn("--send", command)
+        self.assertIn("--wait-inbound-seconds", command)
+        self.assertIn("60.0", command)
         self.assertIn("--require-inbound-audio", command)
         self.assertIn("--drain-bridge-messages", command)
 
@@ -234,6 +291,16 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
 
     def test_voice_note_flags_cannot_be_used_when_voice_note_smoke_is_skipped(self):
         result = self.run_invalid("--skip-voice-note-smoke", "--send-voice-note")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("cannot be used with --skip-voice-note-smoke", result.stderr)
+
+    def test_real_voice_note_profiles_cannot_skip_voice_note_smoke(self):
+        result = self.run_invalid(
+            "--profile",
+            "attended-send-receive",
+            "--skip-voice-note-smoke",
+        )
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("cannot be used with --skip-voice-note-smoke", result.stderr)

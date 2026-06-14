@@ -85,14 +85,15 @@ and groups failures as voice runtime, Hermes runtime/config, bridge pairing,
 voice-note, live-call local sidecar, or external Meta setup. Use
 `--require-whatsapp-calling` when a host is expected to be ready for real Cloud
 Calling; otherwise missing Meta credentials are reported as external setup
-still required, not as a local Baileys voice-note failure. Add
-`--run-inbound-cache-smoke` when the report should also replay a cached inbound
-WhatsApp voice note through `voice stream-transcribe`:
+still required, not as a local Baileys voice-note failure. The named profiles
+are `unattended`, `cached-receive`, `send`, and `attended-send-receive`. Use
+`cached-receive` when the report should also replay a cached inbound WhatsApp
+voice note through `voice stream-transcribe`:
 
 ```bash
 scripts/verify_whatsapp_alpha_readiness.py \
   --hermes-home ~/.hermes \
-  --run-inbound-cache-smoke
+  --profile cached-receive
 ```
 
 The JSON report includes `pending_gates` for checks that are intentionally not
@@ -110,19 +111,15 @@ override the destination:
 ```bash
 scripts/verify_whatsapp_alpha_readiness.py \
   --hermes-home ~/.hermes \
-  --send-voice-note
+  --profile send
 ```
 
-For a full attended send/receive pass, combine the send flag with the guarded
-receive drain:
+For a full attended send/receive pass, use the guarded receive profile:
 
 ```bash
 scripts/verify_whatsapp_alpha_readiness.py \
   --hermes-home ~/.hermes \
-  --send-voice-note \
-  --wait-inbound-seconds 60 \
-  --require-inbound-audio \
-  --drain-bridge-messages
+  --profile attended-send-receive
 ```
 
 To prove the outbound voice-note path without sending a WhatsApp message, run:

@@ -15,6 +15,12 @@ from typing import Any
 
 DEFAULT_BRIDGE_URL = "http://127.0.0.1:3000"
 DEFAULT_SIDECAR_URL = "http://127.0.0.1:8787"
+PROFILE_CHOICES = (
+    "unattended",
+    "cached-receive",
+    "send",
+    "attended-send-receive",
+)
 
 META_SETUP_STEPS = (
     "Create or select a WhatsApp Business Platform app and WABA.",
@@ -487,6 +493,7 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "success": success,
+        "profile": args.profile,
         "components": components,
         "by_category": by_category,
         "external_meta_setup": external_meta_setup,
@@ -505,6 +512,15 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--profile",
+        choices=PROFILE_CHOICES,
+        default="unattended",
+        help=(
+            "named readiness profile: unattended dry run, cached receive STT, "
+            "real send, or attended send/receive"
+        ),
+    )
     parser.add_argument("--voice-bin", default=default_voice_bin())
     parser.add_argument("--hermes-home", type=Path, default=default_hermes_home())
     parser.add_argument(
@@ -554,6 +570,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def apply_profile(args: argparse.Namespace) -> None:
+    if args.profile == "cached-receive":
+        args.run_inbound_cache_smoke = True
+    elif args.profile == "send":
+        args.send_voice_note = True
+    elif args.profile == "attended-send-receive":
+        args.send_voice_note = True
+        if args.wait_inbound_seconds == 0:
+            args.wait_inbound_seconds = 60.0
+        args.require_inbound_audio = True
+        args.drain_bridge_messages = True
+
+
 def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     voice_note_options = [
         args.send_voice_note,
@@ -586,6 +615,7 @@ def human_summary(result: dict[str, Any]) -> None:
         print("ok: WhatsApp alpha readiness passed")
     else:
         print("error: WhatsApp alpha readiness failed", file=sys.stderr)
+    print(f"profile={result.get('profile')}")
 
     for item in result["components"]:
         status = "ok" if item["success"] else "failed"
@@ -626,6 +656,7 @@ def human_summary(result: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    apply_profile(args)
     validate_args(parser, args)
     result = build_readiness(args)
     if args.json:

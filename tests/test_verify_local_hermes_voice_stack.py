@@ -577,7 +577,64 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             json_output = tmp_path / "reports" / "alpha.json"
 
             write_helper(whatsapp, "whatsapp", log_path)
-            write_helper(alpha, "alpha", log_path)
+            write_executable(
+                alpha,
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    printf 'alpha' >> {str(log_path)!r}
+                    printf '\\0' >> {str(log_path)!r}
+                    printf '%s\\0' "$@" >> {str(log_path)!r}
+                    printf '\\n' >> {str(log_path)!r}
+                    cat <<'JSON'
+                    {{
+                      "profile": "cached-receive",
+                      "readiness_summary": {{
+                        "status": "local_ready_pending_gates",
+                        "complete": false,
+                        "local_checks_passed": true,
+                        "attended_fresh_receive_verified": false,
+                        "external_meta_setup_required": true,
+                        "operator_action_required": true,
+                        "next_actions": [
+                          {{"id": "run_attended_fresh_receive"}},
+                          {{"id": "configure_whatsapp_cloud_calling"}}
+                        ]
+                      }},
+                      "pending_gates": {{
+                        "attended_fresh_receive": {{
+                          "status": "not_verified",
+                          "cached_receive_verified": true
+                        }},
+                        "whatsapp_cloud": {{
+                          "status": "external_setup_required",
+                          "setup_handoff": {{
+                            "missing": [
+                              "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+                              "WHATSAPP_CLOUD_ACCESS_TOKEN"
+                            ],
+                            "invalid": []
+                          }}
+                        }},
+                        "whatsapp_cloud_calling": {{
+                          "status": "external_setup_required",
+                          "setup_handoff": {{
+                            "missing": [
+                              "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+                              "WHATSAPP_CLOUD_ACCESS_TOKEN",
+                              "WHATSAPP_CLOUD_APP_SECRET",
+                              "WHATSAPP_CLOUD_VERIFY_TOKEN"
+                            ],
+                            "invalid": []
+                          }}
+                        }}
+                      }}
+                    }}
+                    JSON
+                    """
+                ),
+            )
             write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
 
             result = subprocess.run(
@@ -614,8 +671,37 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             json_output_exists = json_output.is_file()
 
         self.assertTrue(json_output_exists)
-        self.assertEqual(saved_output, "ok: alpha")
+        self.assertIn('"profile": "cached-receive"', saved_output)
         self.assertIn(f"whatsapp_alpha_json={json_output}", result.stdout)
+        self.assertIn("whatsapp_alpha_json_profile=cached-receive", result.stdout)
+        self.assertIn(
+            "whatsapp_alpha_json_readiness=local_ready_pending_gates complete=False "
+            "local_checks_passed=True attended_fresh_receive_verified=False "
+            "external_meta_setup_required=True operator_action_required=True",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_next_actions=run_attended_fresh_receive,"
+            "configure_whatsapp_cloud_calling",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_attended_fresh_receive=not_verified "
+            "cached_receive_verified=True",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_cloud=external_setup_required "
+            "missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,WHATSAPP_CLOUD_ACCESS_TOKEN "
+            "invalid=none",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_calling=external_setup_required "
+            "missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,WHATSAPP_CLOUD_ACCESS_TOKEN,"
+            "WHATSAPP_CLOUD_APP_SECRET,WHATSAPP_CLOUD_VERIFY_TOKEN invalid=none",
+            result.stdout,
+        )
         self.assertEqual([entry[0] for entry in entries], ["whatsapp", "alpha"])
         self.assertIn("--json", entries[1])
 

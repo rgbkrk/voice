@@ -149,6 +149,12 @@ information with:
 - `whatsapp_calling_verify_command`
 - `whatsapp_calling_complete_command`
 
+When the top-level stack gate is run with `--whatsapp-alpha-json-output`, it
+saves the alpha report and then echoes compact `whatsapp_alpha_json_*` summary
+lines for the saved artifact. Those lines include the alpha profile, readiness
+status, completion state, next action IDs, attended receive status, and
+Cloud/Calling missing or invalid key groups.
+
 Use the complete gate only when the local bridge, attended receive, Cloud API,
 and Calling setup are all expected to pass:
 

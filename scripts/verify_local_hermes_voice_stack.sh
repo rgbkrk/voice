@@ -160,6 +160,70 @@ run_step() {
   "$@"
 }
 
+print_whatsapp_alpha_json_summary() {
+  local json_path="$1"
+  python3 - "$json_path" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+
+def csv(values):
+    return ",".join(str(value) for value in (values or [])) or "none"
+
+
+summary = payload.get("readiness_summary") or {}
+pending = payload.get("pending_gates") or {}
+attended = pending.get("attended_fresh_receive") or {}
+cloud = pending.get("whatsapp_cloud") or {}
+calling = pending.get("whatsapp_cloud_calling") or {}
+cloud_handoff = cloud.get("setup_handoff") or {}
+calling_handoff = calling.get("setup_handoff") or {}
+actions = [
+    str(action.get("id"))
+    for action in (summary.get("next_actions") or [])
+    if action.get("id")
+]
+
+print(f"whatsapp_alpha_json_profile={payload.get('profile')}")
+print(
+    "whatsapp_alpha_json_readiness="
+    f"{summary.get('status')} "
+    f"complete={summary.get('complete')} "
+    f"local_checks_passed={summary.get('local_checks_passed')} "
+    "attended_fresh_receive_verified="
+    f"{summary.get('attended_fresh_receive_verified')} "
+    "external_meta_setup_required="
+    f"{summary.get('external_meta_setup_required')} "
+    f"operator_action_required={summary.get('operator_action_required')}"
+)
+print(f"whatsapp_alpha_json_next_actions={csv(actions)}")
+if attended:
+    print(
+        "whatsapp_alpha_json_attended_fresh_receive="
+        f"{attended.get('status')} "
+        f"cached_receive_verified={attended.get('cached_receive_verified')}"
+    )
+if cloud:
+    print(
+        "whatsapp_alpha_json_cloud="
+        f"{cloud.get('status')} "
+        f"missing={csv(cloud_handoff.get('missing') or cloud.get('missing'))} "
+        f"invalid={csv(cloud_handoff.get('invalid') or cloud.get('invalid'))}"
+    )
+if calling:
+    print(
+        "whatsapp_alpha_json_calling="
+        f"{calling.get('status')} "
+        f"missing={csv(calling_handoff.get('missing') or calling.get('missing'))} "
+        f"invalid={csv(calling_handoff.get('invalid') or calling.get('invalid'))}"
+    )
+PY
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --voice-bin)
@@ -585,6 +649,7 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
     echo "==> WhatsApp alpha readiness profile ($whatsapp_alpha_profile)"
     "${whatsapp_alpha_args[@]}" >"$whatsapp_alpha_json_output"
     echo "whatsapp_alpha_json=$whatsapp_alpha_json_output"
+    print_whatsapp_alpha_json_summary "$whatsapp_alpha_json_output"
   else
     run_step "WhatsApp alpha readiness profile ($whatsapp_alpha_profile)" "${whatsapp_alpha_args[@]}"
   fi

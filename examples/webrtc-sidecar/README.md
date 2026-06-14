@@ -232,11 +232,13 @@ python3 -m venv /tmp/voice-webrtc-venv
 /tmp/voice-webrtc-venv/bin/python examples/webrtc-sidecar/loopback_smoke.py
 /tmp/voice-webrtc-venv/bin/python examples/webrtc-sidecar/voice_stream_loopback_smoke.py --voice-bin /path/to/voice
 /tmp/voice-webrtc-venv/bin/python examples/webrtc-sidecar/stream_transcribe_loopback_smoke.py --voice-bin /path/to/voice
+/tmp/voice-webrtc-venv/bin/python examples/webrtc-sidecar/full_duplex_loopback_smoke.py --voice-bin /path/to/voice
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_sidecar.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_post_voice_stream.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_drain_sidecar_audio.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_echo_sidecar_audio.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_stream_transcribe_loopback_smoke.py
+/tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_full_duplex_loopback_smoke.py
 ```
 
 `loopback_smoke.py` starts the sidecar in-process, completes a local SDP
@@ -253,3 +255,8 @@ the Graph API.
 local WebRTC sender into the sidecar, drains the sidecar-decoded PCM, and runs
 `voice stream-transcribe` on that decoded audio. It validates the inbound
 WebRTC-to-STT path without WhatsApp or the Graph API.
+
+`full_duplex_loopback_smoke.py` exercises both directions on one sidecar call:
+local WebRTC audio drains through `voice stream-transcribe`, while
+`post_voice_stream.py` queues outbound `voice stream` PCM back to the same
+WebRTC peer. It is the closest local smoke to a single WhatsApp call turn.

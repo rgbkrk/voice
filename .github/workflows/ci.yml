@@ -54,4 +54,5 @@ jobs:
             examples/webrtc-sidecar/test_post_voice_stream.py \
             examples/webrtc-sidecar/test_drain_sidecar_audio.py \
             examples/webrtc-sidecar/test_echo_sidecar_audio.py \
-            examples/webrtc-sidecar/test_stream_transcribe_loopback_smoke.py
+            examples/webrtc-sidecar/test_stream_transcribe_loopback_smoke.py \
+            examples/webrtc-sidecar/test_full_duplex_loopback_smoke.py

@@ -65,6 +65,21 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         )
         self.assertTrue(payload["json_path"].endswith(".json"))
         self.assertTrue(payload["log_path"].endswith(".log"))
+        self.assertTrue(payload["manifest_path"].endswith(".manifest.json"))
+        self.assertFalse(Path(payload["manifest_path"]).exists())
+        manifest = payload["manifest"]
+        self.assertEqual(
+            manifest["schema"],
+            "voice.whatsapp_attended_cache_watch_manifest",
+        )
+        self.assertEqual(manifest["profile"], "attended-cache-receive")
+        self.assertFalse(manifest["drains_bridge_messages"])
+        self.assertEqual(manifest["wait_seconds"], 120.0)
+        self.assertEqual(manifest["expected_agent_number"], "13236478455")
+        self.assertEqual(manifest["expected_agent_name"], "Quill")
+        self.assertEqual(manifest["artifacts"]["json"], payload["json_path"])
+        self.assertEqual(manifest["artifacts"]["log"], payload["log_path"])
+        self.assertEqual(manifest["artifacts"]["manifest"], payload["manifest_path"])
         alpha = payload["alpha_command"]
         self.assertIn("--profile", alpha)
         self.assertIn("attended-cache-receive", alpha)
@@ -126,9 +141,25 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
             )
 
             entries = command_log_entries(log_path)
+            manifest_path = (
+                tmp_path
+                / "voice-whatsapp-attended-cache-watch-20260614T225118Z.manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
         self.assertIn("ok: WhatsApp attended cache watch started", result.stdout)
         self.assertIn("wait_seconds=30.0", result.stdout)
+        self.assertIn("manifest=", result.stdout)
+        self.assertEqual(manifest["unit"], "voice-whatsapp-attended-cache-watch-20260614T225118Z")
+        self.assertEqual(manifest["wait_seconds"], 30.0)
+        self.assertFalse(manifest["drains_bridge_messages"])
+        self.assertEqual(manifest["profile"], "attended-cache-receive")
+        self.assertIn("alpha", manifest["commands"])
+        self.assertIn("--wait-audio-cache-seconds", manifest["commands"]["alpha"])
+        self.assertEqual(
+            manifest["artifacts"]["json"],
+            str(tmp_path / "voice-whatsapp-attended-cache-watch-20260614T225118Z.json"),
+        )
         self.assertEqual(len(entries), 1)
         entry = entries[0]
         self.assertEqual(entry[0], "systemd-run")
@@ -201,6 +232,9 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertEqual(payload["systemd"]["MainPID"], "12345")
         self.assertTrue(payload["json"]["exists"])
         self.assertEqual(payload["json"]["size_bytes"], 0)
+        self.assertFalse(payload["manifest"]["exists"])
+        self.assertEqual(payload["manifest"]["size_bytes"], 0)
+        self.assertEqual(payload["manifest_summary"], {})
         self.assertEqual(payload["service"], "watch.service")
 
     def test_status_summarizes_verified_artifact(self):
@@ -247,6 +281,26 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (tmp_path / "watch.log").write_text("done\n", encoding="utf-8")
+            (tmp_path / "watch.manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "voice.whatsapp_attended_cache_watch_manifest",
+                        "version": 1,
+                        "profile": "attended-cache-receive",
+                        "created_at_utc": "2026-06-14T22:51:18Z",
+                        "wait_seconds": 120.0,
+                        "drains_bridge_messages": False,
+                        "expected_agent_number": "13236478455",
+                        "expected_agent_name": "Quill",
+                        "artifacts": {
+                            "json": str(tmp_path / "watch.json"),
+                            "log": str(tmp_path / "watch.log"),
+                            "manifest": str(tmp_path / "watch.manifest.json"),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             result = subprocess.run(
                 [
@@ -271,6 +325,14 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertEqual(payload["alpha"]["attended_status"], "verified")
         self.assertTrue(payload["alpha"]["attended_fresh_receive_verified"])
         self.assertEqual(payload["alpha"]["fresh_count"], 1)
+        self.assertTrue(payload["manifest"]["exists"])
+        self.assertTrue(payload["manifest"]["parsed"])
+        self.assertEqual(
+            payload["manifest_summary"]["profile"],
+            "attended-cache-receive",
+        )
+        self.assertEqual(payload["manifest_summary"]["wait_seconds"], 120.0)
+        self.assertFalse(payload["manifest_summary"]["drains_bridge_messages"])
 
     def test_list_discovers_active_units_and_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -296,6 +358,14 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
                       exit 0
                     fi
                     if [[ "$args" == *"show watch-done.service"* ]]; then
+                      cat <<'EOF'
+                    ActiveState=inactive
+                    SubState=dead
+                    MainPID=0
+                    EOF
+                      exit 0
+                    fi
+                    if [[ "$args" == *"show watch-manifest.service"* ]]; then
                       cat <<'EOF'
                     ActiveState=inactive
                     SubState=dead
@@ -331,6 +401,19 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (tmp_path / "watch-manifest.manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "voice.whatsapp_attended_cache_watch_manifest",
+                        "version": 1,
+                        "profile": "attended-cache-receive",
+                        "created_at_utc": "2026-06-14T22:51:18Z",
+                        "wait_seconds": 60.0,
+                        "drains_bridge_messages": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             result = subprocess.run(
                 [
@@ -350,7 +433,7 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
             )
 
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["count"], 3)
         by_unit = {watch["unit"]: watch for watch in payload["watches"]}
         self.assertEqual(
             by_unit["watch-active"]["watch_status"],
@@ -358,6 +441,12 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         )
         self.assertEqual(by_unit["watch-done"]["watch_status"], "verified")
         self.assertEqual(by_unit["watch-done"]["alpha"]["fresh_count"], 1)
+        self.assertEqual(by_unit["watch-manifest"]["watch_status"], "no_artifact")
+        self.assertTrue(by_unit["watch-manifest"]["manifest"]["parsed"])
+        self.assertEqual(
+            by_unit["watch-manifest"]["manifest_summary"]["wait_seconds"],
+            60.0,
+        )
 
     def test_stop_requests_systemd_stop_and_reports_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -391,6 +480,18 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
             )
             (tmp_path / "watch.json").write_text("", encoding="utf-8")
             (tmp_path / "watch.log").write_text("", encoding="utf-8")
+            (tmp_path / "watch.manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "voice.whatsapp_attended_cache_watch_manifest",
+                        "version": 1,
+                        "profile": "attended-cache-receive",
+                        "wait_seconds": 30.0,
+                        "drains_bridge_messages": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             result = subprocess.run(
                 [
@@ -413,6 +514,8 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertEqual(payload["stop_returncode"], 0)
         self.assertEqual(payload["watch_status"], "empty_artifact")
         self.assertTrue(payload["json"]["exists"])
+        self.assertTrue(payload["manifest"]["exists"])
+        self.assertEqual(payload["manifest_summary"]["wait_seconds"], 30.0)
         self.assertEqual(entries[0], ["--user", "stop", "watch.service"])
         self.assertIn("show", entries[1])
 

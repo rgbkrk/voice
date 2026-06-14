@@ -49,6 +49,12 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def utc_iso_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
 def build_alpha_command(args: argparse.Namespace) -> list[str]:
     command = [
         str(args.alpha_script),
@@ -77,6 +83,7 @@ def build_watch(args: argparse.Namespace) -> dict[str, Any]:
     output_dir = args.output_dir.expanduser().resolve()
     json_path = output_dir / f"{unit}.json"
     log_path = output_dir / f"{unit}.log"
+    manifest_path = output_dir / f"{unit}.manifest.json"
     alpha_command = build_alpha_command(args)
     inner_command = (
         f"cd {shlex.quote(str(args.repo_root))} && "
@@ -97,11 +104,50 @@ def build_watch(args: argparse.Namespace) -> dict[str, Any]:
         "service": service,
         "json_path": str(json_path),
         "log_path": str(log_path),
+        "manifest_path": str(manifest_path),
         "alpha_command": alpha_command,
         "systemd_command": systemd_command,
         "status_command": ["systemctl", "--user", "status", service],
         "journal_command": ["journalctl", "--user", "-u", service, "-f"],
     }
+
+
+def build_manifest(args: argparse.Namespace, watch: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "voice.whatsapp_attended_cache_watch_manifest",
+        "version": 1,
+        "profile": "attended-cache-receive",
+        "drains_bridge_messages": False,
+        "created_at_utc": utc_iso_timestamp(),
+        "unit": watch["unit"],
+        "service": watch["service"],
+        "wait_seconds": float(args.wait_seconds),
+        "voice_bin": str(args.voice_bin),
+        "hermes_home": str(args.hermes_home),
+        "hermes_config": str(args.hermes_config),
+        "expected_agent_number": args.expected_agent_number or None,
+        "expected_agent_name": args.expected_agent_name or None,
+        "artifacts": {
+            "json": watch["json_path"],
+            "log": watch["log_path"],
+            "manifest": watch["manifest_path"],
+        },
+        "commands": {
+            "alpha": watch["alpha_command"],
+            "systemd": watch["systemd_command"],
+            "status": watch["status_command"],
+            "journal": watch["journal_command"],
+        },
+    }
+
+
+def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temp_path.replace(path)
 
 
 def service_name(unit: str) -> str:
@@ -178,6 +224,29 @@ def summarize_alpha_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def summarize_manifest_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    artifacts = payload.get("artifacts")
+    artifacts = artifacts if isinstance(artifacts, dict) else {}
+    return {
+        "schema": payload.get("schema"),
+        "version": payload.get("version"),
+        "profile": payload.get("profile"),
+        "created_at_utc": payload.get("created_at_utc"),
+        "wait_seconds": payload.get("wait_seconds"),
+        "drains_bridge_messages": payload.get("drains_bridge_messages"),
+        "expected_agent_number": payload.get("expected_agent_number"),
+        "expected_agent_name": payload.get("expected_agent_name"),
+        "voice_bin": payload.get("voice_bin"),
+        "hermes_home": payload.get("hermes_home"),
+        "hermes_config": payload.get("hermes_config"),
+        "json_path": artifacts.get("json"),
+        "log_path": artifacts.get("log"),
+        "manifest_path": artifacts.get("manifest"),
+    }
+
+
 def classify_watch_status(
     *,
     systemd_state: dict[str, str],
@@ -205,6 +274,7 @@ def inspect_unit(unit_or_service: str, args: argparse.Namespace) -> dict[str, An
     output_dir = args.output_dir.expanduser().resolve()
     json_path = output_dir / f"{unit}.json"
     log_path = output_dir / f"{unit}.log"
+    manifest_path = output_dir / f"{unit}.manifest.json"
     systemctl_command = [
         str(args.systemctl_bin),
         "--user",
@@ -227,6 +297,9 @@ def inspect_unit(unit_or_service: str, args: argparse.Namespace) -> dict[str, An
     json_artifact = artifact_status(json_path)
     log_artifact = artifact_status(log_path)
     log_artifact.pop("payload", None)
+    manifest_artifact = artifact_status(manifest_path)
+    manifest_summary = summarize_manifest_payload(manifest_artifact.get("payload"))
+    manifest_artifact.pop("payload", None)
     alpha_summary = summarize_alpha_payload(json_artifact.get("payload"))
     watch_status = classify_watch_status(
         systemd_state=systemd_state,
@@ -244,6 +317,8 @@ def inspect_unit(unit_or_service: str, args: argparse.Namespace) -> dict[str, An
         "systemd": systemd_state,
         "json": json_artifact,
         "log": log_artifact,
+        "manifest": manifest_artifact,
+        "manifest_summary": manifest_summary,
         "alpha": alpha_summary,
         "status_command": ["systemctl", "--user", "status", service],
         "journal_command": ["journalctl", "--user", "-u", service, "-f"],
@@ -288,8 +363,21 @@ def list_artifact_watch_units(args: argparse.Namespace) -> list[str]:
     for pattern in (f"{args.unit_prefix}-*.json", f"{args.unit_prefix}-*.log"):
         for path in output_dir.glob(pattern):
             if path.is_file():
-                units.add(path.stem)
+                unit = unit_from_artifact_path(path)
+                if unit:
+                    units.add(unit)
     return sorted(units)
+
+
+def unit_from_artifact_path(path: Path) -> str | None:
+    name = path.name
+    if name.endswith(".manifest.json"):
+        return name[: -len(".manifest.json")]
+    if name.endswith(".json"):
+        return name[: -len(".json")]
+    if name.endswith(".log"):
+        return name[: -len(".log")]
+    return None
 
 
 def list_watches(args: argparse.Namespace) -> dict[str, Any]:
@@ -348,6 +436,7 @@ def print_human(result: dict[str, Any]) -> None:
     print(f"service={result['service']}")
     print(f"json={result['json_path']}")
     print(f"log={result['log_path']}")
+    print(f"manifest={result['manifest_path']}")
     print(f"wait_seconds={result['wait_seconds']}")
     print(f"alpha_command={shlex.join(result['alpha_command'])}")
     print(f"systemd_command={shlex.join(result['systemd_command'])}")
@@ -365,8 +454,25 @@ def print_status_human(result: dict[str, Any]) -> None:
     print(f"main_pid={result.get('systemd', {}).get('MainPID')}")
     json_artifact = result.get("json") or {}
     log_artifact = result.get("log") or {}
+    manifest_artifact = result.get("manifest") or {}
     print(f"json={json_artifact.get('path')} size={json_artifact.get('size_bytes')}")
     print(f"log={log_artifact.get('path')} size={log_artifact.get('size_bytes')}")
+    print(
+        f"manifest={manifest_artifact.get('path')} "
+        f"size={manifest_artifact.get('size_bytes')}"
+    )
+    manifest_summary = result.get("manifest_summary") or {}
+    if manifest_summary:
+        print(
+            "manifest_summary="
+            f"profile={manifest_summary.get('profile')} "
+            f"created_at_utc={manifest_summary.get('created_at_utc')} "
+            f"wait_seconds={manifest_summary.get('wait_seconds')} "
+            "drains_bridge_messages="
+            f"{manifest_summary.get('drains_bridge_messages')} "
+            f"expected_agent_number={manifest_summary.get('expected_agent_number')} "
+            f"expected_agent_name={manifest_summary.get('expected_agent_name')}"
+        )
     alpha = result.get("alpha") or {}
     if alpha:
         print(
@@ -399,8 +505,13 @@ def print_stop_human(result: dict[str, Any]) -> None:
     print(f"sub_state={result.get('systemd', {}).get('SubState')}")
     json_artifact = result.get("json") or {}
     log_artifact = result.get("log") or {}
+    manifest_artifact = result.get("manifest") or {}
     print(f"json={json_artifact.get('path')} size={json_artifact.get('size_bytes')}")
     print(f"log={log_artifact.get('path')} size={log_artifact.get('size_bytes')}")
+    print(
+        f"manifest={manifest_artifact.get('path')} "
+        f"size={manifest_artifact.get('size_bytes')}"
+    )
 
 
 def print_list_human(result: dict[str, Any]) -> None:
@@ -410,11 +521,13 @@ def print_list_human(result: dict[str, Any]) -> None:
     print(f"count={result['count']}")
     for index, watch in enumerate(result.get("watches") or [], start=1):
         json_artifact = watch.get("json") or {}
+        manifest_summary = watch.get("manifest_summary") or {}
         print(
             f"watch[{index}]={watch.get('unit')} "
             f"status={watch.get('watch_status')} "
             f"active_state={(watch.get('systemd') or {}).get('ActiveState')} "
-            f"json_size={json_artifact.get('size_bytes')}"
+            f"json_size={json_artifact.get('size_bytes')} "
+            f"manifest_wait_seconds={manifest_summary.get('wait_seconds')}"
         )
 
 
@@ -496,14 +609,27 @@ def main(argv: list[str] | None = None) -> int:
         return int(result.get("stop_returncode") or 0)
 
     watch = build_watch(args)
+    manifest = build_manifest(args, watch)
     result = {
         **watch,
         "dry_run": args.dry_run,
         "wait_seconds": args.wait_seconds,
+        "manifest": manifest,
         "returncode": 0,
     }
     if not args.dry_run:
         args.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            write_manifest(Path(watch["manifest_path"]), manifest)
+        except OSError as exc:
+            result["returncode"] = 1
+            result["stderr"] = f"failed to write manifest: {exc}"
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print_human(result)
+                print(result["stderr"], file=sys.stderr)
+            return 1
         completed = subprocess.run(
             watch["systemd_command"],
             check=False,

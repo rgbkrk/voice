@@ -26,26 +26,29 @@ python3 -m venv /tmp/voice-webrtc-venv
 
 ## Run
 
-Create a FIFO for outbound audio from `voice`:
+Start the sidecar:
 
 ```bash
-mkfifo /tmp/voice-webrtc-out.s16le
 /tmp/voice-webrtc-venv/bin/python examples/webrtc-sidecar/sidecar.py \
-  --tx-pcm /tmp/voice-webrtc-out.s16le \
   --rx-pcm /tmp/voice-webrtc-in.s16le
 ```
 
-Feed TTS frames into the FIFO:
+Once Hermes or a local test has created a call session, stream TTS frames into
+the sidecar's per-call outbound queue:
 
 ```bash
-voice stream --sample-rate 48000 --frame-ms 20 \
-  --raw-output /tmp/voice-webrtc-out.s16le \
+python examples/webrtc-sidecar/post_voice_stream.py local-test \
   "Hello from the WebRTC sidecar."
 ```
 
-You can also omit `--tx-pcm` and POST outbound frames over local HTTP once a
-call session exists. This is the shape Hermes can use when it receives
-`stream_speak` frames from the voice daemon:
+The helper runs `voice stream --raw-output - --sample-rate 48000 --frame-ms 20`
+and POSTs each 1920-byte PCM frame to `POST /calls/{call_id}/audio`. Use
+`--sidecar-url` when the sidecar is not listening on `http://127.0.0.1:8787`,
+and pass normal voice options such as `--voice`, `--speed`, `--markdown`,
+`--input-file`, `--sub`, and `--sub-file`.
+
+You can also POST outbound frames yourself. This is the shape Hermes can use
+when it receives `stream_speak` frames from the voice daemon:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8787/calls/local-test/audio \
@@ -63,6 +66,18 @@ Each 20 ms frame is 1920 bytes before base64 encoding. HTTP input is queued per
 `call_id`; `--tx-pcm` remains a process-level fallback source. If both sources
 are idle, the sidecar sends silence. That is useful for checking SDP, ICE, and
 call timing before TTS is wired in.
+
+For FIFO-based smoke tests, start the sidecar with `--tx-pcm`:
+
+```bash
+mkfifo /tmp/voice-webrtc-out.s16le
+/tmp/voice-webrtc-venv/bin/python examples/webrtc-sidecar/sidecar.py \
+  --tx-pcm /tmp/voice-webrtc-out.s16le \
+  --rx-pcm /tmp/voice-webrtc-in.s16le
+voice stream --sample-rate 48000 --frame-ms 20 \
+  --raw-output /tmp/voice-webrtc-out.s16le \
+  "Hello from the WebRTC sidecar."
+```
 
 ## SDP API
 
@@ -154,4 +169,5 @@ set:
 python3 -m venv /tmp/voice-webrtc-venv
 /tmp/voice-webrtc-venv/bin/pip install -r examples/webrtc-sidecar/requirements.txt pytest
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_sidecar.py
+/tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_post_voice_stream.py
 ```

@@ -85,7 +85,15 @@ and groups failures as voice runtime, Hermes runtime/config, bridge pairing,
 voice-note, live-call local sidecar, or external Meta setup. Use
 `--require-whatsapp-calling` when a host is expected to be ready for real Cloud
 Calling; otherwise missing Meta credentials are reported as external setup
-still required, not as a local Baileys voice-note failure.
+still required, not as a local Baileys voice-note failure. Add
+`--run-inbound-cache-smoke` when the report should also replay a cached inbound
+WhatsApp voice note through `voice stream-transcribe`:
+
+```bash
+scripts/verify_whatsapp_alpha_readiness.py \
+  --hermes-home ~/.hermes \
+  --run-inbound-cache-smoke
+```
 
 To prove the outbound voice-note path without sending a WhatsApp message, run:
 

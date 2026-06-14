@@ -119,6 +119,27 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         )
         self.assertTrue(payload["external_meta_setup"]["setup_steps"])
 
+    def test_inbound_cache_smoke_adds_receive_component(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                "--run-inbound-cache-smoke",
+                "--whatsapp-audio-cache-dir",
+                str(Path(tmp) / "audio_cache"),
+            )
+
+        self.assertTrue(payload["success"])
+        components = {item["name"]: item for item in payload["components"]}
+        self.assertIn("whatsapp_inbound_cache_stt", components)
+        inbound = components["whatsapp_inbound_cache_stt"]
+        self.assertEqual(inbound["category"], "voice_note")
+        self.assertIn("--require-cache", inbound["command"])
+        self.assertIn("--run-stt", inbound["command"])
+        self.assertIn(
+            "whatsapp_inbound_cache_stt",
+            payload["by_category"]["voice_note"]["components"],
+        )
+
     def test_require_cloud_calling_fails_when_meta_credentials_are_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

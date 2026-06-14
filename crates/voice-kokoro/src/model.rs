@@ -177,8 +177,7 @@ impl KModel {
             .iter()
             .map(|&v| v.max(1.0) as i64)
             .collect();
-        let pred_dur_vec = suppress_boundary_token_durations(pred_dur_vec);
-
+        let pred_dur_vec = normalize_boundary_token_durations(pred_dur_vec);
         let total_frames: usize = pred_dur_vec.iter().sum::<i64>() as usize;
 
         // Build alignment rows on GPU: each row is [0..0, 1..1, 0..0]
@@ -248,9 +247,14 @@ fn validate_context_length(seq_len: usize, context_length: usize) -> Result<()> 
     Ok(())
 }
 
-fn suppress_boundary_token_durations(mut durations: Vec<i64>) -> Vec<i64> {
+const MAX_BOS_DURATION_FRAMES: i64 = 16;
+
+fn normalize_boundary_token_durations(mut durations: Vec<i64>) -> Vec<i64> {
+    // The Python reference keeps BOS/EOS durations in the alignment. Keeping a
+    // bounded BOS duration gives the first real token enough onset context,
+    // while suppressing EOS avoids long synthesized tails for short utterances.
     if let Some(first) = durations.first_mut() {
-        *first = 0;
+        *first = (*first).min(MAX_BOS_DURATION_FRAMES);
     }
     if durations.len() > 1 {
         let last_idx = durations.len() - 1;
@@ -261,7 +265,9 @@ fn suppress_boundary_token_durations(mut durations: Vec<i64>) -> Vec<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{suppress_boundary_token_durations, validate_context_length};
+    use super::{
+        normalize_boundary_token_durations, validate_context_length, MAX_BOS_DURATION_FRAMES,
+    };
 
     #[test]
     fn context_length_allows_equal_length() {
@@ -275,16 +281,23 @@ mod tests {
     }
 
     #[test]
-    fn test_suppresses_bos_eos_duration_frames() {
-        let durations = suppress_boundary_token_durations(vec![4, 7, 9, 3]);
-        assert_eq!(durations, vec![0, 7, 9, 0]);
+    fn boundary_duration_normalization_preserves_capped_bos_and_suppresses_eos() {
+        let durations = normalize_boundary_token_durations(vec![4, 7, 9, 3]);
+        assert_eq!(durations, vec![4, 7, 9, 0]);
+
+        let capped = normalize_boundary_token_durations(vec![40, 7, 9, 3]);
+        assert_eq!(capped, vec![MAX_BOS_DURATION_FRAMES, 7, 9, 0]);
     }
 
     #[test]
-    fn test_suppresses_only_available_boundary_duration() {
-        assert_eq!(suppress_boundary_token_durations(vec![2]), vec![0]);
+    fn boundary_duration_normalization_caps_single_boundary_duration() {
+        assert_eq!(normalize_boundary_token_durations(vec![2]), vec![2]);
         assert_eq!(
-            suppress_boundary_token_durations(Vec::new()),
+            normalize_boundary_token_durations(vec![40]),
+            vec![MAX_BOS_DURATION_FRAMES]
+        );
+        assert_eq!(
+            normalize_boundary_token_durations(Vec::new()),
             Vec::<i64>::new()
         );
     }

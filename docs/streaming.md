@@ -149,8 +149,9 @@ It then emits `Event` frames until a terminal event:
 Audio frames are fixed-duration PCM packets. The last frame is padded with
 silence when needed so clients can feed frames directly into an Opus encoder.
 Use `sample_rate: 48000` and `frame_ms: 20` for a WebRTC-friendly stream.
-The WhatsApp/WebRTC sidecar v1 shape is also captured as machine-readable JSON
-in [`docs/contracts/webrtc-sidecar-v1.json`](contracts/webrtc-sidecar-v1.json).
+The WebRTC-friendly constants live in the `voice-stream` crate and are checked
+against the machine-readable sidecar v1 shape in
+[`docs/contracts/webrtc-sidecar-v1.json`](contracts/webrtc-sidecar-v1.json).
 
 ### STT Input
 

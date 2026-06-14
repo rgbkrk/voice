@@ -47,6 +47,7 @@ echo "Hello" | voice say
 voice say --markdown -f post.mdx
 voice phonemes "ChatGPT uses RuntimeStateDoc"
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output output.s16le "Hello"
+voice stream --sample-rate 48000 --frame-ms 20 --output streamed.ogg "Hello"
 
 # Speech-to-text from microphone
 voice listen
@@ -118,7 +119,9 @@ Options:
 ### `voice stream`
 
 Requires a running `voiced` daemon. Emits ordered signed 16-bit little-endian
-mono PCM frames as compact summaries or full JSON events.
+mono PCM frames as compact summaries or full JSON events. Use `--raw-output`
+for headerless PCM frames, or `--output` for streamed Ogg/Opus encoded from
+those frames without a WAV intermediate.
 
 ```
 Usage: voice stream [OPTIONS] [TEXT]...
@@ -130,6 +133,8 @@ Options:
       --sample-rate <SAMPLE_RATE>  Target stream sample rate [default: 24000]
       --frame-ms <FRAME_MS>        Target frame duration in milliseconds [default: 20]
   -o, --raw-output <PATH>          Write raw signed 16-bit little-endian mono PCM
+      --output <PATH>              Write streamed audio to an Ogg/Opus file
+      --format <FORMAT>            Output format: ogg-opus
       --json                       Print full JSON stream events
       --markdown                   Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>     Word substitution (repeatable)

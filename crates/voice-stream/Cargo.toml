@@ -9,3 +9,6 @@ repository = "https://github.com/rgbkrk/voice"
 
 [dependencies]
 serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

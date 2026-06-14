@@ -8,6 +8,24 @@
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_FRAME_MS: u32 = 20;
+pub const PCM_S16LE_BYTES_PER_SAMPLE: usize = 2;
+
+/// WebRTC-friendly local PCM contract used by Hermes/WhatsApp sidecar work.
+///
+/// WebRTC carries Opus over RTP on the wire, but the local `voice` boundary
+/// stays as signed 16-bit little-endian mono PCM so callers can choose whether
+/// to feed frames to a sidecar, an Opus encoder, or test fixtures.
+pub const WEBRTC_SAMPLE_RATE: u32 = 48_000;
+pub const WEBRTC_CHANNELS: u16 = 1;
+pub const WEBRTC_FRAME_MS: u32 = DEFAULT_FRAME_MS;
+pub const WEBRTC_SAMPLES_PER_FRAME: usize =
+    WEBRTC_SAMPLE_RATE as usize * WEBRTC_FRAME_MS as usize / 1_000;
+pub const WEBRTC_FRAME_BYTES: usize =
+    WEBRTC_SAMPLES_PER_FRAME * WEBRTC_CHANNELS as usize * PCM_S16LE_BYTES_PER_SAMPLE;
+pub const WEBRTC_DEFAULT_DRAIN_BYTES: usize = WEBRTC_FRAME_BYTES * 50;
+pub const WEBRTC_MAX_INBOUND_QUEUE_BYTES: usize =
+    WEBRTC_SAMPLE_RATE as usize * WEBRTC_CHANNELS as usize * PCM_S16LE_BYTES_PER_SAMPLE * 10;
+pub const WEBRTC_MAX_DRAIN_WAIT_MS: u32 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -348,6 +366,49 @@ mod tests {
     fn samples_per_frame_uses_minimum_one_sample() {
         assert_eq!(samples_per_frame(0, 0), 1);
         assert_eq!(samples_per_frame(1, 1), 1);
+    }
+
+    #[test]
+    fn webrtc_pcm_constants_describe_twenty_ms_mono_frames() {
+        assert_eq!(WEBRTC_SAMPLE_RATE, 48_000);
+        assert_eq!(WEBRTC_CHANNELS, 1);
+        assert_eq!(WEBRTC_FRAME_MS, 20);
+        assert_eq!(WEBRTC_SAMPLES_PER_FRAME, 960);
+        assert_eq!(WEBRTC_FRAME_BYTES, 1_920);
+        assert_eq!(
+            WEBRTC_SAMPLES_PER_FRAME,
+            samples_per_frame(WEBRTC_SAMPLE_RATE, WEBRTC_FRAME_MS)
+        );
+    }
+
+    #[test]
+    fn webrtc_sidecar_json_contract_matches_stream_constants() {
+        let contract_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/contracts/webrtc-sidecar-v1.json");
+        let bytes = std::fs::read(&contract_path).unwrap_or_else(|err| {
+            panic!("read {}: {err}", contract_path.display());
+        });
+        let contract: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+            panic!("parse {}: {err}", contract_path.display());
+        });
+
+        assert_eq!(contract["contract"], "voice.webrtc_sidecar");
+        assert_eq!(contract["version"], 1);
+
+        let audio = &contract["audio"];
+        assert_eq!(audio["sample_rate"], WEBRTC_SAMPLE_RATE);
+        assert_eq!(audio["channels"], WEBRTC_CHANNELS);
+        assert_eq!(audio["frame_ms"], WEBRTC_FRAME_MS);
+        assert_eq!(audio["encoding"], "pcm_s16le");
+        assert_eq!(audio["bytes_per_sample"], PCM_S16LE_BYTES_PER_SAMPLE);
+        assert_eq!(audio["samples_per_frame"], WEBRTC_SAMPLES_PER_FRAME);
+        assert_eq!(audio["frame_bytes"], WEBRTC_FRAME_BYTES);
+        assert_eq!(audio["default_drain_bytes"], WEBRTC_DEFAULT_DRAIN_BYTES);
+        assert_eq!(
+            audio["max_inbound_queue_bytes"],
+            WEBRTC_MAX_INBOUND_QUEUE_BYTES
+        );
+        assert_eq!(audio["max_drain_wait_ms"], WEBRTC_MAX_DRAIN_WAIT_MS);
     }
 
     #[test]

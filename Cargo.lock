@@ -7068,6 +7068,7 @@ dependencies = [
  "ctrlc",
  "dirs 5.0.1",
  "hound",
+ "libc",
  "pulldown-cmark",
  "rodio",
  "serde",
@@ -7154,6 +7155,7 @@ name = "voice-stream"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

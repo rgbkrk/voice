@@ -1453,6 +1453,8 @@ fn run_stream(stream_args: StreamArgs) {
     let mut daemon = connect_daemon_or_exit();
     let mut terminal_error: Option<String> = None;
     let mut frame_count = 0u64;
+    let emit_summaries =
+        should_emit_stream_summaries(stream_args.json, QUIET.load(Ordering::Relaxed));
 
     let result = daemon.stream_speak(
         &text,
@@ -1467,7 +1469,7 @@ fn run_stream(stream_args: StreamArgs) {
 
             match event {
                 voice_stream::TtsStreamEvent::Started { metadata } => {
-                    if !stream_args.json {
+                    if emit_summaries {
                         let line = format!(
                             "started stream={} rate={}Hz frame={}ms encoding={:?}",
                             metadata.stream_id,
@@ -1487,7 +1489,7 @@ fn run_stream(stream_args: StreamArgs) {
                     if let Some(writer) = output_writer.as_mut() {
                         writer.write_frame(&frame)?;
                     }
-                    if !stream_args.json {
+                    if emit_summaries {
                         let line = format!(
                             "audio seq={} samples={} padding={}",
                             frame.sequence, frame.sample_count, frame.padding_samples
@@ -1500,7 +1502,7 @@ fn run_stream(stream_args: StreamArgs) {
                     }
                 }
                 voice_stream::TtsStreamEvent::Ended(end) => {
-                    if !stream_args.json {
+                    if emit_summaries {
                         let line = format!(
                             "ended stream={} frames={} samples={} duration_ms={}",
                             end.stream_id, end.frames, end.samples, end.duration_ms
@@ -1514,7 +1516,7 @@ fn run_stream(stream_args: StreamArgs) {
                 }
                 voice_stream::TtsStreamEvent::Error(err) => {
                     terminal_error = Some(err.message.clone());
-                    if !stream_args.json {
+                    if emit_summaries {
                         let line = format!("error stream={}: {}", err.stream_id, err.message);
                         if binary_to_stdout {
                             eprintln!("{line}");
@@ -1525,7 +1527,7 @@ fn run_stream(stream_args: StreamArgs) {
                 }
                 voice_stream::TtsStreamEvent::Cancelled(cancelled) => {
                     terminal_error = Some(cancelled.reason.clone());
-                    if !stream_args.json {
+                    if emit_summaries {
                         let line = format!(
                             "cancelled stream={}: {}",
                             cancelled.stream_id, cancelled.reason
@@ -1572,6 +1574,10 @@ fn run_stream(stream_args: StreamArgs) {
         eprintln!("voice stream produced no audio frames");
         std::process::exit(1);
     }
+}
+
+fn should_emit_stream_summaries(json: bool, quiet: bool) -> bool {
+    !json && !quiet
 }
 
 fn run_stream_transcribe(stream_args: StreamTranscribeArgs) {
@@ -2418,6 +2424,14 @@ mod tests {
                 .unwrap(),
             voice_audio::AudioOutputFormat::OggOpus
         );
+    }
+
+    #[test]
+    fn stream_summaries_are_suppressed_for_json_or_quiet_output() {
+        assert!(should_emit_stream_summaries(false, false));
+        assert!(!should_emit_stream_summaries(true, false));
+        assert!(!should_emit_stream_summaries(false, true));
+        assert!(!should_emit_stream_summaries(true, true));
     }
 
     #[test]

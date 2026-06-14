@@ -369,6 +369,16 @@ enum DaemonCommand {
         #[arg(short, long, value_enum, default_value_t = ReplayPart::Question)]
         part: ReplayPart,
     },
+
+    /// Install voiced as a system service (macOS LaunchAgent or Linux systemd user unit)
+    Install {
+        /// Install the service file without starting the daemon immediately
+        #[arg(long)]
+        no_start: bool,
+    },
+
+    /// Stop and remove the voiced system service
+    Uninstall,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -880,6 +890,12 @@ fn run_daemon(args: DaemonArgs) {
                 queue_id,
                 duration
             );
+        }
+        DaemonCommand::Install { no_start } => {
+            run_daemon_install(no_start);
+        }
+        DaemonCommand::Uninstall => {
+            run_daemon_uninstall();
         }
     }
 }
@@ -1807,6 +1823,307 @@ fn stream_playback(
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+/// Resolve the path to the `voiced` binary.
+///
+/// Checks a sibling of the current executable first (covers release archives
+/// and cargo target directories), then falls back to PATH.
+fn find_voiced() -> Option<std::path::PathBuf> {
+    // Sibling of current exe
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.with_file_name("voiced");
+        if sibling.is_file() {
+            return Some(sibling);
+        }
+    }
+    // PATH lookup
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let candidate = dir.join("voiced");
+            if candidate.is_file() {
+                Some(candidate)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn run_daemon_install(no_start: bool) {
+    let voiced_path = match find_voiced() {
+        Some(p) => p,
+        None => {
+            eprintln!("error: voiced not found on PATH or alongside the voice binary");
+            eprintln!("install it first with: cargo install voiced");
+            std::process::exit(1);
+        }
+    };
+
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let agents_dir = home.join("Library/LaunchAgents");
+    std::fs::create_dir_all(&agents_dir).unwrap_or_else(|e| {
+        eprintln!("error: could not create {}: {e}", agents_dir.display());
+        std::process::exit(1);
+    });
+
+    let plist_path = agents_dir.join("com.rgbkrk.voice.voiced.plist");
+    let voiced_str = voiced_path.display().to_string();
+
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.rgbkrk.voice.voiced</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{voiced_str}</string>
+    <string>--tts-only</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/voiced.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/voiced.err.log</string>
+</dict>
+</plist>
+"#
+    );
+
+    std::fs::write(&plist_path, &plist).unwrap_or_else(|e| {
+        eprintln!("error: could not write {}: {e}", plist_path.display());
+        std::process::exit(1);
+    });
+
+    println!("Installing voiced as a LaunchAgent...");
+    println!("  voiced:  {voiced_str}");
+    println!("  plist:   {}", plist_path.display());
+
+    let uid = unsafe { libc::getuid() };
+    let target = format!("gui/{uid}");
+    let label = format!("gui/{uid}/com.rgbkrk.voice.voiced");
+
+    // Unload any existing instance silently before re-loading
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", &target, &plist_path.to_string_lossy()])
+        .output();
+
+    let bootstrap = std::process::Command::new("launchctl")
+        .args(["bootstrap", &target, &plist_path.to_string_lossy()])
+        .output();
+
+    match bootstrap {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            eprintln!(
+                "warning: launchctl bootstrap exited {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Err(e) => {
+            eprintln!("warning: launchctl bootstrap failed: {e}");
+        }
+    }
+
+    let _ = std::process::Command::new("launchctl")
+        .args(["enable", &label])
+        .output();
+
+    println!("  loaded:  {label}");
+
+    if !no_start {
+        let kick = std::process::Command::new("launchctl")
+            .args(["kickstart", "-k", &label])
+            .output();
+        match kick {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => {
+                eprintln!(
+                    "warning: launchctl kickstart exited {}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            Err(e) => eprintln!("warning: launchctl kickstart failed: {e}"),
+        }
+
+        // Give daemon a moment to start before printing status
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        println!();
+        if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
+            let result = daemon_response_or_exit(daemon.status());
+            print_daemon_status(&result);
+        } else {
+            eprintln!("note: daemon did not respond yet — try `voice daemon status` in a moment");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_daemon_install(no_start: bool) {
+    let voiced_path = match find_voiced() {
+        Some(p) => p,
+        None => {
+            eprintln!("error: voiced not found on PATH or alongside the voice binary");
+            eprintln!("install it first with: cargo install voiced");
+            std::process::exit(1);
+        }
+    };
+
+    let config_dir = dirs::config_dir().unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join(".config")
+    });
+    let systemd_dir = config_dir.join("systemd/user");
+    std::fs::create_dir_all(&systemd_dir).unwrap_or_else(|e| {
+        eprintln!("error: could not create {}: {e}", systemd_dir.display());
+        std::process::exit(1);
+    });
+
+    let unit_path = systemd_dir.join("voiced.service");
+    let voiced_str = voiced_path.display().to_string();
+
+    let unit = format!(
+        "[Unit]\nDescription=Voice daemon\nAfter=default.target\n\n\
+         [Service]\nType=simple\nExecStart={voiced_str} --tts-only\nRestart=on-failure\nRestartSec=2\n\n\
+         [Install]\nWantedBy=default.target\n"
+    );
+
+    std::fs::write(&unit_path, &unit).unwrap_or_else(|e| {
+        eprintln!("error: could not write {}: {e}", unit_path.display());
+        std::process::exit(1);
+    });
+
+    println!("Installing voiced as a systemd user service...");
+    println!("  voiced:  {voiced_str}");
+    println!("  unit:    {}", unit_path.display());
+
+    let reload = std::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .output();
+    if let Err(e) = reload {
+        eprintln!("warning: systemctl daemon-reload failed: {e}");
+    }
+
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "enable", "voiced.service"])
+        .output();
+
+    if !no_start {
+        let start = std::process::Command::new("systemctl")
+            .args(["--user", "start", "voiced.service"])
+            .output();
+        match start {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => {
+                eprintln!(
+                    "warning: systemctl start exited {}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            Err(e) => eprintln!("warning: systemctl start failed: {e}"),
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        println!();
+        if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
+            let result = daemon_response_or_exit(daemon.status());
+            print_daemon_status(&result);
+        } else {
+            eprintln!("note: daemon did not respond yet — try `voice daemon status` in a moment");
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn run_daemon_install(_no_start: bool) {
+    eprintln!("error: voice daemon install is not supported on this platform");
+    eprintln!("See docs/daemon.md for manual setup instructions.");
+    std::process::exit(1);
+}
+
+#[cfg(target_os = "macos")]
+fn run_daemon_uninstall() {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let plist_path = home.join("Library/LaunchAgents/com.rgbkrk.voice.voiced.plist");
+
+    if !plist_path.exists() {
+        eprintln!("voiced service not installed (plist not found)");
+        std::process::exit(1);
+    }
+
+    let uid = unsafe { libc::getuid() };
+    let target = format!("gui/{uid}");
+
+    let bootout = std::process::Command::new("launchctl")
+        .args(["bootout", &target, &plist_path.to_string_lossy()])
+        .output();
+    match bootout {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            eprintln!(
+                "warning: launchctl bootout exited {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Err(e) => eprintln!("warning: launchctl bootout failed: {e}"),
+    }
+
+    std::fs::remove_file(&plist_path).unwrap_or_else(|e| {
+        eprintln!("error: could not remove {}: {e}", plist_path.display());
+        std::process::exit(1);
+    });
+
+    println!("Uninstalled voiced LaunchAgent.");
+    println!("  removed: {}", plist_path.display());
+}
+
+#[cfg(target_os = "linux")]
+fn run_daemon_uninstall() {
+    let config_dir = dirs::config_dir().unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join(".config")
+    });
+    let unit_path = config_dir.join("systemd/user/voiced.service");
+
+    if !unit_path.exists() {
+        eprintln!("voiced service not installed (unit file not found)");
+        std::process::exit(1);
+    }
+
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "disable", "--now", "voiced.service"])
+        .output();
+
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .output();
+
+    std::fs::remove_file(&unit_path).unwrap_or_else(|e| {
+        eprintln!("error: could not remove {}: {e}", unit_path.display());
+        std::process::exit(1);
+    });
+
+    println!("Uninstalled voiced systemd user service.");
+    println!("  removed: {}", unit_path.display());
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn run_daemon_uninstall() {
+    eprintln!("error: voice daemon uninstall is not supported on this platform");
+    std::process::exit(1);
 }
 
 #[cfg(test)]

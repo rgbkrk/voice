@@ -7,27 +7,41 @@ back to local synthesis, `voice mcp` initializes without a daemon, and
 
 ## Install
 
-The macOS release archive includes both `voice` and `voiced`. Source installs
-should install both binaries when daemon-backed synthesis or streaming is
-needed:
+Install both binaries, then register the daemon as a system service:
 
 ```bash
 cargo install --path crates/voice-cli
 cargo install --path crates/voice-daemon
+voice daemon install
 ```
 
-Start manually:
+`voice daemon install` auto-detects the platform and writes the appropriate
+service file (macOS LaunchAgent or Linux systemd user unit), loads it, and
+starts the daemon. It also prints `voice daemon status` output on success.
+
+To install the service file without starting immediately:
 
 ```bash
-voiced --tts-only
+voice daemon install --no-start
 ```
 
-Check status:
+To remove the service:
+
+```bash
+voice daemon uninstall
+```
+
+Check status at any time:
 
 ```bash
 voice daemon status
 voice daemon status --json
 ```
+
+---
+
+The sections below document the manual setup steps performed by
+`voice daemon install`, for reference or non-standard installs.
 
 ## Linux systemd user service
 

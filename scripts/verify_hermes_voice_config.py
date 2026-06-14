@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -180,7 +181,22 @@ def is_voice_command(args: list[str]) -> bool:
     return Path(args[0]).name == "voice"
 
 
-def validate_tts(config: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
+def is_tts_shim_command(args: list[str]) -> bool:
+    return Path(args[0]).name == "hermes-command-tts.sh"
+
+
+def is_stt_shim_command(args: list[str]) -> bool:
+    return Path(args[0]).name == "hermes-command-stt.sh"
+
+
+def require_exact_args(args: list[str], expected: list[str], *, label: str) -> None:
+    if args != expected:
+        raise ConfigError(
+            f"{label} must pass {' '.join(expected)}; got {' '.join(args) or '<none>'}"
+        )
+
+
+def validate_tts(config: dict[str, Any]) -> tuple[str, dict[str, Any], list[str], str]:
     provider = as_string(lookup(config, "tts.provider"), "tts.provider")
     providers = get_mapping(lookup(config, "tts.providers"), "tts.providers")
     provider_config = get_mapping(
@@ -209,20 +225,31 @@ def validate_tts(config: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]
 
     command = as_string(provider_config.get("command"), f"tts.providers.{provider}.command")
     args = split_command(command)
-    if not is_voice_command(args):
-        raise ConfigError("tts command must invoke the voice binary directly")
-    if "say" not in args[1:]:
-        raise ConfigError("tts command must invoke `voice say`")
-    if option_value(args, "--format") != "ogg-opus":
-        raise ConfigError("tts command must pass `--format ogg-opus`")
-    require_placeholder(args, "--input-file", "{input_path}")
-    require_placeholder(args, "--output", "{output_path}")
-    require_placeholder(args, "--voice", "{voice}")
-    require_placeholder(args, "--speed", "{speed}")
-    return provider, provider_config, args
+    if is_voice_command(args):
+        if "say" not in args[1:]:
+            raise ConfigError("tts command must invoke `voice say`")
+        if option_value(args, "--format") != "ogg-opus":
+            raise ConfigError("tts command must pass `--format ogg-opus`")
+        require_placeholder(args, "--input-file", "{input_path}")
+        require_placeholder(args, "--output", "{output_path}")
+        require_placeholder(args, "--voice", "{voice}")
+        require_placeholder(args, "--speed", "{speed}")
+        return provider, provider_config, args, "direct_voice"
+
+    if is_tts_shim_command(args):
+        require_exact_args(
+            args[1:],
+            ["{input_path}", "{output_path}", "{voice}", "{speed}"],
+            label="tts command shim",
+        )
+        return provider, provider_config, args, "hermes_command_tts_shim"
+
+    raise ConfigError(
+        "tts command must invoke `voice say` directly or use hermes-command-tts.sh"
+    )
 
 
-def validate_stt(config: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]]:
+def validate_stt(config: dict[str, Any]) -> tuple[str, dict[str, Any], list[str], str]:
     enabled = as_bool(lookup(config, "stt.enabled"), "stt.enabled")
     if not enabled:
         raise ConfigError("stt.enabled must be true")
@@ -239,19 +266,27 @@ def validate_stt(config: dict[str, Any]) -> tuple[str, dict[str, Any], list[str]
 
     command = as_string(provider_config.get("command"), f"stt.providers.{provider}.command")
     args = split_command(command)
-    if not is_voice_command(args):
-        raise ConfigError("stt command must invoke the voice binary directly")
-    if "stream-transcribe" not in args[1:]:
-        raise ConfigError("stt command must invoke `voice stream-transcribe`")
-    if "{input_path}" not in args:
-        raise ConfigError("stt command must pass {input_path}")
-    if "--quiet" not in args:
-        raise ConfigError("stt command must pass --quiet so Hermes receives transcript text")
+    if is_voice_command(args):
+        if "stream-transcribe" not in args[1:]:
+            raise ConfigError("stt command must invoke `voice stream-transcribe`")
+        if "{input_path}" not in args:
+            raise ConfigError("stt command must pass {input_path}")
+        if "--quiet" not in args:
+            raise ConfigError("stt command must pass --quiet so Hermes receives transcript text")
+        command_kind = "direct_voice"
+    elif is_stt_shim_command(args):
+        require_exact_args(args[1:], ["{input_path}"], label="stt command shim")
+        command_kind = "hermes_command_stt_shim"
+    else:
+        raise ConfigError(
+            "stt command must invoke `voice stream-transcribe` directly "
+            "or use hermes-command-stt.sh"
+        )
 
     output_format = as_string(provider_config.get("format"), f"stt.providers.{provider}.format")
     if output_format != "txt":
         raise ConfigError(f"stt provider {provider!r} must use format: txt")
-    return provider, provider_config, args
+    return provider, provider_config, args, command_kind
 
 
 def substitute_command(
@@ -262,10 +297,11 @@ def substitute_command(
     voice: str,
     speed: str,
     voice_bin: str | None,
+    override_first_token: bool,
 ) -> list[str]:
     resolved = []
     for index, arg in enumerate(args):
-        if index == 0 and voice_bin is not None:
+        if index == 0 and voice_bin is not None and override_first_token:
             resolved.append(voice_bin)
             continue
         resolved.append(
@@ -323,6 +359,7 @@ def run_tts_smoke(
     provider_config: dict[str, Any],
     command_args: list[str],
     *,
+    command_kind: str,
     voice_bin: str | None,
     text: str,
 ) -> dict[str, str]:
@@ -343,8 +380,12 @@ def run_tts_smoke(
             voice=voice,
             speed=speed,
             voice_bin=voice_bin,
+            override_first_token=command_kind == "direct_voice",
         )
-        subprocess.run(args, check=True, timeout=timeout)
+        env = None
+        if voice_bin is not None and command_kind != "direct_voice":
+            env = {**os.environ, "VOICE_BIN": voice_bin}
+        subprocess.run(args, check=True, timeout=timeout, env=env)
         return probe_ogg_opus(output_path)
 
 
@@ -382,10 +423,11 @@ def main(argv: list[str]) -> int:
         raise ConfigError(f"Hermes config not found: {config_path}")
 
     config = load_yaml(config_path)
-    tts_provider, tts_config, tts_args = validate_tts(config)
+    tts_provider, tts_config, tts_args, tts_command_kind = validate_tts(config)
     stt_provider = None
+    stt_command_kind = None
     if not args.skip_stt_config:
-        stt_provider, _stt_config, _stt_args = validate_stt(config)
+        stt_provider, _stt_config, _stt_args, stt_command_kind = validate_stt(config)
 
     smoke = "skipped"
     probe = None
@@ -393,6 +435,7 @@ def main(argv: list[str]) -> int:
         probe = run_tts_smoke(
             tts_config,
             tts_args,
+            command_kind=tts_command_kind,
             voice_bin=args.voice_bin,
             text=args.text,
         )
@@ -403,7 +446,10 @@ def main(argv: list[str]) -> int:
     print(f"tts.provider={tts_provider}")
     print("tts.output_format=ogg")
     print("tts.voice_compatible=true")
-    print("tts.command=voice say --format ogg-opus")
+    if tts_command_kind == "direct_voice":
+        print("tts.command=voice say --format ogg-opus")
+    else:
+        print("tts.command=hermes-command-tts.sh")
     print(f"tts_smoke={smoke}")
     if probe is not None:
         print(
@@ -412,7 +458,10 @@ def main(argv: list[str]) -> int:
         )
     if stt_provider is not None:
         print(f"stt.provider={stt_provider}")
-        print("stt.command=voice stream-transcribe --quiet")
+        if stt_command_kind == "direct_voice":
+            print("stt.command=voice stream-transcribe --quiet")
+        else:
+            print("stt.command=hermes-command-stt.sh")
     else:
         print("stt_config=skipped")
     return 0

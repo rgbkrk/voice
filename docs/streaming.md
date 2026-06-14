@@ -71,6 +71,29 @@ Set `VOICE_BIN=/path/to/voice` if `voice` is not on `PATH`.
 Set `VOICE_FORMAT=wav` for a WAV compatibility provider, or set
 `VOICE_FORMAT=` to let `voice` infer the format from `{output_path}`.
 
+For command-provider STT, use the matching voice-owned shim:
+
+```yaml
+stt:
+  enabled: true
+  provider: voice
+  providers:
+    voice:
+      type: command
+      command: /path/to/voice/examples/hermes-command-stt.sh {input_path}
+      format: txt
+      timeout: 300
+```
+
+The direct equivalent is:
+
+```yaml
+command: /path/to/voice stream-transcribe --quiet {input_path}
+```
+
+Both forms are accepted by `scripts/verify_hermes_voice_config.py`; arbitrary
+wrappers are rejected so config drift is visible before restarting Hermes.
+
 Validate the command-provider shape locally before wiring or restarting
 Hermes:
 

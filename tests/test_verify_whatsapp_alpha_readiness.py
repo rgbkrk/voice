@@ -67,9 +67,46 @@ def write_fake_helpers(
         "WHATSAPP_CLOUD_APP_SECRET",
         "WHATSAPP_CLOUD_VERIFY_TOKEN",
     ]
+    cloud_required = {
+        key: {
+            "present": key not in cloud_missing,
+            "sources": ["env_file"] if key not in cloud_missing else [],
+        }
+        for key in [
+            "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+            "WHATSAPP_CLOUD_ACCESS_TOKEN",
+            "WHATSAPP_CLOUD_APP_SECRET",
+            "WHATSAPP_CLOUD_VERIFY_TOKEN",
+        ]
+    }
+    calling = {
+        "WHATSAPP_CLOUD_CALLING_SIDECAR_URL": {
+            "present": True,
+            "sources": ["systemd_service"],
+        },
+        "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND": {
+            "present": True,
+            "sources": ["systemd_service"],
+        },
+        "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT": {
+            "present": True,
+            "sources": ["systemd_service"],
+        },
+    }
+    env_key_sources = {
+        "env_file": [
+            "WHATSAPP_ENABLED",
+            "WHATSAPP_HOME_CHANNEL",
+            "WHATSAPP_MODE",
+            *([] if not cloud_configured else list(cloud_required)),
+        ],
+        "systemd_service": list(calling),
+    }
     bridge_payload = {
         "success": True,
         "checks": {
+            "env_file": str(directory.parent / "hermes" / ".env"),
+            "env_key_sources": env_key_sources,
             "baileys_identity": {
                 "name": "Quill",
                 "number": "13236478455",
@@ -87,6 +124,8 @@ def write_fake_helpers(
                 "calling_ready": cloud_configured,
                 "cloud_missing": cloud_missing,
                 "calling_missing": cloud_missing,
+                "cloud_required": cloud_required,
+                "calling": calling,
             }
         },
         "failures": [],
@@ -212,10 +251,52 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             gates["whatsapp_cloud_calling"]["status"],
             "external_setup_required",
         )
+        cloud_gate = gates["whatsapp_cloud"]
+        self.assertEqual(cloud_gate["status"], "external_setup_required")
+        cloud_handoff = cloud_gate["setup_handoff"]
+        self.assertEqual(
+            cloud_handoff["required_keys"],
+            [
+                "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+                "WHATSAPP_CLOUD_ACCESS_TOKEN",
+                "WHATSAPP_CLOUD_APP_SECRET",
+                "WHATSAPP_CLOUD_VERIFY_TOKEN",
+            ],
+        )
+        self.assertIn("WHATSAPP_CLOUD_ACCESS_TOKEN", cloud_handoff["missing"])
+        self.assertIn("hermes/.env", cloud_handoff["env_file"])
+        self.assertEqual(
+            cloud_handoff["credential_sources"]["WHATSAPP_CLOUD_ACCESS_TOKEN"],
+            [],
+        )
+        self.assertIn(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_URL",
+            cloud_handoff["available_source_keys"]["systemd_service"],
+        )
+        self.assertIn("--require-whatsapp-cloud", cloud_handoff["verify_command"])
+        self.assertEqual(len(cloud_handoff["steps"]), 4)
+        self.assertNotIn("phone-id", json.dumps(cloud_handoff))
         self.assertIn(
             "WHATSAPP_CLOUD_ACCESS_TOKEN",
             gates["whatsapp_cloud_calling"]["missing"],
         )
+        calling_handoff = gates["whatsapp_cloud_calling"]["setup_handoff"]
+        self.assertIn(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND",
+            calling_handoff["required_keys"],
+        )
+        self.assertEqual(
+            calling_handoff["sidecar_sources"][
+                "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND"
+            ],
+            ["systemd_service"],
+        )
+        self.assertEqual(calling_handoff["sidecar_missing"], [])
+        self.assertTrue(calling_handoff["calling_sidecar_configured"])
+        self.assertFalse(calling_handoff["calling_ready"])
+        self.assertIn("--require-whatsapp-calling", calling_handoff["verify_command"])
+        self.assertIn("--require-complete", calling_handoff["complete_verification_command"])
+        self.assertEqual(len(calling_handoff["steps"]), 5)
         summary = payload["readiness_summary"]
         self.assertEqual(summary["status"], "local_ready_pending_gates")
         self.assertFalse(summary["complete"])
@@ -361,6 +442,41 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         )
         self.assertIn(
             "attended_fresh_receive_step[1]=Start the preferred command",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_cloud_setup=env_file=",
+            result.stdout,
+        )
+        self.assertIn(
+            "missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,WHATSAPP_CLOUD_ACCESS_TOKEN",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_cloud_verify_command=scripts/verify_whatsapp_alpha_readiness.py",
+            result.stdout,
+        )
+        self.assertIn("--require-whatsapp-cloud", result.stdout)
+        self.assertIn(
+            "whatsapp_cloud_step[1]=Create or select the Meta app",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_calling_setup=sidecar_configured=True",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_calling_verify_command=scripts/verify_whatsapp_alpha_readiness.py",
+            result.stdout,
+        )
+        self.assertIn("--require-whatsapp-calling", result.stdout)
+        self.assertIn(
+            "whatsapp_calling_complete_command=scripts/verify_whatsapp_alpha_readiness.py",
+            result.stdout,
+        )
+        self.assertIn("--require-complete", result.stdout)
+        self.assertIn(
+            "whatsapp_calling_step[1]=Complete WhatsApp Cloud setup first",
             result.stdout,
         )
         self.assertIn("readiness=local_ready_pending_gates", result.stdout)
@@ -610,6 +726,19 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertFalse(summary["external_meta_setup_required"])
         self.assertFalse(summary["operator_action_required"])
         self.assertEqual(summary["next_actions"], [])
+        gates = payload["pending_gates"]
+        self.assertEqual(gates["whatsapp_cloud"]["status"], "configured")
+        self.assertEqual(gates["whatsapp_cloud"]["setup_handoff"]["steps"], [])
+        self.assertEqual(gates["whatsapp_cloud"]["setup_handoff"]["missing"], [])
+        self.assertEqual(gates["whatsapp_cloud_calling"]["status"], "ready")
+        self.assertEqual(
+            gates["whatsapp_cloud_calling"]["setup_handoff"]["steps"],
+            [],
+        )
+        self.assertEqual(
+            gates["whatsapp_cloud_calling"]["setup_handoff"]["missing"],
+            [],
+        )
 
     def test_voice_note_flags_cannot_be_used_when_voice_note_smoke_is_skipped(self):
         result = self.run_invalid("--skip-voice-note-smoke", "--send-voice-note")

@@ -32,6 +32,16 @@ META_SETUP_STEPS = (
     "Enable/approve WhatsApp Calling for the Cloud phone number.",
     "Route Cloud Calling webhooks to the Hermes WhatsApp Cloud adapter.",
 )
+CLOUD_REQUIRED_KEYS = (
+    "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+    "WHATSAPP_CLOUD_ACCESS_TOKEN",
+    "WHATSAPP_CLOUD_APP_SECRET",
+    "WHATSAPP_CLOUD_VERIFY_TOKEN",
+)
+CALLING_SIDECAR_REQUIRED_KEYS = (
+    "WHATSAPP_CLOUD_CALLING_SIDECAR_URL",
+    "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND",
+)
 
 
 def repo_root() -> Path:
@@ -472,17 +482,158 @@ def attended_receive_gate(
     return gate
 
 
-def external_meta_gate(external_meta_setup: dict[str, Any]) -> dict[str, Any]:
+def presence_sources(
+    presence: dict[str, Any],
+    keys: tuple[str, ...],
+) -> dict[str, list[str]]:
+    sources: dict[str, list[str]] = {}
+    for key in keys:
+        status = presence.get(key) if isinstance(presence, dict) else None
+        if isinstance(status, dict):
+            key_sources = status.get("sources") or []
+            sources[key] = [str(source) for source in key_sources]
+        else:
+            sources[key] = []
+    return sources
+
+
+def source_key_inventory(bridge_checks: dict[str, Any]) -> dict[str, list[str]]:
+    raw = bridge_checks.get("env_key_sources") if isinstance(bridge_checks, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(source): [str(key) for key in keys]
+        for source, keys in raw.items()
+        if isinstance(keys, list)
+    }
+
+
+def cloud_setup_handoff(
+    *,
+    external_meta_setup: dict[str, Any],
+    bridge_checks: dict[str, Any],
+    hermes_home: Path,
+) -> dict[str, Any]:
+    cloud = bridge_checks.get("whatsapp_cloud") or {}
+    cloud_required = cloud.get("cloud_required") or {}
+    missing = [str(key) for key in external_meta_setup.get("cloud_missing") or []]
+    configured = bool(external_meta_setup.get("cloud_configured"))
+    verify_command = [
+        "scripts/verify_whatsapp_alpha_readiness.py",
+        "--hermes-home",
+        str(hermes_home),
+        "--require-whatsapp-cloud",
+    ]
+    steps = [] if configured else [
+        "Create or select the Meta app, WABA, and Cloud API phone number for Quill.",
+        "Add the required WHATSAPP_CLOUD_* keys to the Hermes environment without committing secret values.",
+        "Restart hermes-gateway.service so the gateway process sees the new Cloud credentials.",
+        "Rerun the Cloud verification command and confirm whatsapp_cloud=configured.",
+    ]
+    return {
+        "required_keys": list(CLOUD_REQUIRED_KEYS),
+        "missing": missing,
+        "configured": configured,
+        "env_file": bridge_checks.get("env_file"),
+        "credential_sources": presence_sources(cloud_required, CLOUD_REQUIRED_KEYS),
+        "available_source_keys": source_key_inventory(bridge_checks),
+        "verify_command": verify_command,
+        "steps": steps,
+    }
+
+
+def calling_setup_handoff(
+    *,
+    external_meta_setup: dict[str, Any],
+    bridge_checks: dict[str, Any],
+    hermes_home: Path,
+) -> dict[str, Any]:
+    cloud = bridge_checks.get("whatsapp_cloud") or {}
+    calling = cloud.get("calling") or {}
+    cloud_required = cloud.get("cloud_required") or {}
+    missing = [str(key) for key in external_meta_setup.get("calling_missing") or []]
+    sidecar_missing = [
+        key
+        for key in CALLING_SIDECAR_REQUIRED_KEYS
+        if key in missing
+    ]
+    ready = bool(external_meta_setup.get("calling_ready"))
+    verify_command = [
+        "scripts/verify_whatsapp_alpha_readiness.py",
+        "--hermes-home",
+        str(hermes_home),
+        "--require-whatsapp-cloud",
+        "--require-whatsapp-calling",
+    ]
+    complete_command = [
+        "scripts/verify_whatsapp_alpha_readiness.py",
+        "--hermes-home",
+        str(hermes_home),
+        "--profile",
+        "attended-cache-receive",
+        "--require-complete",
+    ]
+    steps = [] if ready else [
+        "Complete WhatsApp Cloud setup first; Calling depends on the same Cloud phone credentials.",
+        "Enable or approve WhatsApp Calling for the configured Cloud phone number in Meta.",
+        "Ensure Hermes has the Calling sidecar URL and TTS stream command environment keys.",
+        "Restart hermes-gateway.service and voice-webrtc-sidecar.service after environment or sidecar changes.",
+        "Rerun the Calling verification command before using the complete alpha gate.",
+    ]
+    return {
+        "required_keys": [*CLOUD_REQUIRED_KEYS, *CALLING_SIDECAR_REQUIRED_KEYS],
+        "missing": missing,
+        "cloud_missing": [
+            key for key in missing if key in CLOUD_REQUIRED_KEYS
+        ],
+        "sidecar_missing": sidecar_missing,
+        "calling_sidecar_configured": bool(
+            external_meta_setup.get("calling_sidecar_configured")
+        ),
+        "calling_ready": ready,
+        "env_file": bridge_checks.get("env_file"),
+        "cloud_credential_sources": presence_sources(
+            cloud_required,
+            CLOUD_REQUIRED_KEYS,
+        ),
+        "sidecar_sources": presence_sources(
+            calling,
+            CALLING_SIDECAR_REQUIRED_KEYS,
+        ),
+        "available_source_keys": source_key_inventory(bridge_checks),
+        "verify_command": verify_command,
+        "complete_verification_command": complete_command,
+        "steps": steps,
+    }
+
+
+def external_meta_gate(
+    external_meta_setup: dict[str, Any],
+    *,
+    bridge_checks: dict[str, Any],
+    hermes_home: Path,
+) -> dict[str, Any]:
     cloud_missing = [str(key) for key in external_meta_setup.get("cloud_missing") or []]
     calling_missing = [
         str(key) for key in external_meta_setup.get("calling_missing") or []
     ]
     cloud_configured = bool(external_meta_setup.get("cloud_configured"))
     calling_ready = bool(external_meta_setup.get("calling_ready"))
+    cloud_handoff = cloud_setup_handoff(
+        external_meta_setup=external_meta_setup,
+        bridge_checks=bridge_checks,
+        hermes_home=hermes_home,
+    )
+    calling_handoff = calling_setup_handoff(
+        external_meta_setup=external_meta_setup,
+        bridge_checks=bridge_checks,
+        hermes_home=hermes_home,
+    )
     return {
         "whatsapp_cloud": {
             "status": "configured" if cloud_configured else "external_setup_required",
             "missing": cloud_missing,
+            "setup_handoff": cloud_handoff,
         },
         "whatsapp_cloud_calling": {
             "status": "ready" if calling_ready else "external_setup_required",
@@ -492,6 +643,7 @@ def external_meta_gate(external_meta_setup: dict[str, Any]) -> dict[str, Any]:
                 if calling_ready
                 else list(external_meta_setup.get("setup_steps") or META_SETUP_STEPS)
             ),
+            "setup_handoff": calling_handoff,
         },
     }
 
@@ -576,6 +728,7 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
         if item.get("required") and not item.get("success"):
             bucket["success"] = False
 
+    bridge_checks = bridge_runtime_checks(components)
     cloud = bridge_cloud_summary(components)
     cloud_missing = [str(key) for key in cloud.get("cloud_missing") or []]
     calling_missing = [str(key) for key in cloud.get("calling_missing") or []]
@@ -625,7 +778,11 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
                 else args.hermes_home.expanduser().resolve() / "audio_cache"
             ),
         ),
-        **external_meta_gate(external_meta_setup),
+        **external_meta_gate(
+            external_meta_setup,
+            bridge_checks=bridge_checks,
+            hermes_home=args.hermes_home.expanduser().resolve(),
+        ),
     }
     readiness_summary = build_readiness_summary(
         local_checks_passed=not required_failures,
@@ -871,12 +1028,52 @@ def human_summary(result: dict[str, Any]) -> None:
         + " missing="
         + (",".join(external["cloud_missing"]) or "none")
     )
+    cloud_gate = pending.get("whatsapp_cloud") or {}
+    cloud_handoff = cloud_gate.get("setup_handoff") or {}
+    if cloud_gate.get("status") != "configured" and cloud_handoff:
+        print(
+            "whatsapp_cloud_setup="
+            f"env_file={cloud_handoff.get('env_file') or '<unknown>'} "
+            "missing="
+            + (",".join(cloud_handoff.get("missing") or []) or "none")
+        )
+        verify_command = cloud_handoff.get("verify_command") or []
+        if verify_command:
+            print(
+                "whatsapp_cloud_verify_command="
+                f"{shlex.join([str(part) for part in verify_command])}"
+            )
+        for index, step in enumerate(cloud_handoff.get("steps") or [], start=1):
+            print(f"whatsapp_cloud_step[{index}]={step}")
     print(
         "whatsapp_calling="
         + ("ready" if external["calling_ready"] else "not_ready")
         + " missing="
         + (",".join(external["calling_missing"]) or "none")
     )
+    calling_gate = pending.get("whatsapp_cloud_calling") or {}
+    calling_handoff = calling_gate.get("setup_handoff") or {}
+    if calling_gate.get("status") != "ready" and calling_handoff:
+        print(
+            "whatsapp_calling_setup="
+            f"sidecar_configured={calling_handoff.get('calling_sidecar_configured')} "
+            "missing="
+            + (",".join(calling_handoff.get("missing") or []) or "none")
+        )
+        verify_command = calling_handoff.get("verify_command") or []
+        complete_command = calling_handoff.get("complete_verification_command") or []
+        if verify_command:
+            print(
+                "whatsapp_calling_verify_command="
+                f"{shlex.join([str(part) for part in verify_command])}"
+            )
+        if complete_command:
+            print(
+                "whatsapp_calling_complete_command="
+                f"{shlex.join([str(part) for part in complete_command])}"
+            )
+        for index, step in enumerate(calling_handoff.get("steps") or [], start=1):
+            print(f"whatsapp_calling_step[{index}]={step}")
     if external["setup_steps"]:
         print("external_meta_setup=required")
         for step in external["setup_steps"]:

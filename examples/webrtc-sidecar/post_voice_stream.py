@@ -35,6 +35,7 @@ class AudioContract:
     encoding: str
     frame_bytes: int
     default_drain_bytes: int = 0
+    max_outbound_queue_bytes: int = 0
     max_drain_wait_ms: int = 0
 
 
@@ -55,6 +56,7 @@ def load_audio_contract(path: Path = CONTRACT_PATH) -> AudioContract:
         default_drain_bytes=int(
             audio.get("default_drain_bytes") or audio["frame_bytes"]
         ),
+        max_outbound_queue_bytes=int(audio.get("max_outbound_queue_bytes") or 0),
         max_drain_wait_ms=int(audio.get("max_drain_wait_ms") or 0),
     )
 
@@ -72,6 +74,10 @@ def load_audio_contract(path: Path = CONTRACT_PATH) -> AudioContract:
         raise ValueError("contract default_drain_bytes must be positive")
     if parsed.default_drain_bytes % parsed.frame_bytes != 0:
         raise ValueError("contract default_drain_bytes must align to WebRTC frames")
+    if parsed.max_outbound_queue_bytes <= 0:
+        raise ValueError("contract max_outbound_queue_bytes must be positive")
+    if parsed.max_outbound_queue_bytes < parsed.frame_bytes:
+        raise ValueError("contract max_outbound_queue_bytes must fit one WebRTC frame")
     if parsed.max_drain_wait_ms < 0:
         raise ValueError("contract max_drain_wait_ms must be non-negative")
 

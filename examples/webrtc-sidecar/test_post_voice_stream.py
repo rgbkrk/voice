@@ -33,6 +33,7 @@ def test_load_audio_contract_matches_sidecar_contract():
     assert contract.encoding == "pcm_s16le"
     assert contract.frame_bytes == 1_920
     assert contract.default_drain_bytes == 96_000
+    assert contract.max_outbound_queue_bytes == 960_000
     assert contract.max_drain_wait_ms == 5_000
 
 

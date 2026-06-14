@@ -182,7 +182,10 @@ Response:
 Debug a live session with `GET /calls/{call_id}`. Drain decoded inbound audio
 with `GET /calls/{call_id}/audio`. Queue outbound audio for the WebRTC track
 with `POST /calls/{call_id}/audio`. Terminate a local session with
-`POST /calls/{call_id}/close`.
+`POST /calls/{call_id}/close`. The outbound queue is deliberately bounded;
+`POST /calls/{call_id}/audio` returns HTTP 429 when the sidecar is already
+holding `max_outbound_queue_bytes` for that call, which lets Hermes pause or
+cancel TTS instead of building an unbounded latency backlog.
 
 Runtime events:
 
@@ -223,6 +226,11 @@ Outbound audio:
 
 ```http
 POST /calls/{call_id}/audio
+```
+
+Request:
+
+```json
 {
   "sequence": 17,
   "sample_rate": 48000,
@@ -239,7 +247,8 @@ Response:
 {
   "call_id": "wamid-call-id",
   "accepted_bytes": 1920,
-  "queued_tx_bytes": 3840,
+  "queued_tx_bytes": 1920,
+  "max_tx_queue_bytes": 960000,
   "audio": {
     "sample_rate": 48000,
     "channels": 1,

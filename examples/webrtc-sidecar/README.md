@@ -63,9 +63,12 @@ curl -sS -X POST http://127.0.0.1:8787/calls/local-test/audio \
 ```
 
 Each 20 ms frame is 1920 bytes before base64 encoding. HTTP input is queued per
-`call_id`; `--tx-pcm` remains a process-level fallback source. If both sources
-are idle, the sidecar sends silence. That is useful for checking SDP, ICE, and
-call timing before TTS is wired in.
+`call_id`; `--tx-pcm` remains a process-level fallback source. The per-call
+outbound queue is bounded by the contract's `max_outbound_queue_bytes` value;
+`POST /calls/{call_id}/audio` returns HTTP 429 when Hermes needs to slow down
+instead of allowing unbounded TTS buffering. If both sources are idle, the
+sidecar sends silence. That is useful for checking SDP, ICE, and call timing
+before TTS is wired in.
 
 For FIFO-based smoke tests, start the sidecar with `--tx-pcm`:
 
@@ -143,6 +146,23 @@ Queue outbound PCM for a live session:
 curl -sS -X POST http://127.0.0.1:8787/calls/local-test/audio \
   -H 'content-type: application/json' \
   -d '{"sample_rate":48000,"channels":1,"frame_ms":20,"encoding":"pcm_s16le","pcm_s16le_base64":"AAAAAA=="}'
+```
+
+Response:
+
+```json
+{
+  "call_id": "local-test",
+  "accepted_bytes": 1920,
+  "queued_tx_bytes": 1920,
+  "max_tx_queue_bytes": 960000,
+  "audio": {
+    "sample_rate": 48000,
+    "channels": 1,
+    "frame_ms": 20,
+    "encoding": "pcm_s16le"
+  }
+}
 ```
 
 Close a session:

@@ -61,6 +61,7 @@ def validate_contract(contract: dict[str, Any]) -> None:
     samples_per_frame = int(audio["samples_per_frame"])
     frame_bytes = int(audio["frame_bytes"])
     default_drain_bytes = int(audio["default_drain_bytes"])
+    max_outbound_queue_bytes = int(audio["max_outbound_queue_bytes"])
     max_inbound_queue_bytes = int(audio["max_inbound_queue_bytes"])
     max_drain_wait_ms = int(audio["max_drain_wait_ms"])
     encoding = str(audio["encoding"])
@@ -75,6 +76,7 @@ def validate_contract(contract: dict[str, Any]) -> None:
         samples_per_frame,
         frame_bytes,
         default_drain_bytes,
+        max_outbound_queue_bytes,
         max_inbound_queue_bytes,
         max_drain_wait_ms,
     ) <= 0:
@@ -85,6 +87,8 @@ def validate_contract(contract: dict[str, Any]) -> None:
         raise ValueError("contract frame_bytes does not match audio shape")
     if default_drain_bytes % frame_bytes != 0:
         raise ValueError("contract default_drain_bytes must align to whole frames")
+    if max_outbound_queue_bytes < frame_bytes:
+        raise ValueError("contract max_outbound_queue_bytes is smaller than one frame")
     if max_inbound_queue_bytes < default_drain_bytes:
         raise ValueError("contract max_inbound_queue_bytes is smaller than default drain size")
 
@@ -98,6 +102,7 @@ SAMPLES_PER_FRAME = int(AUDIO_CONTRACT["samples_per_frame"])
 BYTES_PER_SAMPLE = int(AUDIO_CONTRACT["bytes_per_sample"])
 FRAME_BYTES = int(AUDIO_CONTRACT["frame_bytes"])
 DEFAULT_DRAIN_BYTES = int(AUDIO_CONTRACT["default_drain_bytes"])
+MAX_OUTBOUND_QUEUE_BYTES = int(AUDIO_CONTRACT["max_outbound_queue_bytes"])
 MAX_INBOUND_QUEUE_BYTES = int(AUDIO_CONTRACT["max_inbound_queue_bytes"])
 MAX_DRAIN_WAIT_MS = int(AUDIO_CONTRACT["max_drain_wait_ms"])
 
@@ -152,11 +157,20 @@ class PcmSource:
         return frame + (b"\x00" * (FRAME_BYTES - len(frame)))
 
 
+class QueueFullError(RuntimeError):
+    """Raised when a call's outbound PCM queue is full."""
+
+
 class CallPcmSource:
     """Per-call PCM queue with a process-level source as fallback."""
 
-    def __init__(self, fallback: PcmSource) -> None:
+    def __init__(
+        self,
+        fallback: PcmSource,
+        max_queue_bytes: int = MAX_OUTBOUND_QUEUE_BYTES,
+    ) -> None:
         self.fallback = fallback
+        self.max_queue_bytes = max_queue_bytes
         self.buffer = bytearray()
 
     @property
@@ -164,6 +178,8 @@ class CallPcmSource:
         return len(self.buffer)
 
     def write_frame(self, pcm_s16le: bytes) -> int:
+        if len(self.buffer) + len(pcm_s16le) > self.max_queue_bytes:
+            raise QueueFullError("outbound PCM queue is full")
         self.buffer.extend(pcm_s16le)
         return len(pcm_s16le)
 
@@ -326,6 +342,7 @@ class CallSession:
             "signaling_state": self.pc.signalingState,
             "tasks": len(self.tasks),
             "queued_tx_bytes": self.source.queued_bytes,
+            "max_tx_queue_bytes": self.source.max_queue_bytes,
             "queued_rx_bytes": self.inbound.queued_bytes,
             "audio": audio_contract(),
         }
@@ -512,12 +529,16 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
         except ValueError as exc:
             return json_error(str(exc))
 
-        accepted_bytes = session.source.write_frame(pcm)
+        try:
+            accepted_bytes = session.source.write_frame(pcm)
+        except QueueFullError as exc:
+            return json_error(str(exc), status=429)
         return web.json_response(
             {
                 "call_id": call_id,
                 "accepted_bytes": accepted_bytes,
                 "queued_tx_bytes": session.source.queued_bytes,
+                "max_tx_queue_bytes": session.source.max_queue_bytes,
                 "audio": audio_contract(),
             }
         )

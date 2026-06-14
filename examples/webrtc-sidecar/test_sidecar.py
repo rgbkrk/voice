@@ -69,9 +69,11 @@ def test_audio_contract_is_voice_pcm_shape():
     assert sidecar.SAMPLES_PER_FRAME == audio["samples_per_frame"]
     assert sidecar.FRAME_BYTES == audio["frame_bytes"]
     assert sidecar.DEFAULT_DRAIN_BYTES == audio["default_drain_bytes"]
+    assert sidecar.MAX_OUTBOUND_QUEUE_BYTES == audio["max_outbound_queue_bytes"]
     assert sidecar.MAX_INBOUND_QUEUE_BYTES == audio["max_inbound_queue_bytes"]
     assert sidecar.MAX_DRAIN_WAIT_MS == audio["max_drain_wait_ms"]
     assert sidecar.FRAME_BYTES == 1920
+    assert sidecar.MAX_OUTBOUND_QUEUE_BYTES == 960_000
 
 
 def test_contract_endpoint_returns_machine_readable_contract():
@@ -129,6 +131,22 @@ def test_call_pcm_source_isolates_per_call_queue():
     frame_a = call_a.read_frame()
     assert frame_a.startswith(b"\x01\x00\xff\xff")
     assert frame_a[4:] == b"\x00" * (sidecar.FRAME_BYTES - 4)
+
+
+def test_call_pcm_source_rejects_overflow():
+    sidecar = load_sidecar()
+
+    fallback = sidecar.PcmSource(None)
+    source = sidecar.CallPcmSource(fallback, max_queue_bytes=4)
+
+    assert source.write_frame(b"\x01\x00\x02\x00") == 4
+    try:
+        source.write_frame(b"\x03\x00")
+    except sidecar.QueueFullError as exc:
+        assert "outbound PCM queue" in str(exc)
+    else:
+        raise AssertionError("expected outbound queue overflow to be rejected")
+    assert source.queued_bytes == 4
 
 
 def test_inbound_pcm_sink_drains_queued_audio():
@@ -191,6 +209,7 @@ def test_call_status_and_close_use_session_snapshot():
             return {
                 "call_id": "call-1",
                 "closed": self.closed,
+                "max_tx_queue_bytes": sidecar.MAX_OUTBOUND_QUEUE_BYTES,
                 "audio": sidecar.audio_contract(),
             }
 
@@ -211,6 +230,7 @@ def test_call_status_and_close_use_session_snapshot():
             assert status_body["call_id"] == "call-1"
             assert status_body["closed"] is False
             assert status_body["audio"] == sidecar.audio_contract()
+            assert status_body["max_tx_queue_bytes"] == sidecar.MAX_OUTBOUND_QUEUE_BYTES
 
             close_response = await client.post("/calls/call-1/close")
             assert close_response.status == 200
@@ -264,10 +284,56 @@ def test_audio_endpoint_queues_pcm_for_call():
             body = await response.json()
             assert body["accepted_bytes"] == 4
             assert body["queued_tx_bytes"] == 4
+            assert body["max_tx_queue_bytes"] == source.max_queue_bytes
+            assert body["audio"] == sidecar.audio_contract()
 
             frame = source.read_frame()
             assert frame.startswith(b"\x01\x00\xff\xff")
             assert frame[4:] == b"\x00" * (sidecar.FRAME_BYTES - 4)
+
+    asyncio.run(run())
+
+
+def test_audio_endpoint_returns_backpressure_when_tx_queue_is_full():
+    sidecar = load_sidecar()
+
+    class FakeSession:
+        def __init__(self, source) -> None:
+            self.source = source
+
+        def snapshot(self):
+            return {
+                "call_id": "call-1",
+                "queued_tx_bytes": self.source.queued_bytes,
+                "max_tx_queue_bytes": self.source.max_queue_bytes,
+                "audio": sidecar.audio_contract(),
+            }
+
+        async def close(self) -> None:
+            pass
+
+    async def run():
+        from aiohttp.test_utils import TestClient, TestServer
+
+        fallback = sidecar.PcmSource(None)
+        source = sidecar.CallPcmSource(fallback, max_queue_bytes=4)
+        source.write_frame(b"\x01\x00\x02\x00")
+        app = sidecar.create_app(fallback, None)
+        app[sidecar.SESSIONS_KEY]["call-1"] = FakeSession(source)
+
+        payload = {
+            "sample_rate": 48000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+            "pcm_s16le_base64": base64.b64encode(b"\x03\x00").decode("ascii"),
+        }
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/calls/call-1/audio", json=payload)
+            assert response.status == 429
+            body = await response.json()
+            assert body == {"error": "outbound PCM queue is full"}
+            assert source.queued_bytes == 4
 
     asyncio.run(run())
 

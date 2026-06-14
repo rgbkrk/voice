@@ -23,6 +23,8 @@ pub const WEBRTC_SAMPLES_PER_FRAME: usize =
 pub const WEBRTC_FRAME_BYTES: usize =
     WEBRTC_SAMPLES_PER_FRAME * WEBRTC_CHANNELS as usize * PCM_S16LE_BYTES_PER_SAMPLE;
 pub const WEBRTC_DEFAULT_DRAIN_BYTES: usize = WEBRTC_FRAME_BYTES * 50;
+pub const WEBRTC_MAX_OUTBOUND_QUEUE_BYTES: usize =
+    WEBRTC_SAMPLE_RATE as usize * WEBRTC_CHANNELS as usize * PCM_S16LE_BYTES_PER_SAMPLE * 10;
 pub const WEBRTC_MAX_INBOUND_QUEUE_BYTES: usize =
     WEBRTC_SAMPLE_RATE as usize * WEBRTC_CHANNELS as usize * PCM_S16LE_BYTES_PER_SAMPLE * 10;
 pub const WEBRTC_MAX_DRAIN_WAIT_MS: u32 = 5_000;
@@ -404,6 +406,10 @@ mod tests {
         assert_eq!(audio["samples_per_frame"], WEBRTC_SAMPLES_PER_FRAME);
         assert_eq!(audio["frame_bytes"], WEBRTC_FRAME_BYTES);
         assert_eq!(audio["default_drain_bytes"], WEBRTC_DEFAULT_DRAIN_BYTES);
+        assert_eq!(
+            audio["max_outbound_queue_bytes"],
+            WEBRTC_MAX_OUTBOUND_QUEUE_BYTES
+        );
         assert_eq!(
             audio["max_inbound_queue_bytes"],
             WEBRTC_MAX_INBOUND_QUEUE_BYTES

@@ -11,6 +11,7 @@ skip_hermes_config="${SKIP_HERMES_CONFIG:-0}"
 skip_hermes_tts_smoke="${SKIP_HERMES_TTS_SMOKE:-0}"
 skip_sidecar="${SKIP_SIDECAR:-0}"
 skip_systemd="${SKIP_SYSTEMD:-0}"
+skip_cli_mcp="${SKIP_CLI_MCP:-0}"
 skip_daemon="${SKIP_DAEMON:-0}"
 skip_stt_smoke="${SKIP_STT_SMOKE:-0}"
 run_webrtc_loopback_smoke="${RUN_WEBRTC_LOOPBACK_SMOKE:-0}"
@@ -19,6 +20,7 @@ webrtc_timeout="${VOICE_WEBRTC_TIMEOUT:-60}"
 max_queued_tx_ms="${MAX_QUEUED_TX_MS:-1000}"
 
 hermes_config_verify_script="${HERMES_CONFIG_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_voice_config.py}"
+cli_mcp_surface_verify_script="${CLI_MCP_SURFACE_VERIFY_SCRIPT:-$repo_root/scripts/verify_cli_mcp_surface.py}"
 whatsapp_contract_verify_script="${WHATSAPP_CONTRACT_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_voice_contract.sh}"
 sidecar_service_verify_script="${SIDECAR_SERVICE_VERIFY_SCRIPT:-$repo_root/scripts/verify_webrtc_sidecar_service.py}"
 webrtc_loopback_smoke_script="${WEBRTC_LOOPBACK_SMOKE_SCRIPT:-$repo_root/examples/webrtc-sidecar/full_duplex_loopback_smoke.py}"
@@ -40,6 +42,7 @@ Options:
   --text TEXT                  smoke text used by TTS checks
   --skip-hermes-config         skip Hermes config validation and TTS command smoke
   --skip-hermes-tts-smoke      validate Hermes config without executing TTS
+  --skip-cli-mcp               skip plain CLI/MCP daemon surface verification
   --skip-sidecar               skip WebRTC sidecar service verification
   --skip-systemd               skip sidecar/daemon systemd service checks
   --skip-daemon                skip daemon-backed stream checks
@@ -53,7 +56,7 @@ Options:
 Environment aliases:
   VOICE_BIN, HERMES_CONFIG, SIDECAR_URL, TEXT
   SKIP_HERMES_CONFIG=1, SKIP_HERMES_TTS_SMOKE=1, SKIP_SIDECAR=1
-  SKIP_SYSTEMD=1, SKIP_DAEMON=1, SKIP_STT_SMOKE=1
+  SKIP_SYSTEMD=1, SKIP_CLI_MCP=1, SKIP_DAEMON=1, SKIP_STT_SMOKE=1
   RUN_WEBRTC_LOOPBACK_SMOKE=1, VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
 EOF
 }
@@ -129,6 +132,10 @@ while [[ $# -gt 0 ]]; do
       skip_sidecar=1
       shift
       ;;
+    --skip-cli-mcp)
+      skip_cli_mcp=1
+      shift
+      ;;
     --skip-systemd)
       skip_systemd=1
       shift
@@ -182,6 +189,9 @@ if [[ "$skip_hermes_config" != "1" ]]; then
   require_executable "$hermes_config_verify_script" "Hermes voice config verifier"
   require_file "$hermes_config" "Hermes config"
 fi
+if [[ "$skip_cli_mcp" != "1" ]]; then
+  require_executable "$cli_mcp_surface_verify_script" "CLI/MCP surface verifier"
+fi
 if [[ "$skip_sidecar" != "1" ]]; then
   require_executable "$sidecar_service_verify_script" "WebRTC sidecar verifier"
 fi
@@ -208,6 +218,22 @@ if [[ "$skip_hermes_config" != "1" ]]; then
   hermes_status="checked"
 else
   hermes_status="skipped"
+fi
+
+if [[ "$skip_cli_mcp" != "1" ]]; then
+  cli_mcp_args=(
+    "$cli_mcp_surface_verify_script"
+    --voice-bin "$voice_bin"
+  )
+  if [[ "$skip_daemon" == "1" ]]; then
+    cli_mcp_args+=(--skip-daemon)
+  else
+    cli_mcp_args+=(--require-daemon)
+  fi
+  run_step "Voice CLI and MCP daemon surfaces" "${cli_mcp_args[@]}"
+  cli_mcp_status="checked"
+else
+  cli_mcp_status="skipped"
 fi
 
 whatsapp_args=(
@@ -256,6 +282,7 @@ echo
 echo "ok: local Hermes voice stack verifier passed"
 echo "voice_bin=$voice_bin"
 echo "hermes_config=$hermes_status"
+echo "cli_mcp=$cli_mcp_status"
 echo "whatsapp_contract=checked"
 echo "sidecar_service=$sidecar_status"
 echo "webrtc_loopback=$webrtc_loopback_status"

@@ -365,10 +365,11 @@ scripts/verify_local_hermes_voice_stack.sh \
   --hermes-config ~/.hermes/config.yaml
 ```
 
-That single gate checks Hermes' active command provider, direct Ogg/Opus voice
-note output, daemon-backed streaming, `stream-transcribe`, and the local WebRTC
-sidecar service. It requires the daemon and sidecar by default. For narrower
-checks, run `scripts/verify_hermes_voice_config.py`,
+That single gate checks plain CLI/MCP daemon behavior, Hermes' active command
+provider, direct Ogg/Opus voice note output, daemon-backed streaming,
+`stream-transcribe`, and the local WebRTC sidecar service. It requires the
+daemon and sidecar by default. For narrower checks, run
+`scripts/verify_cli_mcp_surface.py`, `scripts/verify_hermes_voice_config.py`,
 `scripts/verify_whatsapp_voice_contract.sh`, or
 `scripts/verify_webrtc_sidecar_service.py` directly.
 

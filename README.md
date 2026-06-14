@@ -394,7 +394,9 @@ stt:
 `voice say --format ogg-opus` / `voice stream-transcribe --quiet` commands, and
 rejects arbitrary wrappers so config drift is caught locally. Add
 `--stt-audio ~/.hermes/audio_cache/aud_...ogg` when you also want to execute the
-configured Hermes STT command against a cached inbound WhatsApp voice note.
+configured Hermes STT command against a cached inbound WhatsApp voice note. STT
+smoke verifiers report transcript length and audio metrics, not transcript
+text.
 
 Use the local Hermes stack verifier before a release or host update:
 

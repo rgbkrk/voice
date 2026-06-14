@@ -2,6 +2,7 @@
 
 import argparse
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -98,7 +99,10 @@ class WhatsAppInboundAudioCacheVerifierTests(unittest.TestCase):
         self.assertTrue(result["success"], result["failures"])
         terminal = result["checks"]["audio"][0]["stt"]["terminal_event"]
         self.assertEqual(terminal["event"], "stt.transcribed")
-        self.assertEqual(terminal["data"]["text"], "hello from whatsapp")
+        self.assertNotIn("text", terminal["data"])
+        self.assertTrue(terminal["data"]["text_redacted"])
+        self.assertEqual(terminal["data"]["text_chars"], len("hello from whatsapp"))
+        self.assertNotIn("hello from whatsapp", json.dumps(result))
 
     def test_explicit_audio_file_must_look_like_bridge_download(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -148,6 +152,8 @@ class WhatsAppInboundAudioCacheVerifierTests(unittest.TestCase):
         self.assertTrue(result["checks"]["selected_files"][0].endswith("aud_fresh.ogg"))
         terminal = result["checks"]["audio"][0]["stt"]["terminal_event"]
         self.assertEqual(terminal["event"], "stt.transcribed")
+        self.assertTrue(terminal["data"]["text_redacted"])
+        self.assertEqual(terminal["data"]["text_chars"], len("hello from whatsapp"))
 
     def test_optional_fresh_watch_falls_back_to_existing_cached_audio(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -252,8 +252,10 @@ scripts/verify_whatsapp_inbound_audio_cache.py \
 The bridge writes inbound voice/audio media as `aud_*` files under
 `~/.hermes/audio_cache` by default. The cache verifier checks those files look
 like bridge downloads, validates the audio stream with `ffprobe`, and can replay
-one through `voice stream-transcribe --json`. The full stack gate exposes the
-same receive-side smoke behind an explicit opt-in:
+one through `voice stream-transcribe --json`. Saved verifier JSON records audio
+frames, duration, token count, and transcript length, but redacts the transcript
+text. The full stack gate exposes the same receive-side smoke behind an
+explicit opt-in:
 
 ```bash
 scripts/verify_local_hermes_voice_stack.sh \

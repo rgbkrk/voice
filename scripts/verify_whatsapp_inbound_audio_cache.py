@@ -183,6 +183,21 @@ def probe_audio(path: Path, *, timeout: float, skip_ffprobe: bool) -> tuple[dict
     return probe, failures
 
 
+def redact_stt_event(event: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(event)
+    data = redacted.get("data")
+    if not isinstance(data, dict):
+        return redacted
+
+    redacted_data = dict(data)
+    text = redacted_data.pop("text", None)
+    if text is not None:
+        redacted_data["text_redacted"] = True
+        redacted_data["text_chars"] = len(str(text))
+    redacted["data"] = redacted_data
+    return redacted
+
+
 def transcribe_audio(
     voice_bin: str,
     path: Path,
@@ -203,6 +218,7 @@ def transcribe_audio(
         failures.append(f"voice stream-transcribe failed for {path}: {completed.stderr.strip()}")
         return result, failures
 
+    terminal_raw: dict[str, Any] | None = None
     for line in completed.stdout.splitlines():
         line = line.strip()
         if not line:
@@ -212,15 +228,16 @@ def transcribe_audio(
         except json.JSONDecodeError as exc:
             failures.append(f"stream-transcribe emitted non-JSON line: {exc}")
             continue
-        result["events"].append(event)
         if event.get("event") in {"stt.transcribed", "stt.error"}:
-            result["terminal_event"] = event
+            terminal_raw = event
+        result["events"].append(redact_stt_event(event))
 
-    terminal = result.get("terminal_event")
+    terminal = terminal_raw
     if not terminal:
         failures.append("stream-transcribe did not emit a terminal STT event")
     elif terminal.get("event") != "stt.transcribed":
         failures.append(f"stream-transcribe terminal event was {terminal.get('event')!r}")
+        result["terminal_event"] = redact_stt_event(terminal)
     else:
         data = terminal.get("data") or {}
         if not str(data.get("text") or "").strip():
@@ -229,6 +246,7 @@ def transcribe_audio(
             failures.append("stream-transcribe reported no audio frames")
         if int(data.get("audio_duration_ms") or 0) <= 0:
             failures.append("stream-transcribe reported no audio duration")
+        result["terminal_event"] = redact_stt_event(terminal)
     return result, failures
 
 
@@ -395,11 +413,10 @@ def human_summary(result: dict[str, Any]) -> None:
         else:
             terminal = stt.get("terminal_event") or {}
             data = terminal.get("data") or {}
-            text = str(data.get("text") or "")
             print(
                 f"stt[{index}]=frames={data.get('frames')} "
                 f"duration_ms={data.get('audio_duration_ms')} "
-                f"text_chars={len(text)}"
+                f"text_chars={data.get('text_chars', 0)}"
             )
     for warning in result["warnings"]:
         print(f"warning: {warning}", file=sys.stderr)

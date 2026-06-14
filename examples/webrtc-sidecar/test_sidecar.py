@@ -219,3 +219,78 @@ def test_audio_endpoint_rejects_mismatched_contract():
             assert source.queued_bytes == 0
 
     asyncio.run(run())
+
+
+def test_offer_loopback_receives_http_queued_audio():
+    sidecar = load_sidecar()
+
+    async def run():
+        from aiohttp.test_utils import TestClient, TestServer
+
+        source = sidecar.PcmSource(None)
+        app = sidecar.create_app(source, None)
+        pc = sidecar.RTCPeerConnection()
+        track_future = asyncio.get_running_loop().create_future()
+
+        @pc.on("track")
+        def on_track(track):
+            if track.kind == "audio" and not track_future.done():
+                track_future.set_result(track)
+
+        pc.addTransceiver("audio", direction="recvonly")
+
+        async with TestClient(TestServer(app)) as client:
+            try:
+                offer = await pc.createOffer()
+                await pc.setLocalDescription(offer)
+                await sidecar.wait_for_ice_complete(pc)
+                assert pc.localDescription is not None
+
+                offer_response = await client.post(
+                    "/offer",
+                    json={
+                        "call_id": "call-1",
+                        "type": pc.localDescription.type,
+                        "sdp": pc.localDescription.sdp,
+                    },
+                )
+                assert offer_response.status == 200
+                answer = await offer_response.json()
+                assert answer["audio"] == sidecar.audio_contract()
+
+                pcm_frame = (
+                    (12_000).to_bytes(2, byteorder="little", signed=True)
+                    * sidecar.SAMPLES_PER_FRAME
+                )
+                audio_response = await client.post(
+                    "/calls/call-1/audio",
+                    json={
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                        "pcm_s16le_base64": base64.b64encode(pcm_frame).decode("ascii"),
+                    },
+                )
+                assert audio_response.status == 200
+                audio_body = await audio_response.json()
+                assert audio_body["accepted_bytes"] == sidecar.FRAME_BYTES
+
+                await pc.setRemoteDescription(
+                    sidecar.RTCSessionDescription(
+                        sdp=answer["sdp"],
+                        type=answer["type"],
+                    )
+                )
+                track = await asyncio.wait_for(track_future, timeout=5)
+
+                for _ in range(80):
+                    frame = await asyncio.wait_for(track.recv(), timeout=2)
+                    frame_bytes = b"".join(bytes(plane) for plane in frame.planes)
+                    if any(frame_bytes):
+                        return
+                pytest.fail("remote WebRTC peer only received silence")
+            finally:
+                await pc.close()
+
+    asyncio.run(run())

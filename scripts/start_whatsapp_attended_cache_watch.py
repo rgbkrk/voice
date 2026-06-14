@@ -17,6 +17,10 @@ from typing import Any
 
 DEFAULT_WAIT_SECONDS = 6 * 60 * 60
 DEFAULT_UNIT_PREFIX = "voice-whatsapp-attended-cache-watch"
+DEFAULT_ATTENDED_PROMPT_TEXT = (
+    "Please reply with a fresh WhatsApp voice note so I can verify the voice runtime."
+)
+ATTENDED_PROFILE = "attended-cache-receive"
 
 
 def repo_root() -> Path:
@@ -65,7 +69,9 @@ def build_alpha_command(args: argparse.Namespace) -> list[str]:
         "--hermes-config",
         str(args.hermes_config),
         "--profile",
-        "attended-cache-receive",
+        ATTENDED_PROFILE,
+        "--attended-prompt-text",
+        args.attended_prompt_text,
         "--wait-audio-cache-seconds",
         str(float(args.wait_seconds)),
     ]
@@ -75,6 +81,23 @@ def build_alpha_command(args: argparse.Namespace) -> list[str]:
         command.extend(["--expected-agent-name", args.expected_agent_name])
     command.append("--json")
     return command
+
+
+def attended_prompt_manifest(args: argparse.Namespace) -> dict[str, Any]:
+    audio_cache_dir = args.hermes_home / "audio_cache"
+    return {
+        "sends_prompt_voice_note": True,
+        "prompt_text": args.attended_prompt_text,
+        "send_profile": ATTENDED_PROFILE,
+        "send_format": "audio/ogg; codecs=opus",
+        "send_transport": "local_whatsapp_bridge_ptt",
+        "receive_watch": "non_draining_audio_cache",
+        "audio_cache_dir": str(audio_cache_dir),
+        "operator_action": (
+            "Send a fresh WhatsApp voice note to the configured agent chat "
+            "while this watch is running."
+        ),
+    }
 
 
 def build_watch(args: argparse.Namespace) -> dict[str, Any]:
@@ -116,12 +139,13 @@ def build_manifest(args: argparse.Namespace, watch: dict[str, Any]) -> dict[str,
     return {
         "schema": "voice.whatsapp_attended_cache_watch_manifest",
         "version": 1,
-        "profile": "attended-cache-receive",
+        "profile": ATTENDED_PROFILE,
         "drains_bridge_messages": False,
         "created_at_utc": utc_iso_timestamp(),
         "unit": watch["unit"],
         "service": watch["service"],
         "wait_seconds": float(args.wait_seconds),
+        "attended_prompt": attended_prompt_manifest(args),
         "voice_bin": str(args.voice_bin),
         "hermes_home": str(args.hermes_home),
         "hermes_config": str(args.hermes_config),
@@ -244,6 +268,7 @@ def summarize_manifest_payload(payload: dict[str, Any] | None) -> dict[str, Any]
         "json_path": artifacts.get("json"),
         "log_path": artifacts.get("log"),
         "manifest_path": artifacts.get("manifest"),
+        "attended_prompt": payload.get("attended_prompt"),
     }
 
 
@@ -438,6 +463,12 @@ def print_human(result: dict[str, Any]) -> None:
     print(f"log={result['log_path']}")
     print(f"manifest={result['manifest_path']}")
     print(f"wait_seconds={result['wait_seconds']}")
+    attended_prompt = (result.get("manifest") or {}).get("attended_prompt") or {}
+    if attended_prompt:
+        print(f"sends_prompt_voice_note={attended_prompt.get('sends_prompt_voice_note')}")
+        print(f"prompt_text={attended_prompt.get('prompt_text')}")
+        print(f"audio_cache_dir={attended_prompt.get('audio_cache_dir')}")
+        print(f"operator_action={attended_prompt.get('operator_action')}")
     print(f"alpha_command={shlex.join(result['alpha_command'])}")
     print(f"systemd_command={shlex.join(result['systemd_command'])}")
     print(f"status_command={shlex.join(result['status_command'])}")
@@ -473,6 +504,16 @@ def print_status_human(result: dict[str, Any]) -> None:
             f"expected_agent_number={manifest_summary.get('expected_agent_number')} "
             f"expected_agent_name={manifest_summary.get('expected_agent_name')}"
         )
+        attended_prompt = manifest_summary.get("attended_prompt")
+        attended_prompt = attended_prompt if isinstance(attended_prompt, dict) else {}
+        if attended_prompt:
+            print(
+                "attended_prompt="
+                f"sends_prompt_voice_note="
+                f"{attended_prompt.get('sends_prompt_voice_note')} "
+                f"prompt_text={attended_prompt.get('prompt_text')} "
+                f"audio_cache_dir={attended_prompt.get('audio_cache_dir')}"
+            )
     alpha = result.get("alpha") or {}
     if alpha:
         print(
@@ -527,7 +568,9 @@ def print_list_human(result: dict[str, Any]) -> None:
             f"status={watch.get('watch_status')} "
             f"active_state={(watch.get('systemd') or {}).get('ActiveState')} "
             f"json_size={json_artifact.get('size_bytes')} "
-            f"manifest_wait_seconds={manifest_summary.get('wait_seconds')}"
+            f"manifest_wait_seconds={manifest_summary.get('wait_seconds')} "
+            "sends_prompt_voice_note="
+            f"{(manifest_summary.get('attended_prompt') or {}).get('sends_prompt_voice_note')}"
         )
 
 
@@ -554,6 +597,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hermes-home", type=Path, default=default_hermes_home())
     parser.add_argument("--hermes-config", type=Path, default=default_hermes_config())
     parser.add_argument("--wait-seconds", type=float, default=DEFAULT_WAIT_SECONDS)
+    parser.add_argument("--attended-prompt-text", default=DEFAULT_ATTENDED_PROMPT_TEXT)
     parser.add_argument("--expected-agent-number", default=os.environ.get("WHATSAPP_AGENT_NUMBER"))
     parser.add_argument("--expected-agent-name", default=os.environ.get("WHATSAPP_AGENT_NAME"))
     parser.add_argument("--output-dir", type=Path, default=Path("/tmp"))
@@ -565,7 +609,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=repo_root() / "scripts" / "verify_whatsapp_alpha_readiness.py",
     )
-    parser.add_argument("--systemd-run-bin", default=os.environ.get("SYSTEMD_RUN_BIN", "systemd-run"))
+    parser.add_argument(
+        "--systemd-run-bin",
+        default=os.environ.get("SYSTEMD_RUN_BIN", "systemd-run"),
+    )
     parser.add_argument("--systemctl-bin", default=os.environ.get("SYSTEMCTL_BIN", "systemctl"))
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")

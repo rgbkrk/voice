@@ -77,12 +77,27 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertEqual(manifest["wait_seconds"], 120.0)
         self.assertEqual(manifest["expected_agent_number"], "13236478455")
         self.assertEqual(manifest["expected_agent_name"], "Quill")
+        prompt = manifest["attended_prompt"]
+        self.assertTrue(prompt["sends_prompt_voice_note"])
+        self.assertEqual(
+            prompt["prompt_text"],
+            "Please reply with a fresh WhatsApp voice note so I can verify the voice runtime.",
+        )
+        self.assertEqual(prompt["send_format"], "audio/ogg; codecs=opus")
+        self.assertEqual(prompt["send_transport"], "local_whatsapp_bridge_ptt")
+        self.assertEqual(prompt["receive_watch"], "non_draining_audio_cache")
+        self.assertEqual(
+            prompt["audio_cache_dir"],
+            str(tmp_path / "hermes" / "audio_cache"),
+        )
         self.assertEqual(manifest["artifacts"]["json"], payload["json_path"])
         self.assertEqual(manifest["artifacts"]["log"], payload["log_path"])
         self.assertEqual(manifest["artifacts"]["manifest"], payload["manifest_path"])
         alpha = payload["alpha_command"]
         self.assertIn("--profile", alpha)
         self.assertIn("attended-cache-receive", alpha)
+        self.assertIn("--attended-prompt-text", alpha)
+        self.assertIn(prompt["prompt_text"], alpha)
         self.assertIn("--wait-audio-cache-seconds", alpha)
         self.assertIn("120.0", alpha)
         self.assertIn("--expected-agent-number", alpha)
@@ -154,8 +169,14 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertEqual(manifest["wait_seconds"], 30.0)
         self.assertFalse(manifest["drains_bridge_messages"])
         self.assertEqual(manifest["profile"], "attended-cache-receive")
+        self.assertTrue(manifest["attended_prompt"]["sends_prompt_voice_note"])
+        self.assertEqual(
+            manifest["attended_prompt"]["audio_cache_dir"],
+            str(tmp_path / "hermes" / "audio_cache"),
+        )
         self.assertIn("alpha", manifest["commands"])
         self.assertIn("--wait-audio-cache-seconds", manifest["commands"]["alpha"])
+        self.assertIn("--attended-prompt-text", manifest["commands"]["alpha"])
         self.assertEqual(
             manifest["artifacts"]["json"],
             str(tmp_path / "voice-whatsapp-attended-cache-watch-20260614T225118Z.json"),
@@ -290,6 +311,11 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
                         "created_at_utc": "2026-06-14T22:51:18Z",
                         "wait_seconds": 120.0,
                         "drains_bridge_messages": False,
+                        "attended_prompt": {
+                            "sends_prompt_voice_note": True,
+                            "prompt_text": "reply with a voice note",
+                            "audio_cache_dir": str(tmp_path / "audio_cache"),
+                        },
                         "expected_agent_number": "13236478455",
                         "expected_agent_name": "Quill",
                         "artifacts": {
@@ -333,6 +359,10 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         )
         self.assertEqual(payload["manifest_summary"]["wait_seconds"], 120.0)
         self.assertFalse(payload["manifest_summary"]["drains_bridge_messages"])
+        self.assertEqual(
+            payload["manifest_summary"]["attended_prompt"]["prompt_text"],
+            "reply with a voice note",
+        )
 
     def test_list_discovers_active_units_and_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -410,6 +440,11 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
                         "created_at_utc": "2026-06-14T22:51:18Z",
                         "wait_seconds": 60.0,
                         "drains_bridge_messages": False,
+                        "attended_prompt": {
+                            "sends_prompt_voice_note": True,
+                            "prompt_text": "reply with a voice note",
+                            "audio_cache_dir": str(tmp_path / "audio_cache"),
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -446,6 +481,11 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertEqual(
             by_unit["watch-manifest"]["manifest_summary"]["wait_seconds"],
             60.0,
+        )
+        self.assertTrue(
+            by_unit["watch-manifest"]["manifest_summary"]["attended_prompt"][
+                "sends_prompt_voice_note"
+            ]
         )
 
     def test_stop_requests_systemd_stop_and_reports_artifacts(self):

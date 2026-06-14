@@ -461,11 +461,12 @@ scripts/start_whatsapp_attended_cache_watch.py \
   --hermes-config ~/.hermes/config.yaml
 ```
 
-It prints the unit name plus JSON/log/manifest artifact paths, then waits for a
-fresh `aud_*` file without polling the bridge `/messages` queue. The manifest
-is written before `systemd-run` starts the long watch, so a later session can
-inspect the launched command, wait window, expected agent metadata, and
-artifact paths even while JSON/log output is still empty.
+It prints the unit name plus JSON/log/manifest artifact paths, then sends the
+attended prompt voice note and waits for a fresh `aud_*` file without polling
+the bridge `/messages` queue. The manifest is written before `systemd-run`
+starts the long watch, so a later session can inspect the prompt text, send
+intent, launched command, wait window, expected agent metadata, audio cache
+directory, and artifact paths even while JSON/log output is still empty.
 Use `--status <unit-or-service>` with the printed unit name to summarize
 whether the watch is still waiting, failed, completed, or verified fresh
 receive evidence. Use `--list` to discover active watches and matching

@@ -317,6 +317,10 @@ The launcher prints the transient unit name, JSON artifact path, log path, and
 copyable `systemctl --user status ...` / `journalctl --user -u ... -f`
 commands. It runs `attended-cache-receive`, sends the voice-note prompt, then
 watches for a fresh `aud_*` cache file without polling `/messages`.
+Its manifest is written before the service starts and records the prompt text,
+send intent, expected audio cache directory, wait window, agent metadata, and
+copyable commands so a later session can inspect an active watch before JSON
+or log output exists.
 To inspect a launched watch without hand-parsing systemd or the saved JSON,
 run:
 

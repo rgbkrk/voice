@@ -56,3 +56,28 @@ jobs:
             examples/webrtc-sidecar/test_echo_sidecar_audio.py \
             examples/webrtc-sidecar/test_stream_transcribe_loopback_smoke.py \
             examples/webrtc-sidecar/test_full_duplex_loopback_smoke.py
+
+  python-helpers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: |
+          python -m py_compile \
+            scripts/macos_release_compare.py \
+            scripts/verify_webrtc_sidecar_service.py \
+            tests/test_install_webrtc_sidecar_service.py \
+            tests/test_macos_release_compare.py \
+            tests/test_verify_webrtc_sidecar_service.py
+
+      - run: python -m unittest discover -s tests
+
+      - run: |
+          bash -n \
+            scripts/install_webrtc_sidecar_service.sh \
+            scripts/verify_hermes_command_tts.sh \
+            scripts/verify_whatsapp_voice_contract.sh

@@ -143,6 +143,19 @@ class CliMcpSurfaceVerifierTests(unittest.TestCase):
         self.assertTrue(checks["daemon_detected"]["detected"])
         self.assertTrue(checks["mcp_with_daemon_detects_daemon"]["ok"])
 
+    def test_run_command_reports_timeout_as_completed_process(self):
+        result = self.script.run_command(
+            [
+                sys.executable,
+                "-c",
+                "import time; time.sleep(1)",
+            ],
+            timeout=0.01,
+        )
+
+        self.assertEqual(result.returncode, 124)
+        self.assertIn("timed out after", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

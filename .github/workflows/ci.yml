@@ -35,7 +35,7 @@ jobs:
 
       - run: cargo build -p voice
 
-      - run: scripts/verify_cli_mcp_surface.py --voice-bin target/debug/voice --skip-daemon
+      - run: scripts/verify_cli_mcp_surface.py --voice-bin target/debug/voice --skip-daemon --timeout 240
 
   sidecar-python:
     runs-on: ubuntu-latest

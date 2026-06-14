@@ -77,16 +77,37 @@ def run_command(
     input_text: str | None = None,
     timeout: float,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        input=input_text,
-        text=True,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            command,
+            input=input_text,
+            text=True,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = _timeout_text(exc.stdout)
+        stderr = _timeout_text(exc.stderr)
+        if stderr:
+            stderr += "\n"
+        stderr += f"timed out after {exc.timeout}s"
+        return subprocess.CompletedProcess(
+            command,
+            124,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+
+def _timeout_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def hidden_daemon_env() -> dict[str, str]:

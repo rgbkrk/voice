@@ -26,10 +26,28 @@ trusted local network or private socket boundary.
 
 ## Install
 
+For a one-off development run:
+
 ```bash
 python3 -m venv /tmp/voice-webrtc-venv
 /tmp/voice-webrtc-venv/bin/pip install -r examples/webrtc-sidecar/requirements.txt
 ```
+
+For a persistent local Hermes/WhatsApp Calling host on Linux, install the voice
+daemon first, then install the sidecar as a systemd user service:
+
+```bash
+voice daemon install
+scripts/install_webrtc_sidecar_service.sh --voice-bin "$(command -v voice)"
+curl -sS http://127.0.0.1:8787/health
+```
+
+The installer creates a venv under the XDG data directory, writes
+`~/.config/systemd/user/voice-webrtc-sidecar.service`, enables it, and restarts
+the service. It pins `VOICE_BIN` in the unit so the sidecar can discover the
+same `voice stream-contract` object Hermes expects. Use `--print-unit` to
+inspect the generated service without writing files, `--no-start` when another
+process will start it, and `--uninstall` to remove the user unit.
 
 ## Run
 

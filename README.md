@@ -338,6 +338,13 @@ service when the daemon or `voice stream` surface is needed.
 See [docs/daemon.md](docs/daemon.md) for systemd user service and macOS
 LaunchAgent examples.
 
+For Linux Hermes/WhatsApp Calling experiments, install the Python WebRTC
+sidecar as a separate user service after the daemon:
+
+```bash
+scripts/install_webrtc_sidecar_service.sh --voice-bin "$(command -v voice)"
+```
+
 For WhatsApp or Telegram voice-note delivery through Hermes, prefer
 `output_format: ogg` with `voice_compatible: true` so Hermes can send Voice's
 Opus output directly. `output_format: wav` remains a compatibility fallback,

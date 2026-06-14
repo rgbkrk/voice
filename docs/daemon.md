@@ -39,6 +39,31 @@ voice daemon status
 voice daemon status --json
 ```
 
+## WebRTC Sidecar Service
+
+For Hermes/WhatsApp Calling experiments on Linux, keep the daemon warm and run
+the Python WebRTC sidecar as a separate user service:
+
+```bash
+voice daemon install
+scripts/install_webrtc_sidecar_service.sh --voice-bin "$(command -v voice)"
+curl -sS http://127.0.0.1:8787/health
+```
+
+The helper creates or updates the sidecar venv, writes
+`~/.config/systemd/user/voice-webrtc-sidecar.service`, enables it, and restarts
+the service. The generated unit depends on `voiced.service`, binds the sidecar
+control API to `127.0.0.1:8787`, mirrors inbound PCM under the XDG state
+directory, and sets `VOICE_BIN` to the exact binary passed with `--voice-bin`.
+
+Useful options:
+
+```bash
+scripts/install_webrtc_sidecar_service.sh --print-unit
+scripts/install_webrtc_sidecar_service.sh --no-start
+scripts/install_webrtc_sidecar_service.sh --uninstall
+```
+
 ---
 
 The sections below document the manual setup steps performed by

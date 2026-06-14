@@ -463,6 +463,9 @@ scripts/start_whatsapp_attended_cache_watch.py \
 
 It prints the unit name plus JSON/log artifact paths, then waits for a fresh
 `aud_*` file without polling the bridge `/messages` queue.
+Use `--status <unit-or-service>` with the printed unit name to summarize
+whether the watch is still waiting, failed, completed, or verified fresh
+receive evidence.
 
 To fail unless every alpha gate is complete, include the strict completion flag:
 

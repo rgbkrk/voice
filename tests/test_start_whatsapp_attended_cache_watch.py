@@ -158,6 +158,120 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("--wait-seconds must be positive", result.stderr)
 
+    def test_status_reports_active_empty_artifact_as_waiting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_systemctl = tmp_path / "systemctl"
+            write_executable(
+                fake_systemctl,
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    cat <<'EOF'
+                    ActiveState=active
+                    SubState=running
+                    MainPID=12345
+                    EOF
+                    """
+                ),
+            )
+            (tmp_path / "watch.json").write_text("", encoding="utf-8")
+            (tmp_path / "watch.log").write_text("", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--status",
+                    "watch.service",
+                    "--output-dir",
+                    str(tmp_path),
+                    "--systemctl-bin",
+                    str(fake_systemctl),
+                    "--json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["watch_status"], "waiting_for_fresh_audio")
+        self.assertEqual(payload["systemd"]["ActiveState"], "active")
+        self.assertEqual(payload["systemd"]["MainPID"], "12345")
+        self.assertTrue(payload["json"]["exists"])
+        self.assertEqual(payload["json"]["size_bytes"], 0)
+        self.assertEqual(payload["service"], "watch.service")
+
+    def test_status_summarizes_verified_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_systemctl = tmp_path / "systemctl"
+            write_executable(
+                fake_systemctl,
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    cat <<'EOF'
+                    ActiveState=inactive
+                    SubState=dead
+                    MainPID=0
+                    EOF
+                    """
+                ),
+            )
+            (tmp_path / "watch.json").write_text(
+                json.dumps(
+                    {
+                        "success": True,
+                        "profile": "attended-cache-receive",
+                        "readiness_summary": {
+                            "status": "local_ready_pending_gates",
+                            "complete": False,
+                            "attended_fresh_receive_verified": True,
+                            "external_meta_setup_required": True,
+                        },
+                        "pending_gates": {
+                            "attended_fresh_receive": {
+                                "status": "verified",
+                                "cached_receive_verified": True,
+                                "evidence": {
+                                    "kind": "audio_cache",
+                                    "fresh_count": 1,
+                                },
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (tmp_path / "watch.log").write_text("done\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--status",
+                    "watch",
+                    "--output-dir",
+                    str(tmp_path),
+                    "--systemctl-bin",
+                    str(fake_systemctl),
+                    "--json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["watch_status"], "verified")
+        self.assertTrue(payload["json"]["parsed"])
+        self.assertEqual(payload["alpha"]["profile"], "attended-cache-receive")
+        self.assertEqual(payload["alpha"]["attended_status"], "verified")
+        self.assertTrue(payload["alpha"]["attended_fresh_receive_verified"])
+        self.assertEqual(payload["alpha"]["fresh_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

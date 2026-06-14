@@ -317,6 +317,16 @@ The launcher prints the transient unit name, JSON artifact path, log path, and
 copyable `systemctl --user status ...` / `journalctl --user -u ... -f`
 commands. It runs `attended-cache-receive`, sends the voice-note prompt, then
 watches for a fresh `aud_*` cache file without polling `/messages`.
+To inspect a launched watch without hand-parsing systemd or the saved JSON,
+run:
+
+```bash
+scripts/start_whatsapp_attended_cache_watch.py \
+  --status voice-whatsapp-attended-cache-watch-20260614T225118Z.service
+```
+
+Status output reports whether the watch is still waiting, has no artifact yet,
+failed, completed, or verified fresh receive evidence.
 
 Cloud/Calling readiness requires these external Meta settings in addition to
 the local sidecar:

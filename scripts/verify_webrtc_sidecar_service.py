@@ -38,6 +38,7 @@ EXPECTED_AUDIO = {
 REQUIRED_VOICE_SURFACES = (
     "completed_voice_note",
     "streamed_voice_note",
+    "streamed_voice_note_stdout",
     "raw_outbound_pcm",
     "raw_inbound_pcm",
     "file_transcription_smoke",

@@ -40,6 +40,10 @@ def contract_fixture() -> dict:
                 "output": "audio/ogg; codecs=opus",
                 "transport": "daemon_stream_encoded_file",
             },
+            "streamed_voice_note_stdout": {
+                "output": "audio/ogg; codecs=opus",
+                "transport": "stdout_ogg_opus_stream",
+            },
             "raw_outbound_pcm": {
                 "output": "pcm_s16le",
                 "transport": "stdout_pcm_frames",
@@ -166,6 +170,7 @@ class WebrtcSidecarVerifierTests(unittest.TestCase):
         self.assertIn("ok: voice WebRTC sidecar service verifier passed", result.stdout)
         self.assertIn("contract=matched", result.stdout)
         self.assertIn("systemd=skipped", result.stdout)
+        self.assertIn("sidecar_url=", result.stdout)
 
     def test_verifier_fails_when_sidecar_contract_differs_from_voice(self):
         voice_contract = contract_fixture()

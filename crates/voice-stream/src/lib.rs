@@ -69,6 +69,13 @@ pub fn webrtc_sidecar_contract() -> serde_json::Value {
                 "use": "Smoke tests or integrations that want Ogg/Opus encoded from daemon PCM frames without a WAV intermediate.",
                 "requires": ["voice daemon", "ffmpeg for Ogg/Opus encoding"]
             },
+            "streamed_voice_note_stdout": {
+                "command": "voice stream --output - --format ogg-opus \"hello\" > reply.ogg",
+                "output": "audio/ogg; codecs=opus",
+                "transport": "stdout_ogg_opus_stream",
+                "use": "Pipeable daemon-frame Ogg/Opus output for process integrations that want an encoded stream without allocating a named output file.",
+                "requires": ["voice daemon", "ffmpeg for Ogg/Opus encoding"]
+            },
             "raw_outbound_pcm": {
                 "command": "voice stream --sample-rate 48000 --frame-ms 20 --raw-output - \"hello\"",
                 "output": "pcm_s16le",
@@ -632,6 +639,14 @@ mod tests {
         assert_eq!(
             surfaces["streamed_voice_note"]["transport"],
             "daemon_stream_encoded_file"
+        );
+        assert_eq!(
+            surfaces["streamed_voice_note_stdout"]["transport"],
+            "stdout_ogg_opus_stream"
+        );
+        assert_eq!(
+            surfaces["streamed_voice_note_stdout"]["output"],
+            "audio/ogg; codecs=opus"
         );
         assert_eq!(
             surfaces["raw_outbound_pcm"]["frame_bytes"],

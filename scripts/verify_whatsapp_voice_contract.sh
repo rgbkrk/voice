@@ -173,6 +173,7 @@ surfaces = contract.get("voice_surfaces") or {}
 for key in (
     "completed_voice_note",
     "streamed_voice_note",
+    "streamed_voice_note_stdout",
     "raw_outbound_pcm",
     "raw_inbound_pcm",
     "file_transcription_smoke",
@@ -182,6 +183,18 @@ for key in (
 require(
     surfaces["completed_voice_note"].get("output") == "audio/ogg; codecs=opus",
     "completed_voice_note output must be audio/ogg; codecs=opus",
+)
+require(
+    surfaces["streamed_voice_note"].get("transport") == "daemon_stream_encoded_file",
+    "streamed_voice_note transport must be daemon_stream_encoded_file",
+)
+require(
+    surfaces["streamed_voice_note_stdout"].get("output") == "audio/ogg; codecs=opus",
+    "streamed_voice_note_stdout output must be audio/ogg; codecs=opus",
+)
+require(
+    surfaces["streamed_voice_note_stdout"].get("transport") == "stdout_ogg_opus_stream",
+    "streamed_voice_note_stdout transport must be stdout_ogg_opus_stream",
 )
 require(
     surfaces["raw_outbound_pcm"].get("frame_bytes") == 1_920,
@@ -265,6 +278,19 @@ PY
     --format ogg-opus \
     "$text"
   assert_ogg_opus "$streamed_ogg"
+
+  streamed_stdout_ogg="$tmp_dir/streamed-stdout.ogg"
+  streamed_stdout_stderr="$tmp_dir/streamed-stdout.stderr"
+  "$voice_bin" --quiet stream \
+    --sample-rate 48000 \
+    --frame-ms 20 \
+    --output - \
+    --format ogg-opus \
+    "$text" >"$streamed_stdout_ogg" 2>"$streamed_stdout_stderr"
+  assert_ogg_opus "$streamed_stdout_ogg"
+  if [[ -s "$streamed_stdout_stderr" ]]; then
+    fail "quiet stdout Ogg/Opus stream wrote stderr output: $(head -n 1 "$streamed_stdout_stderr")"
+  fi
 
   if [[ "$run_stt_smoke" == "1" ]]; then
     stt_wav="$tmp_dir/stream-transcribe-smoke.wav"

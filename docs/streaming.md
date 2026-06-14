@@ -123,6 +123,7 @@ voice stream "Hello from the stream"
 voice stream --json "Hello from the stream"
 voice say --format ogg-opus -o reply.ogg "Hello"
 voice stream --output streamed.ogg --format ogg-opus "Hello"
+voice stream --output - --format ogg-opus "Hello" > streamed.ogg
 voice stream --sample-rate 48000 --frame-ms 20 --raw-output reply.s16le "Hello"
 voice stream-transcribe recording.ogg
 voice stream-transcribe --raw-input webrtc-in.s16le --sample-rate 48000 --frame-ms 20
@@ -140,12 +141,12 @@ contract, proves `voice say --format ogg-opus` and `.ogg` extension inference
 write real mono 48 kHz Ogg/Opus, verifies misleading `.wav`/`ogg-opus`
 combinations are rejected before writing a file, and, when the daemon is
 running, checks both raw 48 kHz 20 ms PCM streaming and streamed Ogg/Opus
-encoding. Pass `--require-daemon` when the daemon stream path must be covered,
-or `--skip-daemon` for a file-only preflight. Pass `--run-stt-smoke` with
-`--require-daemon` when the inbound WebRTC/STT path must also be covered; it
-creates a tiny WAV fixture and requires `voice stream-transcribe --json` to
-return a terminal `stt.transcribed` event. This is optional because it may lazily
-load the Whisper model.
+encoding to both named files and stdout. Pass `--require-daemon` when the daemon
+stream path must be covered, or `--skip-daemon` for a file-only preflight. Pass
+`--run-stt-smoke` with `--require-daemon` when the inbound WebRTC/STT path must
+also be covered; it creates a tiny WAV fixture and requires
+`voice stream-transcribe --json` to return a terminal `stt.transcribed` event.
+This is optional because it may lazily load the Whisper model.
 
 The raw output is signed 16-bit little-endian mono PCM with no container header.
 Use the event metadata for sample rate, frame duration, and stream ID.
@@ -155,6 +156,9 @@ progress lines move to stderr.
 `--output` is the encoded stream path. It currently accepts `.ogg` / `.opus` or
 `--format ogg-opus`, requires `ffmpeg`, and preserves the daemon's low-latency
 PCM frame contract while producing a valid `audio/ogg; codecs=opus` file.
+Use `--output - --format ogg-opus` to pipe that encoded Ogg stream to stdout;
+`--format` is required with `-` so binary stdout is unambiguous, and `--json`
+cannot be combined with binary stdout.
 Use `--raw-output` when the consumer is a WebRTC sidecar or another process
 that wants raw PCM frames.
 
@@ -171,9 +175,10 @@ by the Python WebRTC example. Besides the fixed PCM shape and HTTP endpoint
 schema, including the outbound-audio clear endpoint used for barge-in, the
 `voice_surfaces` object maps integration modes to commands:
 `completed_voice_note` for WhatsApp-ready Ogg/Opus files, `streamed_voice_note`
-for Ogg/Opus encoded from daemon frames, `raw_outbound_pcm` for WebRTC TTS
-frames, `raw_inbound_pcm` for decoded WebRTC audio entering STT, and
-`file_transcription_smoke` for replaying an audio file through the inbound
+for Ogg/Opus encoded from daemon frames to a named file,
+`streamed_voice_note_stdout` for pipeable Ogg/Opus stdout, `raw_outbound_pcm`
+for WebRTC TTS frames, `raw_inbound_pcm` for decoded WebRTC audio entering STT,
+and `file_transcription_smoke` for replaying an audio file through the inbound
 stream contract.
 
 ## Daemon Protocol

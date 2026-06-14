@@ -40,12 +40,12 @@ pub async fn serve(
     let listener = match UnixListener::bind(&path) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("voiced: failed to bind {}: {}", path.display(), e);
+            eprintln!("voice daemon: failed to bind {}: {}", path.display(), e);
             return;
         }
     };
 
-    eprintln!("voiced: listening on {}", path.display());
+    eprintln!("voice daemon: listening on {}", path.display());
 
     loop {
         match listener.accept().await {
@@ -53,7 +53,7 @@ pub async fn serve(
                 let queue = queue.clone();
                 let config = config.clone();
                 let client_id = Uuid::new_v4().to_string()[..8].to_string();
-                eprintln!("voiced: client connected ({})", client_id);
+                eprintln!("voice daemon: client connected ({})", client_id);
                 let automerge_clone = automerge.clone();
                 tokio::spawn(handle_client(
                     stream,
@@ -63,7 +63,7 @@ pub async fn serve(
                     automerge_clone,
                 ));
             }
-            Err(e) => eprintln!("voiced: accept error: {}", e),
+            Err(e) => eprintln!("voice daemon: accept error: {}", e),
         }
     }
 }
@@ -82,7 +82,7 @@ async fn handle_client(
             Ok(Some(f)) => f,
             Ok(None) => break, // EOF
             Err(e) => {
-                eprintln!("voiced: read error ({}): {}", client_id, e);
+                eprintln!("voice daemon: read error ({}): {}", client_id, e);
                 break;
             }
         };
@@ -138,14 +138,14 @@ async fn handle_client(
             },
             other => {
                 eprintln!(
-                    "voiced: unexpected frame type {:?} from {}",
+                    "voice daemon: unexpected frame type {:?} from {}",
                     other, client_id
                 );
             }
         }
     }
 
-    eprintln!("voiced: client disconnected ({})", client_id);
+    eprintln!("voice daemon: client disconnected ({})", client_id);
 }
 
 async fn write_response(writer: &mut OwnedWriteHalf, response: &Response) -> std::io::Result<()> {
@@ -444,7 +444,7 @@ async fn sync_automerge(
     let mut am = automerge.lock().await;
     am.update(&snapshot);
     if let Err(e) = am.save() {
-        eprintln!("voiced: failed to save automerge doc: {}", e);
+        eprintln!("voice daemon: failed to save automerge doc: {}", e);
     }
 }
 

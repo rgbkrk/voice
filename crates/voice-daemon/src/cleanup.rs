@@ -7,7 +7,7 @@ use tokio::time::{interval, Duration};
 
 /// Run cleanup loop: every 10 seconds, remove expired items from recent.
 pub async fn run(queue: Arc<RequestQueue>, automerge: Arc<Mutex<AutomergeState>>) {
-    eprintln!("voiced: cleanup task started");
+    eprintln!("voice daemon: cleanup task started");
     let mut ticker = interval(Duration::from_secs(10));
 
     loop {
@@ -20,14 +20,17 @@ pub async fn run(queue: Arc<RequestQueue>, automerge: Arc<Mutex<AutomergeState>>
             if let Some(clear_at) = item.auto_clear_at {
                 if clear_at <= now {
                     eprintln!(
-                        "voiced: auto-clearing item {} ({}s old)",
+                        "voice daemon: auto-clearing item {} ({}s old)",
                         item.id,
                         now - item.created_at
                     );
 
                     // Delete audio files
                     if let Err(e) = audio_recorder::delete_audio(&item.id) {
-                        eprintln!("voiced: failed to delete audio for {}: {}", item.id, e);
+                        eprintln!(
+                            "voice daemon: failed to delete audio for {}: {}",
+                            item.id, e
+                        );
                     }
 
                     // Remove from Automerge doc
@@ -35,7 +38,10 @@ pub async fn run(queue: Arc<RequestQueue>, automerge: Arc<Mutex<AutomergeState>>
                         let mut am = automerge.lock().await;
                         am.remove_from_recent(&item.id);
                         if let Err(e) = am.save() {
-                            eprintln!("voiced: failed to save automerge after cleanup: {}", e);
+                            eprintln!(
+                                "voice daemon: failed to save automerge after cleanup: {}",
+                                e
+                            );
                         }
                     }
 

@@ -74,6 +74,25 @@ voice-stream service, and the WebRTC sidecar contract. Add
 `--require-whatsapp-cloud` or `--require-whatsapp-calling` only when the host is
 expected to have real Meta Cloud credentials.
 
+To prove the outbound voice-note path without sending a WhatsApp message, run:
+
+```bash
+scripts/verify_whatsapp_voice_note_bridge.py --hermes-home ~/.hermes
+```
+
+That generates an Ogg/Opus file with `voice`, checks the bridge's media payload
+builder maps it to `audio/ogg; codecs=opus` with `ptt: true`, and stops before
+posting. Add `--send` to post the generated file to the configured
+`WHATSAPP_HOME_CHANNEL` through the local bridge:
+
+```bash
+scripts/verify_whatsapp_voice_note_bridge.py --hermes-home ~/.hermes --send
+```
+
+Use `--wait-inbound-seconds N --require-inbound-audio` only during an attended
+test where someone can reply with a real WhatsApp voice note during the wait
+window.
+
 Cloud/Calling readiness requires these external Meta settings in addition to
 the local sidecar:
 

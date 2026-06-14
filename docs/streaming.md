@@ -55,7 +55,8 @@ native voice note. `output_format: wav` remains valid as a compatibility
 fallback; Hermes and the WhatsApp bridge can still convert non-Opus audio when
 needed. Telegram accepts the same Ogg/Opus voice-message shape for `sendVoice`
 alongside MP3 and M4A uploads, so Voice does not need a Telegram-specific
-encoder.
+encoder for bot voice messages. Telegram voice calls and live streaming are not
+covered by this preflight.
 
 For live WhatsApp Calling, keep Ogg/Opus as the file path and bridge WebRTC
 media through 48 kHz 20 ms PCM frames. See
@@ -200,7 +201,9 @@ and reports whether the Hermes env file contains Telegram credentials without
 printing secret values. Pass `--require-telegram-credentials` when setup should
 fail unless `TELEGRAM_BOT_TOKEN` is present. Pass `--require-daemon` when the
 daemon stream path must be covered, or `--skip-daemon` for a file-only
-preflight. Pass `--run-stt-smoke` with `--require-daemon` when the inbound
+preflight. The Telegram verifier is scoped to bot voice messages via
+`sendVoice`; it reports voice calls and live streaming as not covered. Pass
+`--run-stt-smoke` with `--require-daemon` when the inbound
 WebRTC/STT path must also be covered; it creates a tiny WAV fixture and requires
 `voice stream-transcribe --json` to return a terminal `stt.transcribed` event.
 This is optional because it may lazily load the Whisper model.

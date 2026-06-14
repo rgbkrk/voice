@@ -365,7 +365,9 @@ notes, even though Telegram also accepts MP3 and M4A uploads. Run
 does not contact Telegram, but it verifies Voice's Ogg/Opus output contract
 and, unless skipped, the active Hermes command-provider config. Add
 `--require-telegram-credentials` when you want the preflight to fail unless
-`TELEGRAM_BOT_TOKEN` is present in the Hermes env file.
+`TELEGRAM_BOT_TOKEN` is present in the Hermes env file. This covers Telegram bot
+voice messages via `sendVoice`; it does not verify Telegram voice calls or a
+live streaming transport.
 
 Hermes can call `voice` directly, or use the voice-owned command-provider
 shims:

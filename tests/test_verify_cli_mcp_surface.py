@@ -12,6 +12,7 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "verify_cli_mcp_surface.py"
+CONTRACT_PATH = REPO_ROOT / "docs" / "contracts" / "webrtc-sidecar-v1.json"
 
 
 def load_script_module():
@@ -29,11 +30,17 @@ class CliMcpSurfaceVerifierTests(unittest.TestCase):
     def setUpClass(cls):
         cls.script = load_script_module()
 
-    def make_fake_voice(self, tmp_path: Path) -> Path:
+    def make_fake_voice(self, tmp_path: Path, *, matching_contract: bool = True) -> Path:
         fake = tmp_path / "voice"
-        fake.write_text(
-            textwrap.dedent(
-                """\
+        if matching_contract:
+            contract_snippet = (
+                "from pathlib import Path\n"
+                f"    print(Path({str(CONTRACT_PATH)!r}).read_text(encoding='utf-8'))\n"
+            )
+        else:
+            contract_snippet = 'print(json.dumps({"contract": "voice.webrtc_sidecar"}))\n'
+        body = textwrap.dedent(
+            """\
                 #!/usr/bin/env python3
                 import json
                 import os
@@ -41,7 +48,7 @@ class CliMcpSurfaceVerifierTests(unittest.TestCase):
 
                 args = sys.argv[1:]
                 if args == ["stream-contract"]:
-                    print(json.dumps({"contract": "voice.webrtc_sidecar"}))
+                    __CONTRACT_SNIPPET__
                     raise SystemExit(0)
                 if args == ["daemon", "status", "--json"]:
                     if os.environ.get("VOICE_FAKE_DAEMON") == "1":
@@ -59,9 +66,8 @@ class CliMcpSurfaceVerifierTests(unittest.TestCase):
                 print(f"unexpected args: {args}", file=sys.stderr)
                 raise SystemExit(2)
                 """
-            ),
-            encoding="utf-8",
-        )
+        ).replace("__CONTRACT_SNIPPET__", contract_snippet)
+        fake.write_text(body, encoding="utf-8")
         fake.chmod(0o755)
         return fake
 
@@ -90,9 +96,21 @@ class CliMcpSurfaceVerifierTests(unittest.TestCase):
         self.assertTrue(result["success"])
         checks = {check["name"]: check for check in result["checks"]}
         self.assertTrue(checks["stream_contract_no_daemon"]["ok"])
+        self.assertTrue(checks["stream_contract_no_daemon"]["matches_expected"])
         self.assertTrue(checks["mcp_no_daemon_initializes"]["ok"])
         self.assertFalse(checks["daemon_detected"]["detected"])
         self.assertTrue(checks["mcp_with_daemon_detects_daemon"]["skipped"])
+
+    def test_no_daemon_contract_must_match_checked_in_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_voice = self.make_fake_voice(Path(tmp), matching_contract=False)
+
+            result = self.verify_with_fake_voice(fake_voice)
+
+        self.assertFalse(result["success"])
+        checks = {check["name"]: check for check in result["checks"]}
+        self.assertFalse(checks["stream_contract_no_daemon"]["ok"])
+        self.assertFalse(checks["stream_contract_no_daemon"]["matches_expected"])
 
     def test_require_daemon_fails_when_daemon_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

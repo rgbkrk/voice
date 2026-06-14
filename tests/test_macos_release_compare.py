@@ -10,6 +10,7 @@ import unittest
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "macos_release_compare.py"
+CONTRACT_PATH = Path(__file__).resolve().parents[1] / "docs" / "contracts" / "webrtc-sidecar-v1.json"
 
 
 def load_script_module():
@@ -75,9 +76,8 @@ class ArticulationSmokeTests(unittest.TestCase):
 
     def make_fake_voice(self, tmp_path: Path) -> Path:
         fake = tmp_path / "voice"
-        fake.write_text(
-            textwrap.dedent(
-                """\
+        body = textwrap.dedent(
+            """\
                 #!/usr/bin/env python3
                 import json
                 import os
@@ -86,7 +86,7 @@ class ArticulationSmokeTests(unittest.TestCase):
 
                 args = sys.argv[1:]
                 if args == ["stream-contract"]:
-                    print(json.dumps({"contract": "voice.webrtc_sidecar"}))
+                    print(Path("__CONTRACT_PATH__").read_text(encoding="utf-8"))
                     raise SystemExit(0)
                 if args == ["daemon", "status", "--json"]:
                     if os.environ.get("VOICE_FAKE_DAEMON") == "1":
@@ -115,9 +115,8 @@ class ArticulationSmokeTests(unittest.TestCase):
                 print(f"unexpected args: {args}", file=sys.stderr)
                 raise SystemExit(2)
                 """
-            ),
-            encoding="utf-8",
-        )
+        ).replace("__CONTRACT_PATH__", str(CONTRACT_PATH))
+        fake.write_text(body, encoding="utf-8")
         fake.chmod(0o755)
         return fake
 

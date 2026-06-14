@@ -51,6 +51,10 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def expected_contract_path() -> Path:
+    return repo_root() / "docs" / "contracts" / "webrtc-sidecar-v1.json"
+
+
 def resolve_voice_bin(explicit: Path | None) -> Path:
     if explicit is not None:
         return explicit.expanduser().resolve()
@@ -105,6 +109,7 @@ def mcp_connected_to_daemon(stderr: str) -> bool:
 def verify_no_daemon_surfaces(voice_bin: Path, timeout: float) -> list[dict[str, Any]]:
     env = hidden_daemon_env()
     checks: list[dict[str, Any]] = []
+    expected_path = expected_contract_path()
 
     contract = run_command(
         [str(voice_bin), "stream-contract"],
@@ -113,19 +118,29 @@ def verify_no_daemon_surfaces(voice_bin: Path, timeout: float) -> list[dict[str,
     )
     contract_ok = False
     contract_name = None
+    contract_matches_expected = None
+    contract_error = None
     if contract.returncode == 0:
         try:
             contract_json = json.loads(contract.stdout)
             contract_name = contract_json.get("contract")
             contract_ok = contract_name == "voice.webrtc_sidecar"
+            if expected_path.is_file():
+                expected = json.loads(expected_path.read_text(encoding="utf-8"))
+                contract_matches_expected = contract_json == expected
+                contract_ok = contract_ok and contract_matches_expected
         except json.JSONDecodeError:
             contract_ok = False
+            contract_error = "stream-contract did not return JSON"
     checks.append(
         {
             "name": "stream_contract_no_daemon",
             "ok": contract_ok,
             "returncode": contract.returncode,
             "contract": contract_name,
+            "expected_path": str(expected_path),
+            "matches_expected": contract_matches_expected,
+            "error": contract_error,
         }
     )
 

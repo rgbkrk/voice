@@ -325,8 +325,12 @@ WebRTC-to-STT path without WhatsApp or the Graph API.
 local WebRTC audio drains through `voice stream-transcribe`, while
 `post_voice_stream.py` queues outbound `voice stream` PCM back to the same
 WebRTC peer. It is the closest local smoke to a single WhatsApp call turn. It
-also fails when the sidecar still has more than one second of outbound audio
-queued at the end of the turn; use `--max-queued-tx-ms` to tighten or loosen
-that local latency budget. When available, it uses the sidecar-reported
-`queued_tx_ms` field; older sidecars fall back to deriving the duration from
-`queued_tx_bytes` and the audio contract.
+also queues a small outbound PCM probe on the live call and calls
+`POST /calls/{call_id}/audio/clear`, so the same smoke covers the local
+barge-in/cancellation primitive. Pass `--skip-clear-audio-smoke` when checking
+only media round-trip behavior. The smoke fails when the sidecar still has more
+than one second of outbound audio queued at the end of the turn; use
+`--max-queued-tx-ms` to tighten or loosen that local latency budget. When
+available, it uses the sidecar-reported `queued_tx_ms` field; older sidecars
+fall back to deriving the duration from `queued_tx_bytes` and the audio
+contract.

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 from pathlib import Path
@@ -49,6 +50,7 @@ from voice_stream_loopback_smoke import (
 DEFAULT_INBOUND_TEXT = "hello world"
 DEFAULT_OUTBOUND_TEXT = "Hello from a full duplex WebRTC sidecar turn."
 DEFAULT_MAX_QUEUED_TX_MS = 1_000
+DEFAULT_CLEAR_PROBE_MS = 200
 
 
 def pcm_bytes_to_ms(byte_count: object, audio: dict[str, Any]) -> int:
@@ -96,6 +98,61 @@ def validate_queued_tx_budget(call: dict[str, Any], max_queued_tx_ms: int) -> in
             f"({queued_ms} ms > {max_queued_tx_ms} ms)"
         )
     return queued_ms
+
+
+async def verify_clear_audio(
+    session: ClientSession,
+    base_url: str,
+    call_id: str,
+    audio: dict[str, Any],
+    *,
+    duration_ms: int = DEFAULT_CLEAR_PROBE_MS,
+) -> dict[str, Any]:
+    """Queue outbound PCM on a live call, clear it, and verify the queue drains."""
+
+    frame_ms = int(audio.get("frame_ms") or 0)
+    frame_bytes = int(audio.get("frame_bytes") or 0)
+    if frame_ms <= 0 or frame_bytes <= 0:
+        raise RuntimeError("audio contract must include positive frame_ms/frame_bytes")
+    frames = max(1, (duration_ms + frame_ms - 1) // frame_ms)
+    probe = b"\x01\x00" * ((frame_bytes * frames) // 2)
+    payload = {
+        "sample_rate": audio["sample_rate"],
+        "channels": audio["channels"],
+        "frame_ms": audio["frame_ms"],
+        "encoding": audio["encoding"],
+        "pcm_s16le_base64": base64.b64encode(probe).decode("ascii"),
+    }
+
+    async with session.post(f"{base_url}/calls/{call_id}/audio", json=payload) as response:
+        queued = await response.json()
+        if response.status != 200:
+            raise RuntimeError(f"clear probe queue failed ({response.status}): {queued}")
+
+    queued_before_clear = int(queued.get("queued_tx_bytes") or 0)
+    if queued_before_clear <= 0:
+        raise RuntimeError("clear probe did not leave outbound PCM queued")
+
+    async with session.post(f"{base_url}/calls/{call_id}/audio/clear") as response:
+        cleared = await response.json()
+        if response.status != 200:
+            raise RuntimeError(f"clear audio failed ({response.status}): {cleared}")
+
+    dropped = int(cleared.get("dropped_tx_bytes") or 0)
+    remaining = int(cleared.get("queued_tx_bytes") or 0)
+    if dropped <= 0:
+        raise RuntimeError("clear audio reported no dropped outbound PCM")
+    if remaining != 0:
+        raise RuntimeError(f"clear audio left {remaining} queued outbound bytes")
+
+    return {
+        "queued_before_clear_bytes": queued_before_clear,
+        "queued_before_clear_ms": queued.get("queued_tx_ms"),
+        "dropped_tx_bytes": dropped,
+        "dropped_tx_ms": cleared.get("dropped_tx_ms"),
+        "queued_tx_bytes": remaining,
+        "queued_tx_ms": cleared.get("queued_tx_ms"),
+    }
 
 
 async def start_sidecar_app() -> tuple[web.AppRunner, str]:
@@ -201,6 +258,15 @@ async def verify_full_duplex_call(
                 if response.status != 200:
                     raise RuntimeError(f"status failed ({response.status}): {status}")
 
+            clear_audio = None
+            if not args.skip_clear_audio_smoke:
+                clear_audio = await verify_clear_audio(
+                    session,
+                    base_url,
+                    call_id,
+                    status["audio"],
+                )
+
             return {
                 "call_id": call_id,
                 "decoded_pcm": decoded_pcm,
@@ -213,6 +279,7 @@ async def verify_full_duplex_call(
                 "max_rx_queue_bytes": status.get("max_rx_queue_bytes"),
                 "max_rx_queue_ms": status.get("max_rx_queue_ms"),
                 "audio": sidecar.audio_contract(),
+                "clear_audio": clear_audio if clear_audio is not None else "skipped",
             }
     finally:
         await pc.close()
@@ -321,6 +388,11 @@ def parse_args() -> argparse.Namespace:
             "Maximum outbound sidecar queue depth allowed at the end of the "
             "smoke. Set to 0 to require a fully drained queue."
         ),
+    )
+    parser.add_argument(
+        "--skip-clear-audio-smoke",
+        action="store_true",
+        help="skip live-call /audio/clear verification after the media turn",
     )
     args = parser.parse_args()
     if args.max_queued_tx_ms < 0:

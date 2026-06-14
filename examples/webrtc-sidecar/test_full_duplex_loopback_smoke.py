@@ -29,6 +29,7 @@ def test_parse_args_uses_default_expected_words(monkeypatch):
     assert args.outbound_text.startswith("Hello from a full duplex")
     assert args.expect_word == ["hello", "world"]
     assert args.max_queued_tx_ms == smoke.DEFAULT_MAX_QUEUED_TX_MS
+    assert args.skip_clear_audio_smoke is False
 
 
 def test_parse_args_replaces_default_expected_words(monkeypatch):
@@ -46,6 +47,7 @@ def test_parse_args_replaces_default_expected_words(monkeypatch):
             "two",
             "--max-queued-tx-ms",
             "250",
+            "--skip-clear-audio-smoke",
         ],
     )
 
@@ -54,6 +56,7 @@ def test_parse_args_replaces_default_expected_words(monkeypatch):
     assert args.inbound_text == "testing one two"
     assert args.expect_word == ["testing", "two"]
     assert args.max_queued_tx_ms == 250
+    assert args.skip_clear_audio_smoke is True
 
 
 def test_parse_args_rejects_negative_queue_budget(monkeypatch):
@@ -163,3 +166,114 @@ def test_validate_queued_tx_budget_rejects_excessive_backlog():
         assert "2000 ms > 1000 ms" in str(exc)
     else:
         raise AssertionError("expected excessive queue depth to be rejected")
+
+
+def test_verify_clear_audio_queues_and_clears_live_call():
+    smoke = load_smoke()
+
+    async def run():
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = {"queued": 0}
+        audio = {
+            "sample_rate": 48_000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+            "frame_bytes": 1_920,
+        }
+
+        async def queue_audio(request):
+            body = await request.json()
+            pcm = smoke.base64.b64decode(body["pcm_s16le_base64"])
+            state["queued"] += len(pcm)
+            return web.json_response(
+                {
+                    "queued_tx_bytes": state["queued"],
+                    "queued_tx_ms": 200,
+                }
+            )
+
+        async def clear_audio(_request):
+            dropped = state["queued"]
+            state["queued"] = 0
+            return web.json_response(
+                {
+                    "dropped_tx_bytes": dropped,
+                    "dropped_tx_ms": 200,
+                    "queued_tx_bytes": 0,
+                    "queued_tx_ms": 0,
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/calls/call-1/audio", queue_audio)
+        app.router.add_post("/calls/call-1/audio/clear", clear_audio)
+
+        async with TestClient(TestServer(app)) as client:
+            return await smoke.verify_clear_audio(
+                client.session,
+                str(client.make_url("/")).rstrip("/"),
+                "call-1",
+                audio,
+            )
+
+    result = smoke.asyncio.run(run())
+
+    assert result["queued_before_clear_bytes"] > 0
+    assert result["dropped_tx_bytes"] == result["queued_before_clear_bytes"]
+    assert result["queued_tx_bytes"] == 0
+
+
+def test_verify_clear_audio_rejects_uncleared_queue():
+    smoke = load_smoke()
+
+    async def run():
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        audio = {
+            "sample_rate": 48_000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+            "frame_bytes": 1_920,
+        }
+
+        async def queue_audio(request):
+            body = await request.json()
+            pcm = smoke.base64.b64decode(body["pcm_s16le_base64"])
+            return web.json_response(
+                {
+                    "queued_tx_bytes": len(pcm),
+                    "queued_tx_ms": 200,
+                }
+            )
+
+        async def clear_audio(_request):
+            return web.json_response(
+                {
+                    "dropped_tx_bytes": 0,
+                    "queued_tx_bytes": 1_920,
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/calls/call-1/audio", queue_audio)
+        app.router.add_post("/calls/call-1/audio/clear", clear_audio)
+
+        async with TestClient(TestServer(app)) as client:
+            await smoke.verify_clear_audio(
+                client.session,
+                str(client.make_url("/")).rstrip("/"),
+                "call-1",
+                audio,
+            )
+
+    try:
+        smoke.asyncio.run(run())
+    except RuntimeError as exc:
+        assert "reported no dropped" in str(exc)
+    else:
+        raise AssertionError("expected uncleared queue to be rejected")

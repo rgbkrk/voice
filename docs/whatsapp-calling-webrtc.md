@@ -380,7 +380,9 @@ that path.
    Cloud call still depends on a calling-enabled number.
 7. Replace echo with STT -> Hermes turn -> `stream_speak` TTS.
 8. Add interruption/barge-in: inbound voice clears queued outbound sidecar PCM
-   and cancels in-flight TTS.
+   and cancels in-flight TTS. The local full-duplex sidecar smoke now exercises
+   `/calls/{call_id}/audio/clear`; Hermes still needs the policy that decides
+   when to invoke it during real calls.
 
 ## Open Questions
 

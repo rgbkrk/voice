@@ -218,7 +218,7 @@ Each 20 ms frame is 1920 bytes: 960 signed 16-bit little-endian mono samples at
 48 kHz. This mirrors the current `voice` daemon stream shape closely enough
 that the bridge can be mostly mechanical: Hermes can receive `stream_speak` raw
 frames, base64-encode each frame, and POST them to the sidecar while the WebRTC
-track sends queued audio or silence.
+track sends per-call queued audio or silence.
 
 ## Implementation Options
 

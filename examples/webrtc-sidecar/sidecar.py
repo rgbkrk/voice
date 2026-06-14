@@ -96,12 +96,41 @@ class PcmSource:
         return frame + (b"\x00" * (FRAME_BYTES - len(frame)))
 
 
+class CallPcmSource:
+    """Per-call PCM queue with a process-level source as fallback."""
+
+    def __init__(self, fallback: PcmSource) -> None:
+        self.fallback = fallback
+        self.buffer = bytearray()
+
+    @property
+    def queued_bytes(self) -> int:
+        return len(self.buffer)
+
+    def write_frame(self, pcm_s16le: bytes) -> int:
+        self.buffer.extend(pcm_s16le)
+        return len(pcm_s16le)
+
+    def read_frame(self) -> bytes:
+        if len(self.buffer) >= FRAME_BYTES:
+            frame = bytes(self.buffer[:FRAME_BYTES])
+            del self.buffer[:FRAME_BYTES]
+            return frame
+
+        if self.buffer:
+            frame = bytes(self.buffer)
+            self.buffer.clear()
+            return frame + (b"\x00" * (FRAME_BYTES - len(frame)))
+
+        return self.fallback.read_frame()
+
+
 class VoicePcmAudioTrack(MediaStreamTrack):
     """Outbound WebRTC audio track backed by local pcm_s16le frames."""
 
     kind = "audio"
 
-    def __init__(self, source: PcmSource) -> None:
+    def __init__(self, source: PcmSource | CallPcmSource) -> None:
         super().__init__()
         self.source = source
         self.pts = 0
@@ -155,12 +184,12 @@ async def write_inbound_pcm(track: MediaStreamTrack, path: str | None) -> None:
 class CallSession:
     def __init__(self, call_id: str, source: PcmSource, rx_pcm: str | None) -> None:
         self.call_id = call_id
-        self.source = source
+        self.source = CallPcmSource(source)
         self.rx_pcm = rx_pcm
         self.pc = RTCPeerConnection()
         self.tasks: set[asyncio.Task[Any]] = set()
         self.closed = False
-        self.pc.addTrack(VoicePcmAudioTrack(source))
+        self.pc.addTrack(VoicePcmAudioTrack(self.source))
 
         @self.pc.on("track")
         def on_track(track: MediaStreamTrack) -> None:

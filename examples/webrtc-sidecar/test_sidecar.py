@@ -48,6 +48,27 @@ def test_pcm_source_pads_partial_frame(tmp_path: Path):
     assert frame[4:] == b"\x00" * (sidecar.FRAME_BYTES - 4)
 
 
+def test_call_pcm_source_isolates_per_call_queue():
+    sidecar = load_sidecar()
+
+    fallback = sidecar.PcmSource(None)
+    call_a = sidecar.CallPcmSource(fallback)
+    call_b = sidecar.CallPcmSource(fallback)
+
+    accepted = call_a.write_frame(b"\x01\x00\xff\xff")
+
+    assert accepted == 4
+    assert call_a.queued_bytes == 4
+    assert call_b.queued_bytes == 0
+
+    frame_b = call_b.read_frame()
+    assert frame_b == b"\x00" * sidecar.FRAME_BYTES
+
+    frame_a = call_a.read_frame()
+    assert frame_a.startswith(b"\x01\x00\xff\xff")
+    assert frame_a[4:] == b"\x00" * (sidecar.FRAME_BYTES - 4)
+
+
 def test_health_reports_audio_contract():
     sidecar = load_sidecar()
 
@@ -134,8 +155,9 @@ def test_audio_endpoint_queues_pcm_for_call():
     async def run():
         from aiohttp.test_utils import TestClient, TestServer
 
-        source = sidecar.PcmSource(None)
-        app = sidecar.create_app(source, None)
+        fallback = sidecar.PcmSource(None)
+        source = sidecar.CallPcmSource(fallback)
+        app = sidecar.create_app(fallback, None)
         app[sidecar.SESSIONS_KEY]["call-1"] = FakeSession(source)
 
         payload = {
@@ -175,8 +197,9 @@ def test_audio_endpoint_rejects_mismatched_contract():
     async def run():
         from aiohttp.test_utils import TestClient, TestServer
 
-        source = sidecar.PcmSource(None)
-        app = sidecar.create_app(source, None)
+        fallback = sidecar.PcmSource(None)
+        source = sidecar.CallPcmSource(fallback)
+        app = sidecar.create_app(fallback, None)
         app[sidecar.SESSIONS_KEY]["call-1"] = FakeSession(source)
 
         async with TestClient(TestServer(app)) as client:

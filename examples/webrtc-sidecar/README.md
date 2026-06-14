@@ -53,9 +53,10 @@ curl -sS -X POST http://127.0.0.1:8787/calls/local-test/audio \
   }'
 ```
 
-Each 20 ms frame is 1920 bytes before base64 encoding. If both `--tx-pcm` and
-HTTP input are idle, the sidecar sends silence. That is useful for checking SDP,
-ICE, and call timing before TTS is wired in.
+Each 20 ms frame is 1920 bytes before base64 encoding. HTTP input is queued per
+`call_id`; `--tx-pcm` remains a process-level fallback source. If both sources
+are idle, the sidecar sends silence. That is useful for checking SDP, ICE, and
+call timing before TTS is wired in.
 
 ## SDP API
 

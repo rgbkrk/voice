@@ -23,6 +23,7 @@ whatsapp_alpha_profile="${WHATSAPP_ALPHA_PROFILE:-}"
 whatsapp_alpha_voice_note_chat_id="${WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID:-}"
 whatsapp_alpha_wait_audio_cache_seconds="${WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS:-}"
 whatsapp_alpha_wait_inbound_seconds="${WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS:-}"
+whatsapp_alpha_json_output="${WHATSAPP_ALPHA_JSON_OUTPUT:-}"
 run_webrtc_loopback_smoke="${RUN_WEBRTC_LOOPBACK_SMOKE:-0}"
 webrtc_python="${VOICE_WEBRTC_PYTHON:-python3}"
 webrtc_timeout="${VOICE_WEBRTC_TIMEOUT:-60}"
@@ -97,6 +98,8 @@ Options:
                                override attended-cache-receive cache watch time
   --whatsapp-alpha-wait-inbound-seconds SECONDS
                                override attended-send-receive bridge poll time
+  --whatsapp-alpha-json-output PATH
+                               save the categorized alpha readiness JSON report
   --run-webrtc-loopback-smoke  run one local full-duplex WebRTC media turn
   --webrtc-python PATH         Python used for the WebRTC smoke (default: python3)
   --webrtc-timeout SECONDS     timeout passed to the WebRTC smoke (default: 60)
@@ -115,7 +118,7 @@ Environment aliases:
   REQUIRE_WHATSAPP_ALPHA_COMPLETE=1
   RUN_WHATSAPP_INBOUND_CACHE_SMOKE=1, WHATSAPP_ALPHA_PROFILE
   WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID, WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS
-  WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS
+  WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS, WHATSAPP_ALPHA_JSON_OUTPUT
   VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
 EOF
 }
@@ -290,6 +293,11 @@ while [[ $# -gt 0 ]]; do
       whatsapp_alpha_wait_inbound_seconds="$2"
       shift 2
       ;;
+    --whatsapp-alpha-json-output)
+      [[ $# -ge 2 ]] || fail "--whatsapp-alpha-json-output requires a path"
+      whatsapp_alpha_json_output="$2"
+      shift 2
+      ;;
     --run-webrtc-loopback-smoke)
       run_webrtc_loopback_smoke=1
       shift
@@ -330,6 +338,9 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
 fi
 if [[ "$require_whatsapp_alpha_complete" == "1" && -z "$whatsapp_alpha_profile" ]]; then
   fail "--require-whatsapp-alpha-complete requires --whatsapp-alpha-profile"
+fi
+if [[ -n "$whatsapp_alpha_json_output" && -z "$whatsapp_alpha_profile" ]]; then
+  fail "--whatsapp-alpha-json-output requires --whatsapp-alpha-profile"
 fi
 
 voice_bin="$(default_voice_bin)"
@@ -564,7 +575,19 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
   if [[ "$require_whatsapp_alpha_complete" == "1" ]]; then
     whatsapp_alpha_args+=(--require-complete)
   fi
-  run_step "WhatsApp alpha readiness profile ($whatsapp_alpha_profile)" "${whatsapp_alpha_args[@]}"
+  if [[ -n "$whatsapp_alpha_json_output" ]]; then
+    output_dir="$(dirname -- "$whatsapp_alpha_json_output")"
+    if [[ "$output_dir" != "." ]]; then
+      mkdir -p "$output_dir"
+    fi
+    whatsapp_alpha_args+=(--json)
+    echo
+    echo "==> WhatsApp alpha readiness profile ($whatsapp_alpha_profile)"
+    "${whatsapp_alpha_args[@]}" >"$whatsapp_alpha_json_output"
+    echo "whatsapp_alpha_json=$whatsapp_alpha_json_output"
+  else
+    run_step "WhatsApp alpha readiness profile ($whatsapp_alpha_profile)" "${whatsapp_alpha_args[@]}"
+  fi
   whatsapp_alpha_status="$whatsapp_alpha_profile"
 else
   whatsapp_alpha_status="skipped"
@@ -580,5 +603,8 @@ echo "whatsapp_contract=checked"
 echo "whatsapp_bridge=$whatsapp_bridge_status"
 echo "whatsapp_inbound_cache=$whatsapp_inbound_cache_status"
 echo "whatsapp_alpha=$whatsapp_alpha_status"
+if [[ -n "$whatsapp_alpha_json_output" ]]; then
+  echo "whatsapp_alpha_json=$whatsapp_alpha_json_output"
+fi
 echo "sidecar_service=$sidecar_status"
 echo "webrtc_loopback=$webrtc_loopback_status"

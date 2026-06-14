@@ -79,7 +79,8 @@ The same stack gate can run the categorized alpha report as an explicit opt-in:
 ```bash
 scripts/verify_local_hermes_voice_stack.sh \
   --hermes-home ~/.hermes \
-  --whatsapp-alpha-profile cached-receive
+  --whatsapp-alpha-profile cached-receive \
+  --whatsapp-alpha-json-output ./whatsapp-alpha.json
 ```
 
 Use `--whatsapp-alpha-profile send` only when it is acceptable to post a real
@@ -91,7 +92,9 @@ while Hermes is already running; it watches `~/.hermes/audio_cache` for a fresh
 should poll and drain the bridge `/messages` queue. The stack gate also accepts
 `--whatsapp-alpha-chat-id`, `--whatsapp-alpha-wait-audio-cache-seconds`, and
 `--whatsapp-alpha-wait-inbound-seconds` so attended tests do not need to drop
-down to the lower-level alpha script.
+down to the lower-level alpha script. When `--whatsapp-alpha-json-output` is
+set, the stack gate runs the alpha profile with `--json` and saves that
+structured report for another agent or runbook step to consume.
 
 Cached receive profiles also pass the newest cached inbound `aud_*` file to
 the Hermes config verifier, so the configured STT command provider is exercised

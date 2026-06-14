@@ -549,6 +549,76 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             result.stderr,
         )
 
+    def test_whatsapp_alpha_json_output_requires_alpha_profile(self):
+        result = subprocess.run(
+            [
+                str(SCRIPT_PATH),
+                "--whatsapp-alpha-json-output",
+                "alpha.json",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "--whatsapp-alpha-json-output requires --whatsapp-alpha-profile",
+            result.stderr,
+        )
+
+    def test_whatsapp_alpha_json_output_saves_alpha_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            alpha = tmp_path / "verify_alpha.py"
+            voice = tmp_path / "voice"
+            json_output = tmp_path / "reports" / "alpha.json"
+
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_helper(alpha, "alpha", log_path)
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-config",
+                    str(tmp_path / "missing.yaml"),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-whatsapp-bridge",
+                    "--skip-systemd",
+                    "--skip-daemon",
+                    "--whatsapp-alpha-profile",
+                    "cached-receive",
+                    "--whatsapp-alpha-json-output",
+                    str(json_output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_ALPHA_READINESS_SCRIPT": str(alpha),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+            saved_output = json_output.read_text(encoding="utf-8").strip()
+            json_output_exists = json_output.is_file()
+
+        self.assertTrue(json_output_exists)
+        self.assertEqual(saved_output, "ok: alpha")
+        self.assertIn(f"whatsapp_alpha_json={json_output}", result.stdout)
+        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "alpha"])
+        self.assertIn("--json", entries[1])
+
     def test_skip_hermes_config_does_not_require_config_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

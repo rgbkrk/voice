@@ -429,6 +429,7 @@ To fail unless every alpha gate is complete, include the strict completion flag:
 scripts/verify_local_hermes_voice_stack.sh \
   --hermes-home ~/.hermes \
   --whatsapp-alpha-profile attended-cache-receive \
+  --whatsapp-alpha-json-output ./whatsapp-alpha.json \
   --require-whatsapp-alpha-complete
 ```
 
@@ -441,6 +442,9 @@ separated from local daemon, bridge, and Hermes failures. It also prints the
 resolved Cloud webhook bind defaults and malformed webhook keys, so strict
 Cloud/Calling failures can distinguish missing credentials from invalid
 `WHATSAPP_CLOUD_WEBHOOK_*` settings.
+Use `--whatsapp-alpha-json-output` with any alpha profile when another local
+agent should consume the same structured `readiness_summary.next_actions`
+without rerunning the full stack gate.
 
 When the WebRTC Python dependencies are installed, add
 `--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`

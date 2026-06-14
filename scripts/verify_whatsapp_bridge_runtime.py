@@ -13,15 +13,26 @@ import subprocess
 import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
 DEFAULT_BRIDGE_URL = "http://127.0.0.1:3000"
 DEFAULT_SERVICE_NAME = "hermes-gateway.service"
+DEFAULT_GRAPH_API_BASE_URL = "https://graph.facebook.com"
 DEFAULT_WHATSAPP_CLOUD_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PORT = 8090
 DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PATH = "/whatsapp/webhook"
 DEFAULT_WHATSAPP_CLOUD_API_VERSION = "v20.0"
+WHATSAPP_CLOUD_PHONE_NUMBER_FIELDS = (
+    "id",
+    "display_phone_number",
+    "verified_name",
+    "code_verification_status",
+    "quality_rating",
+    "platform_type",
+    "throughput",
+)
 
 WHATSAPP_CLOUD_REQUIRED_ENV = (
     "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
@@ -554,6 +565,158 @@ def build_cloud_summary(env_sources: dict[str, dict[str, str]]) -> dict[str, Any
     }
 
 
+def graph_error_summary(body: bytes) -> dict[str, Any]:
+    try:
+        payload = json.loads(body.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return {"message": "Graph API returned a non-JSON error body"}
+    if not isinstance(payload, dict):
+        return {"message": "Graph API returned a non-object error body"}
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return {"message": "Graph API error body did not include an error object"}
+    summary: dict[str, Any] = {}
+    for key in ("message", "type", "code", "error_subcode", "fbtrace_id"):
+        value = error.get(key)
+        if value not in (None, ""):
+            summary[key] = value
+    return summary or {"message": "Graph API returned an empty error object"}
+
+
+def cloud_phone_number_url(
+    graph_api_base_url: str,
+    *,
+    api_version: str,
+    phone_number_id: str,
+) -> str:
+    base = graph_api_base_url.rstrip("/")
+    path = f"{quote(api_version.strip('/'), safe='')}/{quote(phone_number_id, safe='')}"
+    query = urlencode({"fields": ",".join(WHATSAPP_CLOUD_PHONE_NUMBER_FIELDS)})
+    return f"{base}/{path}?{query}"
+
+
+def fetch_cloud_phone_number(
+    *,
+    graph_api_base_url: str,
+    api_version: str,
+    phone_number_id: str,
+    access_token: str,
+    timeout: float,
+) -> tuple[dict[str, Any] | None, int | None, dict[str, Any] | None]:
+    url = cloud_phone_number_url(
+        graph_api_base_url,
+        api_version=api_version,
+        phone_number_id=phone_number_id,
+    )
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {access_token}",
+        },
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read()
+            status = getattr(response, "status", None)
+    except HTTPError as exc:
+        return None, exc.code, graph_error_summary(exc.read())
+    except URLError as exc:
+        return None, None, {"message": f"Graph API request failed: {exc.reason}"}
+    except OSError as exc:
+        return None, None, {"message": f"Graph API request failed: {exc}"}
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        return None, status, {"message": f"Graph API did not return JSON: {exc}"}
+    if not isinstance(payload, dict):
+        return None, status, {"message": "Graph API response must be an object"}
+    return payload, status, None
+
+
+def build_cloud_api_check(
+    env_sources: dict[str, dict[str, str]],
+    *,
+    graph_api_base_url: str,
+    timeout: float,
+) -> dict[str, Any]:
+    phone_number_id, phone_sources = first_env_value(
+        env_sources,
+        "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+    )
+    access_token, token_sources = first_env_value(
+        env_sources,
+        "WHATSAPP_CLOUD_ACCESS_TOKEN",
+    )
+    api_version, api_sources = first_env_value(
+        env_sources,
+        "WHATSAPP_CLOUD_API_VERSION",
+    )
+    api_version = api_version or DEFAULT_WHATSAPP_CLOUD_API_VERSION
+    check: dict[str, Any] = {
+        "checked": True,
+        "ok": False,
+        "graph_api_base_url": graph_api_base_url.rstrip("/"),
+        "api_version": api_version,
+        "phone_number_id_present": phone_number_id is not None,
+        "phone_number_id_sources": phone_sources,
+        "access_token_present": access_token is not None,
+        "access_token_sources": token_sources,
+        "api_version_sources": api_sources,
+        "fields": list(WHATSAPP_CLOUD_PHONE_NUMBER_FIELDS),
+        "missing": [],
+        "invalid": [],
+    }
+    if not phone_number_id:
+        check["missing"].append("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
+    if not access_token:
+        check["missing"].append("WHATSAPP_CLOUD_ACCESS_TOKEN")
+    if not re.match(r"^v\d+\.\d+$", api_version):
+        check["invalid"].append("WHATSAPP_CLOUD_API_VERSION")
+    if check["missing"] or check["invalid"]:
+        check["error"] = {
+            "message": "Cloud API check requires a phone number ID, access token, and valid API version"
+        }
+        return check
+
+    payload, status, error = fetch_cloud_phone_number(
+        graph_api_base_url=graph_api_base_url,
+        api_version=api_version,
+        phone_number_id=phone_number_id,
+        access_token=access_token,
+        timeout=timeout,
+    )
+    check["http_status"] = status
+    if error:
+        check["error"] = error
+        return check
+
+    payload = payload or {}
+    phone = {
+        "id_matches_config": str(payload.get("id")) == phone_number_id,
+        "display_phone_number_present": bool(payload.get("display_phone_number")),
+        "verified_name_present": bool(payload.get("verified_name")),
+        "code_verification_status": payload.get("code_verification_status"),
+        "quality_rating": payload.get("quality_rating"),
+        "platform_type": payload.get("platform_type"),
+        "throughput_level": (
+            payload.get("throughput", {}).get("level")
+            if isinstance(payload.get("throughput"), dict)
+            else None
+        ),
+    }
+    check["phone_number"] = phone
+    if not phone["id_matches_config"]:
+        check["error"] = {
+            "message": "Graph API phone number id did not match WHATSAPP_CLOUD_PHONE_NUMBER_ID"
+        }
+        return check
+
+    check["ok"] = True
+    return check
+
+
 def port_from_url(url: str) -> int | None:
     match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/:]+:(\d+)(?:/|$)", url)
     if not match:
@@ -709,6 +872,20 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
                 )
 
     cloud = build_cloud_summary(env_sources)
+    if args.check_whatsapp_cloud_api:
+        cloud_api = build_cloud_api_check(
+            env_sources,
+            graph_api_base_url=args.graph_api_base_url,
+            timeout=args.timeout,
+        )
+        cloud["cloud_api"] = cloud_api
+        if not cloud_api.get("ok"):
+            failures.append(
+                "WhatsApp Cloud API phone number check failed: "
+                + str((cloud_api.get("error") or {}).get("message") or "unknown error")
+            )
+    else:
+        cloud["cloud_api"] = {"checked": False}
     if args.require_whatsapp_cloud and cloud["cloud_missing"]:
         failures.append(
             "WhatsApp Cloud credentials missing: "
@@ -774,6 +951,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-systemd", action="store_true")
     parser.add_argument("--require-whatsapp-cloud", action="store_true")
     parser.add_argument("--require-whatsapp-calling", action="store_true")
+    parser.add_argument(
+        "--check-whatsapp-cloud-api",
+        action="store_true",
+        help=(
+            "call the Meta Graph API phone-number endpoint with the configured "
+            "Cloud phone number ID and access token"
+        ),
+    )
+    parser.add_argument(
+        "--graph-api-base-url",
+        default=os.environ.get("GRAPH_API_BASE_URL", DEFAULT_GRAPH_API_BASE_URL),
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--json", action="store_true", help="print JSON output")
     return parser
 
@@ -785,6 +975,7 @@ def human_summary(result: dict[str, Any]) -> None:
     process = (checks.get("bridge_process") or {}).get("selected") or {}
     cloud = checks.get("whatsapp_cloud") or {}
     webhook = cloud.get("webhook") or {}
+    cloud_api = cloud.get("cloud_api") or {}
     local_config = checks.get("whatsapp_local_config") or {}
 
     if result["success"]:
@@ -846,6 +1037,25 @@ def human_summary(result: dict[str, Any]) -> None:
         + " invalid="
         + (",".join(webhook.get("invalid") or []) or "none")
     )
+    if cloud_api.get("checked"):
+        phone = cloud_api.get("phone_number") or {}
+        error = cloud_api.get("error") or {}
+        print(
+            "whatsapp_cloud_api="
+            + ("ok" if cloud_api.get("ok") else "failed")
+            + f" api_version={cloud_api.get('api_version') or '<unknown>'}"
+            + f" http_status={cloud_api.get('http_status') or '<none>'}"
+            + " id_matches_config="
+            + str(phone.get("id_matches_config"))
+            + " display_phone_number_present="
+            + str(phone.get("display_phone_number_present"))
+            + " verified_name_present="
+            + str(phone.get("verified_name_present"))
+            + f" platform_type={phone.get('platform_type') or '<unknown>'}"
+            + f" quality_rating={phone.get('quality_rating') or '<unknown>'}"
+            + " error="
+            + str(error.get("message") or "none")
+        )
     print(
         "calling_sidecar="
         + ("configured" if cloud.get("calling_sidecar_configured") else "not_configured")

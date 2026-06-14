@@ -283,6 +283,8 @@ def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
         bridge_cmd.extend(["--expected-agent-number", args.expected_agent_number])
     if args.expected_agent_name:
         bridge_cmd.extend(["--expected-agent-name", args.expected_agent_name])
+    if args.check_whatsapp_cloud_api:
+        bridge_cmd.append("--check-whatsapp-cloud-api")
     if args.skip_systemd:
         bridge_cmd.append("--skip-systemd")
     components.append(
@@ -576,6 +578,7 @@ def cloud_setup_handoff(
         "--hermes-home",
         str(hermes_home),
         "--require-whatsapp-cloud",
+        "--check-whatsapp-cloud-api",
     ]
     steps = [] if configured else [
         "Create or select the Meta app, WABA, and Cloud API phone number for Quill.",
@@ -630,6 +633,7 @@ def calling_setup_handoff(
         str(hermes_home),
         "--require-whatsapp-cloud",
         "--require-whatsapp-calling",
+        "--check-whatsapp-cloud-api",
     ]
     complete_command = [
         "scripts/verify_whatsapp_alpha_readiness.py",
@@ -1057,6 +1061,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--require-fresh-cache-audio", action="store_true")
     parser.add_argument("--require-whatsapp-cloud", action="store_true")
     parser.add_argument("--require-whatsapp-calling", action="store_true")
+    parser.add_argument(
+        "--check-whatsapp-cloud-api",
+        action="store_true",
+        help=(
+            "when Cloud credentials are configured, call the Meta Graph API "
+            "phone-number endpoint without printing credential values"
+        ),
+    )
     parser.add_argument(
         "--require-complete",
         action="store_true",

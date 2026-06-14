@@ -319,6 +319,10 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             cloud_handoff["available_source_keys"]["systemd_service"],
         )
         self.assertIn("--require-whatsapp-cloud", cloud_handoff["verify_command"])
+        self.assertIn(
+            "--check-whatsapp-cloud-api",
+            cloud_handoff["verify_command"],
+        )
         self.assertEqual(len(cloud_handoff["steps"]), 4)
         self.assertNotIn("phone-id", json.dumps(cloud_handoff))
         self.assertEqual(cloud_handoff["invalid"], [])
@@ -348,6 +352,10 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertTrue(calling_handoff["calling_sidecar_configured"])
         self.assertFalse(calling_handoff["calling_ready"])
         self.assertIn("--require-whatsapp-calling", calling_handoff["verify_command"])
+        self.assertIn(
+            "--check-whatsapp-cloud-api",
+            calling_handoff["verify_command"],
+        )
         self.assertIn("--require-complete", calling_handoff["complete_verification_command"])
         self.assertEqual(len(calling_handoff["steps"]), 5)
         summary = payload["readiness_summary"]
@@ -614,6 +622,18 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("readiness=local_ready_pending_gates", result.stdout)
+
+    def test_cloud_api_check_is_forwarded_to_bridge_verifier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                "--check-whatsapp-cloud-api",
+            )
+
+        bridge = {
+            component["name"]: component for component in payload["components"]
+        }["whatsapp_bridge_runtime"]
+        self.assertIn("--check-whatsapp-cloud-api", bridge["command"])
 
     def test_inbound_cache_smoke_adds_receive_component(self):
         with tempfile.TemporaryDirectory() as tmp:

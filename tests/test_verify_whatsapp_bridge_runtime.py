@@ -69,6 +69,8 @@ def make_args(tmp_path: Path, **overrides):
         "skip_systemd": True,
         "require_whatsapp_cloud": False,
         "require_whatsapp_calling": False,
+        "check_whatsapp_cloud_api": False,
+        "graph_api_base_url": "https://graph.facebook.com",
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -274,6 +276,141 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
             checks["env_key_sources"]["systemd_process"],
         )
         self.assertNotIn("token", json.dumps(checks["env_key_sources"]))
+
+    def test_cloud_api_phone_number_check_uses_safe_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(tmp_path, check_whatsapp_cloud_api=True)
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text(
+                "\n".join(
+                    [
+                        "WHATSAPP_MODE=bot",
+                        "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                        "WHATSAPP_CLOUD_ACCESS_TOKEN=secret-token",
+                        "WHATSAPP_CLOUD_APP_SECRET=secret-app",
+                        "WHATSAPP_CLOUD_VERIFY_TOKEN=secret-verify",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            original_fetch = self.script.fetch_cloud_phone_number
+            calls = []
+
+            def fake_fetch(**kwargs):
+                calls.append(kwargs)
+                return (
+                    {
+                        "id": "7794189252778687",
+                        "display_phone_number": "+1 555 0100",
+                        "verified_name": "Quill",
+                        "quality_rating": "GREEN",
+                        "platform_type": "CLOUD_API",
+                        "throughput": {"level": "STANDARD"},
+                    },
+                    200,
+                    None,
+                )
+
+            self.script.fetch_cloud_phone_number = fake_fetch
+            try:
+                result = self.script.verify(args)
+            finally:
+                self.script.fetch_cloud_phone_number = original_fetch
+
+        self.assertTrue(result["success"], result["failures"])
+        self.assertEqual(calls[0]["phone_number_id"], "7794189252778687")
+        self.assertEqual(calls[0]["access_token"], "secret-token")
+        cloud_api = result["checks"]["whatsapp_cloud"]["cloud_api"]
+        self.assertTrue(cloud_api["checked"])
+        self.assertTrue(cloud_api["ok"])
+        self.assertEqual(cloud_api["http_status"], 200)
+        phone = cloud_api["phone_number"]
+        self.assertTrue(phone["id_matches_config"])
+        self.assertTrue(phone["display_phone_number_present"])
+        self.assertTrue(phone["verified_name_present"])
+        self.assertEqual(phone["quality_rating"], "GREEN")
+        self.assertEqual(phone["platform_type"], "CLOUD_API")
+        self.assertEqual(phone["throughput_level"], "STANDARD")
+        serialized = json.dumps(result)
+        self.assertNotIn("secret-token", serialized)
+        self.assertNotIn("+1 555 0100", serialized)
+        self.assertNotIn('"Quill"', json.dumps(cloud_api))
+
+    def test_cloud_api_check_fails_without_required_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(tmp_path, check_whatsapp_cloud_api=True)
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text("WHATSAPP_MODE=bot\n", encoding="utf-8")
+
+            result = self.script.verify(args)
+
+        self.assertFalse(result["success"])
+        cloud_api = result["checks"]["whatsapp_cloud"]["cloud_api"]
+        self.assertTrue(cloud_api["checked"])
+        self.assertFalse(cloud_api["ok"])
+        self.assertEqual(
+            cloud_api["missing"],
+            [
+                "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+                "WHATSAPP_CLOUD_ACCESS_TOKEN",
+            ],
+        )
+        self.assertIn(
+            "WhatsApp Cloud API phone number check failed",
+            "\n".join(result["failures"]),
+        )
+
+    def test_cloud_api_http_error_is_sanitized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(tmp_path, check_whatsapp_cloud_api=True)
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text(
+                "\n".join(
+                    [
+                        "WHATSAPP_MODE=bot",
+                        "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                        "WHATSAPP_CLOUD_ACCESS_TOKEN=secret-token",
+                        "WHATSAPP_CLOUD_APP_SECRET=secret-app",
+                        "WHATSAPP_CLOUD_VERIFY_TOKEN=secret-verify",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            original_fetch = self.script.fetch_cloud_phone_number
+
+            def fake_fetch(**_kwargs):
+                return (
+                    None,
+                    403,
+                    {
+                        "message": "Unsupported get request",
+                        "type": "GraphMethodException",
+                        "code": 100,
+                    },
+                )
+
+            self.script.fetch_cloud_phone_number = fake_fetch
+            try:
+                result = self.script.verify(args)
+            finally:
+                self.script.fetch_cloud_phone_number = original_fetch
+
+        self.assertFalse(result["success"])
+        cloud_api = result["checks"]["whatsapp_cloud"]["cloud_api"]
+        self.assertFalse(cloud_api["ok"])
+        self.assertEqual(cloud_api["http_status"], 403)
+        self.assertEqual(cloud_api["error"]["code"], 100)
+        self.assertNotIn("secret-token", json.dumps(result))
 
 
 if __name__ == "__main__":

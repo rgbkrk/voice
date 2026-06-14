@@ -37,6 +37,7 @@ expected_whatsapp_agent_name="${WHATSAPP_AGENT_NAME:-}"
 require_whatsapp_cloud="${REQUIRE_WHATSAPP_CLOUD:-0}"
 require_whatsapp_calling="${REQUIRE_WHATSAPP_CALLING:-0}"
 require_whatsapp_alpha_complete="${REQUIRE_WHATSAPP_ALPHA_COMPLETE:-0}"
+check_whatsapp_cloud_api="${CHECK_WHATSAPP_CLOUD_API:-0}"
 
 hermes_config_verify_script="${HERMES_CONFIG_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_voice_config.py}"
 hermes_gateway_verify_script="${HERMES_GATEWAY_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_gateway_service.py}"
@@ -87,6 +88,8 @@ Options:
   --require-whatsapp-calling   fail when Cloud Calling credentials/readiness are missing
   --require-whatsapp-alpha-complete
                                fail unless all WhatsApp alpha readiness gates are complete
+  --check-whatsapp-cloud-api   call the Meta Graph API phone-number endpoint when Cloud
+                               credentials are configured
   --run-whatsapp-inbound-cache-smoke
                                transcribe a bridge-downloaded aud_* file from the audio cache
   --whatsapp-alpha-profile PROFILE
@@ -115,7 +118,7 @@ Environment aliases:
   WHATSAPP_BRIDGE_URL, WHATSAPP_SESSION_DIR, WHATSAPP_ENV_FILE
   WHATSAPP_AUDIO_CACHE_DIR, WHATSAPP_AGENT_NUMBER, WHATSAPP_AGENT_NAME
   REQUIRE_WHATSAPP_CLOUD=1, REQUIRE_WHATSAPP_CALLING=1
-  REQUIRE_WHATSAPP_ALPHA_COMPLETE=1
+  REQUIRE_WHATSAPP_ALPHA_COMPLETE=1, CHECK_WHATSAPP_CLOUD_API=1
   RUN_WHATSAPP_INBOUND_CACHE_SMOKE=1, WHATSAPP_ALPHA_PROFILE
   WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID, WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS
   WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS, WHATSAPP_ALPHA_JSON_OUTPUT
@@ -333,6 +336,10 @@ while [[ $# -gt 0 ]]; do
       require_whatsapp_alpha_complete=1
       shift
       ;;
+    --check-whatsapp-cloud-api)
+      check_whatsapp_cloud_api=1
+      shift
+      ;;
     --run-whatsapp-inbound-cache-smoke)
       run_whatsapp_inbound_cache_smoke=1
       shift
@@ -533,6 +540,9 @@ if [[ "$skip_whatsapp_bridge" != "1" ]]; then
   if [[ "$require_whatsapp_calling" == "1" ]]; then
     whatsapp_bridge_args+=(--require-whatsapp-calling)
   fi
+  if [[ "$check_whatsapp_cloud_api" == "1" ]]; then
+    whatsapp_bridge_args+=(--check-whatsapp-cloud-api)
+  fi
   run_step "WhatsApp bridge identity and credential readiness" "${whatsapp_bridge_args[@]}"
   whatsapp_bridge_status="checked"
 else
@@ -635,6 +645,9 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
   fi
   if [[ "$require_whatsapp_calling" == "1" ]]; then
     whatsapp_alpha_args+=(--require-whatsapp-calling)
+  fi
+  if [[ "$check_whatsapp_cloud_api" == "1" ]]; then
+    whatsapp_alpha_args+=(--check-whatsapp-cloud-api)
   fi
   if [[ "$require_whatsapp_alpha_complete" == "1" ]]; then
     whatsapp_alpha_args+=(--require-complete)

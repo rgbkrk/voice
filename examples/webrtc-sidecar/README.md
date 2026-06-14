@@ -327,7 +327,8 @@ local WebRTC audio drains through `voice stream-transcribe`, while
 WebRTC peer. By default it starts an in-process sidecar; pass `--sidecar-url`
 to exercise an already running sidecar service such as
 `http://127.0.0.1:8787`. It is the closest local smoke to a single WhatsApp
-call turn. It
+call turn. It verifies the sidecar's SDP answer reports `ready_for_accept`
+before the local peer accepts the answer. It
 also queues a small outbound PCM probe on the live call and calls
 `POST /calls/{call_id}/audio/clear`, so the same smoke covers the local
 barge-in/cancellation primitive. It closes the sidecar call and verifies the

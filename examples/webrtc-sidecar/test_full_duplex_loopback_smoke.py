@@ -234,6 +234,74 @@ def test_verify_clear_audio_queues_and_clears_live_call():
     assert result["queued_tx_bytes"] == 0
 
 
+def test_validate_offer_response_requires_ready_for_accept():
+    smoke = load_smoke()
+    readiness = {
+        "not_closed": True,
+        "local_sdp_answer": True,
+        "signaling_stable": True,
+        "ice_gathering_complete": True,
+        "outbound_audio_track": True,
+    }
+    answer = {
+        "call_id": "call-1",
+        "type": "answer",
+        "sdp": "v=0\r\n",
+        "audio": smoke.sidecar.audio_contract(),
+        "state": {
+            "ready_for_accept": True,
+            "readiness": readiness,
+        },
+    }
+
+    assert smoke.validate_offer_response(answer, "call-1") == {
+        "type": "answer",
+        "ready_for_accept": True,
+        "readiness": readiness,
+    }
+
+    not_ready = {
+        **answer,
+        "state": {
+            "ready_for_accept": False,
+            "readiness": readiness,
+        },
+    }
+    try:
+        smoke.validate_offer_response(not_ready, "call-1")
+    except RuntimeError as exc:
+        assert "not ready_for_accept" in str(exc)
+    else:
+        raise AssertionError("expected non-ready offer response to be rejected")
+
+
+def test_validate_offer_response_rejects_failed_readiness_check():
+    smoke = load_smoke()
+    answer = {
+        "call_id": "call-1",
+        "type": "answer",
+        "sdp": "v=0\r\n",
+        "audio": smoke.sidecar.audio_contract(),
+        "state": {
+            "ready_for_accept": True,
+            "readiness": {
+                "not_closed": True,
+                "local_sdp_answer": True,
+                "signaling_stable": False,
+                "ice_gathering_complete": True,
+                "outbound_audio_track": True,
+            },
+        },
+    }
+
+    try:
+        smoke.validate_offer_response(answer, "call-1")
+    except RuntimeError as exc:
+        assert "signaling_stable" in str(exc)
+    else:
+        raise AssertionError("expected failed readiness check to be rejected")
+
+
 def test_verify_clear_audio_rejects_uncleared_queue():
     smoke = load_smoke()
 

@@ -192,6 +192,38 @@ async def post_offer(
         return body
 
 
+def validate_offer_response(answer: dict[str, Any], call_id: str) -> dict[str, Any]:
+    if answer.get("call_id") != call_id:
+        raise RuntimeError(
+            f"offer response call_id={answer.get('call_id')!r}, expected {call_id!r}"
+        )
+    if answer.get("type") != "answer":
+        raise RuntimeError(f"offer response type must be answer, got {answer.get('type')!r}")
+    if not isinstance(answer.get("sdp"), str) or not answer["sdp"].startswith("v=0"):
+        raise RuntimeError("offer response must include a local SDP answer")
+    if answer.get("audio") != sidecar.audio_contract():
+        raise RuntimeError("offer response audio contract does not match sidecar contract")
+
+    state = answer.get("state")
+    if not isinstance(state, dict):
+        raise RuntimeError("offer response must include sidecar call state")
+    if state.get("ready_for_accept") is not True:
+        raise RuntimeError("sidecar call is not ready_for_accept after local answer")
+
+    readiness = state.get("readiness")
+    if not isinstance(readiness, dict):
+        raise RuntimeError("sidecar call state must include readiness checks")
+    failed = [key for key, value in readiness.items() if value is not True]
+    if failed:
+        raise RuntimeError(f"sidecar readiness checks failed: {failed}")
+
+    return {
+        "type": answer["type"],
+        "ready_for_accept": True,
+        "readiness": readiness,
+    }
+
+
 async def close_sidecar_call(
     session: ClientSession,
     base_url: str,
@@ -247,6 +279,7 @@ async def verify_full_duplex_call(
             result: dict[str, Any] | None = None
             try:
                 answer = await post_offer(session, base_url, call_id, pc)
+                offer = validate_offer_response(answer, call_id)
                 await pc.setRemoteDescription(
                     sidecar.RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
                 )
@@ -316,6 +349,7 @@ async def verify_full_duplex_call(
                     "max_rx_queue_bytes": status.get("max_rx_queue_bytes"),
                     "max_rx_queue_ms": status.get("max_rx_queue_ms"),
                     "audio": sidecar.audio_contract(),
+                    "offer": offer,
                     "clear_audio": clear_audio if clear_audio is not None else "skipped",
                 }
                 return result

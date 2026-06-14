@@ -372,7 +372,8 @@ that path.
 4. Prototype a sidecar that accepts a synthetic SDP offer and round-trips PCM.
    The initial `examples/webrtc-sidecar` artifact covers the SDP answer,
    outbound PCM-to-Opus/WebRTC track, inbound decoded PCM sink, and local HTTP
-   send/drain/clear endpoints. Done as a spike.
+   send/drain/clear endpoints. The full-duplex smoke also requires the sidecar
+   answer state to be `ready_for_accept` before media proceeds. Done as a spike.
 5. Wire Hermes WhatsApp Cloud `connect` webhooks to the sidecar.
 6. Build an inbound-call echo bot: WhatsApp audio in, same audio out. The
    local `examples/webrtc-sidecar/echo_sidecar_audio.py` helper now covers the

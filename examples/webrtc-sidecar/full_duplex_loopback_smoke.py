@@ -48,6 +48,37 @@ from voice_stream_loopback_smoke import (
 
 DEFAULT_INBOUND_TEXT = "hello world"
 DEFAULT_OUTBOUND_TEXT = "Hello from a full duplex WebRTC sidecar turn."
+DEFAULT_MAX_QUEUED_TX_MS = 1_000
+
+
+def queued_tx_ms(queued_tx_bytes: object, audio: dict[str, Any]) -> int:
+    try:
+        queued_bytes = int(queued_tx_bytes or 0)
+        sample_rate = int(audio.get("sample_rate") or 0)
+        channels = int(audio.get("channels") or 0)
+        bytes_per_sample = int(audio.get("bytes_per_sample") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+    bytes_per_second = sample_rate * channels * bytes_per_sample
+    if queued_bytes <= 0 or bytes_per_second <= 0:
+        return 0
+    return round(queued_bytes * 1_000 / bytes_per_second)
+
+
+def validate_queued_tx_budget(call: dict[str, Any], max_queued_tx_ms: int) -> int:
+    if max_queued_tx_ms < 0:
+        raise ValueError("max_queued_tx_ms must be non-negative")
+    audio = call.get("audio")
+    if not isinstance(audio, dict):
+        raise RuntimeError("full-duplex sidecar status did not include audio contract")
+    queued_ms = queued_tx_ms(call.get("queued_tx_bytes"), audio)
+    if queued_ms > max_queued_tx_ms:
+        raise RuntimeError(
+            "sidecar outbound audio queue exceeded budget "
+            f"({queued_ms} ms > {max_queued_tx_ms} ms)"
+        )
+    return queued_ms
 
 
 async def start_sidecar_app() -> tuple[web.AppRunner, str]:
@@ -211,6 +242,10 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 f"transcript {transcript!r} did not contain expected words "
                 f"{args.expect_word!r}"
             )
+        queued_tx_ms_value = validate_queued_tx_budget(
+            call,
+            args.max_queued_tx_ms,
+        )
 
         retained = not remove_workdir
         return {
@@ -226,6 +261,8 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "inbound_path": str(inbound_path) if retained else "<temporary>",
             "decoded_path": str(decoded_path) if retained else "<temporary>",
             "retained": retained,
+            "max_queued_tx_ms": args.max_queued_tx_ms,
+            "queued_tx_ms": queued_tx_ms_value,
             **call,
             "stt": transcript_event["data"],
         }
@@ -251,7 +288,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--workdir", type=Path)
     parser.add_argument("--keep-workdir", action="store_true")
+    parser.add_argument(
+        "--max-queued-tx-ms",
+        type=int,
+        default=DEFAULT_MAX_QUEUED_TX_MS,
+        help=(
+            "Maximum outbound sidecar queue depth allowed at the end of the "
+            "smoke. Set to 0 to require a fully drained queue."
+        ),
+    )
     args = parser.parse_args()
+    if args.max_queued_tx_ms < 0:
+        parser.error("--max-queued-tx-ms must be non-negative")
     if args.expect_word is None:
         args.expect_word = list(DEFAULT_EXPECT_WORDS)
     return args

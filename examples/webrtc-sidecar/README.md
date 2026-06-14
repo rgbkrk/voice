@@ -292,4 +292,7 @@ WebRTC-to-STT path without WhatsApp or the Graph API.
 `full_duplex_loopback_smoke.py` exercises both directions on one sidecar call:
 local WebRTC audio drains through `voice stream-transcribe`, while
 `post_voice_stream.py` queues outbound `voice stream` PCM back to the same
-WebRTC peer. It is the closest local smoke to a single WhatsApp call turn.
+WebRTC peer. It is the closest local smoke to a single WhatsApp call turn. It
+also fails when the sidecar still has more than one second of outbound audio
+queued at the end of the turn; use `--max-queued-tx-ms` to tighten or loosen
+that local latency budget.

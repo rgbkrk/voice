@@ -60,13 +60,46 @@ media through 48 kHz 20 ms PCM frames. See
 [whatsapp-calling-webrtc.md](whatsapp-calling-webrtc.md).
 
 The repository also includes `examples/hermes-command-tts.sh`, which matches
-Hermes' command-provider argument order:
+Hermes' command-provider argument order and explicitly asks `voice` for
+Ogg/Opus output by default:
 
 ```yaml
 command: /path/to/voice/examples/hermes-command-tts.sh {input_path} {output_path} {voice} {speed}
 ```
 
 Set `VOICE_BIN=/path/to/voice` if `voice` is not on `PATH`.
+Set `VOICE_FORMAT=wav` for a WAV compatibility provider, or set
+`VOICE_FORMAT=` to let `voice` infer the format from `{output_path}`.
+
+Validate the command-provider shape locally before wiring or restarting
+Hermes:
+
+```bash
+VOICE_BIN=/path/to/voice scripts/verify_hermes_command_tts.sh
+```
+
+The script simulates Hermes' `{input_path} {output_path} {voice} {speed}`
+invocation, then checks the result with `ffprobe` to confirm an Ogg container
+with Opus audio, mono, at 48 kHz.
+
+To validate an installed Hermes tree without touching a running gateway, run
+Hermes' TTS tool directly from that install after confirming its config points
+at a voice-native provider:
+
+```bash
+cd ~/.hermes/hermes-agent
+HERMES_HOME=~/.hermes ./venv/bin/python - <<'PY'
+import json
+from tools.tts_tool import text_to_speech_tool
+
+result = text_to_speech_tool("Hermes voice native Ogg Opus smoke test.")
+print(json.dumps(json.loads(result), indent=2, ensure_ascii=False))
+PY
+```
+
+Inspect the returned file with `ffprobe`; a voice-compatible WhatsApp path
+should return `.ogg` / Opus audio and should not need another Hermes-side
+conversion.
 
 ## CLI Smoke Test
 

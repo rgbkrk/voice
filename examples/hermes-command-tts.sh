@@ -6,9 +6,18 @@ out_file="${2:?output file required}"
 voice="${3:-af_heart}"
 speed="${4:-1.0}"
 voice_bin="${VOICE_BIN:-voice}"
+format="${VOICE_FORMAT-ogg-opus}"
 
-exec "$voice_bin" say \
-  --input-file "$text_file" \
-  --output "$out_file" \
-  --voice "$voice" \
+args=(
+  say
+  --input-file "$text_file"
+  --output "$out_file"
+  --voice "$voice"
   --speed "$speed"
+)
+
+if [[ -n "$format" ]]; then
+  args+=(--format "$format")
+fi
+
+exec "$voice_bin" "${args[@]}"

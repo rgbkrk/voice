@@ -52,11 +52,25 @@ class TelegramVoiceContractVerifierTests(unittest.TestCase):
             hermes_config_verifier = tmp_path / "verify_hermes.py"
             voice = tmp_path / "voice"
             config = tmp_path / "config.yaml"
+            env_file = tmp_path / ".env"
 
             write_helper(voice_contract, "voice_contract", log_path)
             write_helper(hermes_config_verifier, "hermes", log_path)
             write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
             config.write_text("tts: {}\n", encoding="utf-8")
+            env_file.write_text(
+                "\n".join(
+                    [
+                        "# Telegram setup",
+                        "TELEGRAM_BOT_TOKEN=123:abc",
+                        "TELEGRAM_ALLOWED_USERS=42,43",
+                        "TELEGRAM_HOME_CHANNEL=-100123",
+                        "TELEGRAM_WEBHOOK_URL=https://example.invalid/telegram",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
 
             result = subprocess.run(
                 [
@@ -67,6 +81,8 @@ class TelegramVoiceContractVerifierTests(unittest.TestCase):
                     "Telegram smoke.",
                     "--hermes-config",
                     str(config),
+                    "--hermes-env",
+                    str(env_file),
                     "--skip-hermes-tts-smoke",
                     "--skip-daemon",
                 ],
@@ -80,11 +96,17 @@ class TelegramVoiceContractVerifierTests(unittest.TestCase):
                 },
             )
 
-            entries = command_log_entries(log_path)
+            entries = command_log_entries(log_path) if log_path.exists() else []
 
         self.assertIn("ok: voice Telegram contract verifier passed", result.stdout)
         self.assertIn("voice_contract=checked", result.stdout)
         self.assertIn("hermes_voice_config=checked_without_tts_smoke", result.stdout)
+        self.assertIn(f"telegram_env={env_file}", result.stdout)
+        self.assertIn("telegram_env_status=found", result.stdout)
+        self.assertIn("telegram_credentials=configured", result.stdout)
+        self.assertIn("telegram_allowed_users=configured", result.stdout)
+        self.assertIn("telegram_home_channel=configured", result.stdout)
+        self.assertIn("telegram_webhook=configured", result.stdout)
         self.assertEqual([entry[0] for entry in entries], ["voice_contract", "hermes"])
         self.assertEqual(
             entries[0],
@@ -115,6 +137,7 @@ class TelegramVoiceContractVerifierTests(unittest.TestCase):
             log_path = tmp_path / "commands.log"
             voice_contract = tmp_path / "verify_voice_contract.sh"
             missing_config = tmp_path / "missing.yaml"
+            missing_env = tmp_path / "missing.env"
 
             write_helper(voice_contract, "voice_contract", log_path)
 
@@ -123,6 +146,8 @@ class TelegramVoiceContractVerifierTests(unittest.TestCase):
                     str(SCRIPT_PATH),
                     "--hermes-config",
                     str(missing_config),
+                    "--hermes-env",
+                    str(missing_env),
                     "--skip-hermes-config",
                     "--require-daemon",
                     "--run-stt-smoke",
@@ -137,13 +162,51 @@ class TelegramVoiceContractVerifierTests(unittest.TestCase):
                 },
             )
 
-            entries = command_log_entries(log_path)
+            entries = command_log_entries(log_path) if log_path.exists() else []
 
         self.assertIn("hermes_voice_config=skipped", result.stdout)
+        self.assertIn(f"telegram_env={missing_env}", result.stdout)
+        self.assertIn("telegram_env_status=missing", result.stdout)
+        self.assertIn("telegram_credentials=not_configured", result.stdout)
         self.assertEqual([entry[0] for entry in entries], ["voice_contract"])
         self.assertIn("--require-daemon", entries[0])
         self.assertIn("--run-stt-smoke", entries[0])
         self.assertIn("--keep-output", entries[0])
+
+    def test_require_telegram_credentials_fails_without_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            voice_contract = tmp_path / "verify_voice_contract.sh"
+            env_file = tmp_path / ".env"
+
+            write_helper(voice_contract, "voice_contract", log_path)
+            env_file.write_text(
+                "# TELEGRAM_BOT_TOKEN=\nTELEGRAM_ALLOWED_USERS=42\n",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--hermes-env",
+                    str(env_file),
+                    "--skip-hermes-config",
+                    "--require-telegram-credentials",
+                ],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "VOICE_CONTRACT_VERIFY_SCRIPT": str(voice_contract),
+                },
+            )
+
+            entries = command_log_entries(log_path) if log_path.exists() else []
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TELEGRAM_BOT_TOKEN is missing or empty", result.stderr)
+        self.assertEqual(entries, [])
 
 
 if __name__ == "__main__":

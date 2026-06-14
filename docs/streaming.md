@@ -53,8 +53,9 @@ so the same command still works outside Hermes.
 Set `voice_compatible: true` so Hermes routes the returned `.ogg` file as a
 native voice note. `output_format: wav` remains valid as a compatibility
 fallback; Hermes and the WhatsApp bridge can still convert non-Opus audio when
-needed. Telegram uses the same Ogg/Opus voice-message shape for `sendVoice`, so
-Voice does not need a Telegram-specific encoder.
+needed. Telegram accepts the same Ogg/Opus voice-message shape for `sendVoice`
+alongside MP3 and M4A uploads, so Voice does not need a Telegram-specific
+encoder.
 
 For live WhatsApp Calling, keep Ogg/Opus as the file path and bridge WebRTC
 media through 48 kHz 20 ms PCM frames. See
@@ -167,6 +168,7 @@ For the equivalent Telegram preflight, run:
 
 ```bash
 VOICE_BIN=/path/to/voice scripts/verify_telegram_voice_contract.sh
+VOICE_BIN=/path/to/voice scripts/verify_telegram_voice_contract.sh --require-telegram-credentials
 ```
 
 Those verifiers check `voice stream-contract` against the checked-in sidecar
@@ -175,11 +177,13 @@ write real mono 48 kHz Ogg/Opus, verify misleading `.wav`/`ogg-opus`
 combinations are rejected before writing a file, and, when the daemon is
 running, check both raw 48 kHz 20 ms PCM streaming and streamed Ogg/Opus
 encoding to both named files and stdout. The Telegram verifier also checks the
-active Hermes command-provider config unless `--skip-hermes-config` is passed.
-Pass `--require-daemon` when the daemon stream path must be covered, or
-`--skip-daemon` for a file-only preflight. Pass `--run-stt-smoke` with
-`--require-daemon` when the inbound WebRTC/STT path must also be covered; it
-creates a tiny WAV fixture and requires
+active Hermes command-provider config unless `--skip-hermes-config` is passed,
+and reports whether the Hermes env file contains Telegram credentials without
+printing secret values. Pass `--require-telegram-credentials` when setup should
+fail unless `TELEGRAM_BOT_TOKEN` is present. Pass `--require-daemon` when the
+daemon stream path must be covered, or `--skip-daemon` for a file-only
+preflight. Pass `--run-stt-smoke` with `--require-daemon` when the inbound
+WebRTC/STT path must also be covered; it creates a tiny WAV fixture and requires
 `voice stream-transcribe --json` to return a terminal `stt.transcribed` event.
 This is optional because it may lazily load the Whisper model.
 

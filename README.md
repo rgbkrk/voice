@@ -69,6 +69,7 @@ voice stream-transcribe recording.ogg
 VOICE_BIN=/path/to/voice scripts/verify_whatsapp_voice_contract.sh
 VOICE_BIN=/path/to/voice scripts/verify_whatsapp_voice_contract.sh --require-daemon --run-stt-smoke
 VOICE_BIN=/path/to/voice scripts/verify_telegram_voice_contract.sh --skip-hermes-config
+VOICE_BIN=/path/to/voice scripts/verify_telegram_voice_contract.sh --require-telegram-credentials
 
 # Read from a file, strip markdown
 voice say --markdown -f blog-post.mdx
@@ -358,10 +359,13 @@ For WhatsApp or Telegram voice-note delivery through Hermes, prefer
 Opus output directly. `output_format: wav` remains a compatibility fallback,
 with Hermes converting to OGG/Opus when needed.
 
-Telegram voice messages use the same Ogg/Opus file shape as WhatsApp voice
-notes. Run `scripts/verify_telegram_voice_contract.sh` before adding the bot
-token; it does not contact Telegram, but it verifies Voice's Ogg/Opus output
-contract and, unless skipped, the active Hermes command-provider config.
+Telegram voice messages accept the same Ogg/Opus file shape as WhatsApp voice
+notes, even though Telegram also accepts MP3 and M4A uploads. Run
+`scripts/verify_telegram_voice_contract.sh` before adding the bot token; it
+does not contact Telegram, but it verifies Voice's Ogg/Opus output contract
+and, unless skipped, the active Hermes command-provider config. Add
+`--require-telegram-credentials` when you want the preflight to fail unless
+`TELEGRAM_BOT_TOKEN` is present in the Hermes env file.
 
 Hermes can call `voice` directly, or use the voice-owned command-provider
 shims:

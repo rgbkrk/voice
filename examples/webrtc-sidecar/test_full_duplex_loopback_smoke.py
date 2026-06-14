@@ -285,3 +285,77 @@ def test_verify_clear_audio_rejects_uncleared_queue():
         assert "reported no dropped" in str(exc)
     else:
         raise AssertionError("expected uncleared queue to be rejected")
+
+
+def test_close_sidecar_call_verifies_session_removed():
+    smoke = load_smoke()
+
+    async def run():
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async def close_call(_request):
+            return web.json_response({"call_id": "call-1", "closed": True})
+
+        async def call_status(_request):
+            return web.json_response({"error": "unknown call_id"}, status=404)
+
+        async def health(_request):
+            return web.json_response({"ok": True, "sessions": 0, "call_ids": []})
+
+        app = web.Application()
+        app.router.add_post("/calls/call-1/close", close_call)
+        app.router.add_get("/calls/call-1", call_status)
+        app.router.add_get("/health", health)
+
+        async with TestClient(TestServer(app)) as client:
+            return await smoke.close_sidecar_call(
+                client.session,
+                str(client.make_url("/")).rstrip("/"),
+                "call-1",
+            )
+
+    result = smoke.asyncio.run(run())
+
+    assert result == {
+        "call_id": "call-1",
+        "closed": True,
+        "status_after_close": "not_found",
+        "removed_from_health": True,
+    }
+
+
+def test_close_sidecar_call_rejects_session_that_still_exists():
+    smoke = load_smoke()
+
+    async def run():
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async def close_call(_request):
+            return web.json_response({"call_id": "call-1", "closed": True})
+
+        async def call_status(_request):
+            return web.json_response({"call_id": "call-1", "closed": False})
+
+        async def health(_request):
+            return web.json_response({"ok": True, "sessions": 1, "call_ids": ["call-1"]})
+
+        app = web.Application()
+        app.router.add_post("/calls/call-1/close", close_call)
+        app.router.add_get("/calls/call-1", call_status)
+        app.router.add_get("/health", health)
+
+        async with TestClient(TestServer(app)) as client:
+            await smoke.close_sidecar_call(
+                client.session,
+                str(client.make_url("/")).rstrip("/"),
+                "call-1",
+            )
+
+    try:
+        smoke.asyncio.run(run())
+    except RuntimeError as exc:
+        assert "still exists after close" in str(exc)
+    else:
+        raise AssertionError("expected lingering call status to be rejected")

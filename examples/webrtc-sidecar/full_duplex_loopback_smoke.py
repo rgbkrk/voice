@@ -201,7 +201,29 @@ async def close_sidecar_call(
         body = await response.json()
         if response.status != 200:
             raise RuntimeError(f"close call failed ({response.status}): {body}")
-        return body
+
+    async with session.get(f"{base_url}/calls/{call_id}") as response:
+        status_after_close = await response.json()
+        if response.status != 404:
+            raise RuntimeError(
+                "call status still exists after close "
+                f"({response.status}): {status_after_close}"
+            )
+
+    async with session.get(f"{base_url}/health") as response:
+        health = await response.json()
+        if response.status != 200:
+            raise RuntimeError(f"health after close failed ({response.status}): {health}")
+    call_ids = health.get("call_ids")
+    if isinstance(call_ids, list) and call_id in call_ids:
+        raise RuntimeError(f"call_id {call_id!r} still present in /health after close")
+
+    return {
+        "call_id": body.get("call_id", call_id),
+        "closed": body.get("closed"),
+        "status_after_close": "not_found",
+        "removed_from_health": True,
+    }
 
 
 async def verify_full_duplex_call(

@@ -236,7 +236,11 @@ For WhatsApp Cloud Calling, Hermes should translate a `connect` webhook into a
 local `/offer` call, then pass the returned SDP answer to the Cloud API
 `pre_accept` and `accept` actions. The sidecar should already have an outbound
 audio track attached and ready before Hermes calls `accept`; the track sends
-silence until real TTS PCM arrives.
+silence until real TTS PCM arrives. The `/offer` response and `GET
+/calls/{call_id}` status include `ready_for_accept` plus per-check `readiness`
+booleans. Hermes should treat `ready_for_accept: true` as the local gate before
+it sends the Graph `accept` action; the remote WebRTC connection state can
+still be `new` until Meta applies the accepted SDP answer.
 
 Inbound decoded PCM is kept in a bounded per-call queue and can also be mirrored
 to a raw signed 16-bit little-endian mono sink with `--rx-pcm`. A later bridge

@@ -366,7 +366,8 @@ class CallSession:
         self.pc = RTCPeerConnection()
         self.tasks: set[asyncio.Task[Any]] = set()
         self.closed = False
-        self.pc.addTrack(VoicePcmAudioTrack(self.source))
+        self.outbound_track = VoicePcmAudioTrack(self.source)
+        self.pc.addTrack(self.outbound_track)
 
         @self.pc.on("track")
         def on_track(track: MediaStreamTrack) -> None:
@@ -392,11 +393,31 @@ class CallSession:
         assert self.pc.localDescription is not None
         return self.pc.localDescription
 
+    def accept_readiness(self) -> dict[str, Any]:
+        """Return checks Hermes can use before sending the Graph accept action."""
+        local_description = self.pc.localDescription
+        checks = {
+            "not_closed": not self.closed,
+            "local_sdp_answer": local_description is not None
+            and local_description.type == "answer",
+            "signaling_stable": self.pc.signalingState == "stable",
+            "ice_gathering_complete": self.pc.iceGatheringState == "complete",
+            "outbound_audio_track": getattr(self.outbound_track, "readyState", "live")
+            == "live",
+        }
+        return {
+            "ready_for_accept": all(checks.values()),
+            "checks": checks,
+        }
+
     def snapshot(self) -> dict[str, Any]:
         """Return call state useful for local health checks and Hermes debugging."""
+        readiness = self.accept_readiness()
         return {
             "call_id": self.call_id,
             "closed": self.closed,
+            "ready_for_accept": readiness["ready_for_accept"],
+            "readiness": readiness["checks"],
             "connection_state": self.pc.connectionState,
             "ice_connection_state": self.pc.iceConnectionState,
             "ice_gathering_state": self.pc.iceGatheringState,

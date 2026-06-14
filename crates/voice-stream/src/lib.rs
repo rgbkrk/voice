@@ -152,6 +152,8 @@ pub fn webrtc_sidecar_contract() -> serde_json::Value {
             "call_state": {
                 "call_id": "Call session identifier.",
                 "closed": "Whether the local sidecar session has been closed.",
+                "ready_for_accept": "Whether the sidecar has created a local SDP answer, attached a live outbound audio track, completed ICE gathering, and is ready for Hermes to send the WhatsApp accept action.",
+                "readiness": "Per-condition readiness booleans backing ready_for_accept: not_closed, local_sdp_answer, signaling_stable, ice_gathering_complete, and outbound_audio_track.",
                 "connection_state": "WebRTC peer connection state.",
                 "ice_connection_state": "ICE connection state.",
                 "ice_gathering_state": "ICE gathering state.",
@@ -660,6 +662,14 @@ mod tests {
         assert_eq!(
             payloads["call_state"]["queued_rx_bytes"],
             "Inbound decoded PCM bytes queued for Hermes to drain."
+        );
+        assert_eq!(
+            payloads["call_state"]["ready_for_accept"],
+            "Whether the sidecar has created a local SDP answer, attached a live outbound audio track, completed ICE gathering, and is ready for Hermes to send the WhatsApp accept action."
+        );
+        assert_eq!(
+            payloads["call_state"]["readiness"],
+            "Per-condition readiness booleans backing ready_for_accept: not_closed, local_sdp_answer, signaling_stable, ice_gathering_complete, and outbound_audio_track."
         );
         assert_eq!(
             payloads["call_state"]["queued_tx_ms"],

@@ -123,7 +123,9 @@ voice stream-transcribe --raw-input /tmp/voice-webrtc-in.s16le --sample-rate 480
 3. The sidecar creates a peer connection, attaches inbound and outbound audio
    tracks, sets the remote SDP, and creates a local SDP answer.
 4. Hermes calls the Graph API with `action: pre_accept` and the SDP answer.
-5. The sidecar waits until its media path is ready enough to send/receive audio.
+5. Hermes checks the sidecar call state. `ready_for_accept` should be true
+   before `accept`; this means the local SDP answer exists, the outbound audio
+   track is live, ICE gathering completed, and signaling is stable.
 6. Hermes calls the Graph API with `action: accept` and the same SDP answer.
 7. The sidecar starts forwarding inbound PCM to STT and outbound PCM from TTS.
 8. Either side can terminate; Hermes calls `terminate` if it ends locally.
@@ -131,7 +133,9 @@ voice stream-transcribe --raw-input /tmp/voice-webrtc-in.s16le --sample-rate 480
 The important timing rule is that `accept` should not happen before the media
 sender is ready. Meta's troubleshooting docs call out media-flow timing as a
 common failure mode, and their API rejects mismatched SDP answers between
-`pre_accept` and `accept`.
+`pre_accept` and `accept`. `ready_for_accept` is a local readiness signal, not
+proof that the remote WhatsApp peer is connected; connection state still
+progresses after Meta receives the accepted SDP answer.
 
 ## Sidecar API Sketch
 
@@ -180,6 +184,14 @@ Response:
   "state": {
     "call_id": "wamid-call-id",
     "closed": false,
+    "ready_for_accept": true,
+    "readiness": {
+      "not_closed": true,
+      "local_sdp_answer": true,
+      "signaling_stable": true,
+      "ice_gathering_complete": true,
+      "outbound_audio_track": true
+    },
     "connection_state": "new",
     "ice_connection_state": "new",
     "ice_gathering_state": "complete",

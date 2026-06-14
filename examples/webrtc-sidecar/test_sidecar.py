@@ -216,6 +216,27 @@ def test_call_pcm_source_clear_drops_queued_audio():
     assert source.read_frame() == b"\x00" * sidecar.FRAME_BYTES
 
 
+def test_call_session_snapshot_reports_accept_readiness_checks():
+    sidecar = load_sidecar()
+
+    async def run():
+        session = sidecar.CallSession("call-1", sidecar.PcmSource(None), None)
+        try:
+            snapshot = session.snapshot()
+            assert snapshot["ready_for_accept"] is False
+            assert snapshot["readiness"] == {
+                "not_closed": True,
+                "local_sdp_answer": False,
+                "signaling_stable": True,
+                "ice_gathering_complete": False,
+                "outbound_audio_track": True,
+            }
+        finally:
+            await session.close()
+
+    asyncio.run(run())
+
+
 def test_inbound_pcm_sink_drains_queued_audio():
     sidecar = load_sidecar()
     sink = sidecar.InboundPcmSink(None, max_queue_bytes=6)
@@ -638,6 +659,14 @@ def test_offer_loopback_receives_http_queued_audio():
                 assert offer_response.status == 200
                 answer = await offer_response.json()
                 assert answer["audio"] == sidecar.audio_contract()
+                assert answer["state"]["ready_for_accept"] is True
+                assert answer["state"]["readiness"] == {
+                    "not_closed": True,
+                    "local_sdp_answer": True,
+                    "signaling_stable": True,
+                    "ice_gathering_complete": True,
+                    "outbound_audio_track": True,
+                }
 
                 pcm_frame = (
                     (12_000).to_bytes(2, byteorder="little", signed=True)

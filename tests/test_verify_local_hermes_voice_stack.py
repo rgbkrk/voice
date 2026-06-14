@@ -34,6 +34,23 @@ def write_helper(path: Path, label: str, log_path: Path) -> None:
     )
 
 
+def write_fake_python(path: Path, label: str, log_path: Path) -> None:
+    write_executable(
+        path,
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            printf '{label}' >> {str(log_path)!r}
+            printf '\\0' >> {str(log_path)!r}
+            printf '%s\\0' "$@" >> {str(log_path)!r}
+            printf '\\n' >> {str(log_path)!r}
+            echo '{{"success": true}}'
+            """
+        ),
+    )
+
+
 def command_log_entries(log_path: Path) -> list[list[str]]:
     entries: list[list[str]] = []
     for line in log_path.read_bytes().splitlines():
@@ -87,6 +104,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             entries = command_log_entries(log_path)
 
         self.assertIn("ok: local Hermes voice stack verifier passed", result.stdout)
+        self.assertIn("webrtc_loopback=skipped", result.stdout)
         self.assertEqual([entry[0] for entry in entries], ["hermes", "whatsapp", "sidecar"])
         self.assertEqual(
             entries[0],
@@ -170,6 +188,78 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("--skip-tts-smoke", entries[0])
         self.assertIn("--skip-daemon", entries[1])
         self.assertNotIn("--run-stt-smoke", entries[1])
+
+    def test_webrtc_loopback_smoke_runs_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            hermes = tmp_path / "verify_hermes.py"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            sidecar = tmp_path / "verify_sidecar.py"
+            python = tmp_path / "python"
+            smoke = tmp_path / "full_duplex_loopback_smoke.py"
+            voice = tmp_path / "voice"
+            config = tmp_path / "config.yaml"
+
+            write_helper(hermes, "hermes", log_path)
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_helper(sidecar, "sidecar", log_path)
+            write_fake_python(python, "webrtc", log_path)
+            write_executable(smoke, "#!/usr/bin/env python3\n")
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+            config.write_text("tts: {}\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-config",
+                    str(config),
+                    "--skip-hermes-tts-smoke",
+                    "--skip-sidecar",
+                    "--skip-daemon",
+                    "--run-webrtc-loopback-smoke",
+                    "--webrtc-python",
+                    str(python),
+                    "--webrtc-timeout",
+                    "12.5",
+                    "--max-queued-tx-ms",
+                    "250",
+                    "--text",
+                    "Outbound media smoke.",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "HERMES_CONFIG_VERIFY_SCRIPT": str(hermes),
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "SIDECAR_SERVICE_VERIFY_SCRIPT": str(sidecar),
+                    "WEBRTC_LOOPBACK_SMOKE_SCRIPT": str(smoke),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+
+        self.assertIn("webrtc_loopback=checked", result.stdout)
+        self.assertEqual([entry[0] for entry in entries], ["hermes", "whatsapp", "webrtc"])
+        self.assertEqual(
+            entries[2],
+            [
+                "webrtc",
+                str(smoke),
+                "--voice-bin",
+                str(voice),
+                "--timeout",
+                "12.5",
+                "--outbound-text",
+                "Outbound media smoke.",
+                "--max-queued-tx-ms",
+                "250",
+            ],
+        )
 
     def test_skip_hermes_config_does_not_require_config_file(self):
         with tempfile.TemporaryDirectory() as tmp:

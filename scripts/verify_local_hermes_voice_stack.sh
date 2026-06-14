@@ -13,10 +13,15 @@ skip_sidecar="${SKIP_SIDECAR:-0}"
 skip_systemd="${SKIP_SYSTEMD:-0}"
 skip_daemon="${SKIP_DAEMON:-0}"
 skip_stt_smoke="${SKIP_STT_SMOKE:-0}"
+run_webrtc_loopback_smoke="${RUN_WEBRTC_LOOPBACK_SMOKE:-0}"
+webrtc_python="${VOICE_WEBRTC_PYTHON:-python3}"
+webrtc_timeout="${VOICE_WEBRTC_TIMEOUT:-60}"
+max_queued_tx_ms="${MAX_QUEUED_TX_MS:-1000}"
 
 hermes_config_verify_script="${HERMES_CONFIG_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_voice_config.py}"
 whatsapp_contract_verify_script="${WHATSAPP_CONTRACT_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_voice_contract.sh}"
 sidecar_service_verify_script="${SIDECAR_SERVICE_VERIFY_SCRIPT:-$repo_root/scripts/verify_webrtc_sidecar_service.py}"
+webrtc_loopback_smoke_script="${WEBRTC_LOOPBACK_SMOKE_SCRIPT:-$repo_root/examples/webrtc-sidecar/full_duplex_loopback_smoke.py}"
 
 usage() {
   cat <<'EOF'
@@ -39,12 +44,17 @@ Options:
   --skip-systemd               skip sidecar/daemon systemd service checks
   --skip-daemon                skip daemon-backed stream checks
   --skip-stt-smoke             skip stream-transcribe smoke
+  --run-webrtc-loopback-smoke  run one local full-duplex WebRTC media turn
+  --webrtc-python PATH         Python used for the WebRTC smoke (default: python3)
+  --webrtc-timeout SECONDS     timeout passed to the WebRTC smoke (default: 60)
+  --max-queued-tx-ms MS        max sidecar queue after WebRTC smoke (default: 1000)
   -h, --help                   show this help
 
 Environment aliases:
   VOICE_BIN, HERMES_CONFIG, SIDECAR_URL, TEXT
   SKIP_HERMES_CONFIG=1, SKIP_HERMES_TTS_SMOKE=1, SKIP_SIDECAR=1
   SKIP_SYSTEMD=1, SKIP_DAEMON=1, SKIP_STT_SMOKE=1
+  RUN_WEBRTC_LOOPBACK_SMOKE=1, VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
 EOF
 }
 
@@ -131,6 +141,25 @@ while [[ $# -gt 0 ]]; do
       skip_stt_smoke=1
       shift
       ;;
+    --run-webrtc-loopback-smoke)
+      run_webrtc_loopback_smoke=1
+      shift
+      ;;
+    --webrtc-python)
+      [[ $# -ge 2 ]] || fail "--webrtc-python requires a path"
+      webrtc_python="$2"
+      shift 2
+      ;;
+    --webrtc-timeout)
+      [[ $# -ge 2 ]] || fail "--webrtc-timeout requires a value"
+      webrtc_timeout="$2"
+      shift 2
+      ;;
+    --max-queued-tx-ms)
+      [[ $# -ge 2 ]] || fail "--max-queued-tx-ms requires a value"
+      max_queued_tx_ms="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -155,6 +184,14 @@ if [[ "$skip_hermes_config" != "1" ]]; then
 fi
 if [[ "$skip_sidecar" != "1" ]]; then
   require_executable "$sidecar_service_verify_script" "WebRTC sidecar verifier"
+fi
+if [[ "$run_webrtc_loopback_smoke" == "1" ]]; then
+  require_file "$webrtc_loopback_smoke_script" "WebRTC full-duplex smoke"
+  if [[ "$webrtc_python" == */* ]]; then
+    require_executable "$webrtc_python" "WebRTC smoke Python"
+  elif ! command -v "$webrtc_python" >/dev/null 2>&1; then
+    fail "WebRTC smoke Python not found on PATH: $webrtc_python"
+  fi
 fi
 
 if [[ "$skip_hermes_config" != "1" ]]; then
@@ -203,9 +240,22 @@ else
   sidecar_status="skipped"
 fi
 
+if [[ "$run_webrtc_loopback_smoke" == "1" ]]; then
+  run_step "Full-duplex WebRTC media smoke" \
+    "$webrtc_python" "$webrtc_loopback_smoke_script" \
+    --voice-bin "$voice_bin" \
+    --timeout "$webrtc_timeout" \
+    --outbound-text "$text" \
+    --max-queued-tx-ms "$max_queued_tx_ms"
+  webrtc_loopback_status="checked"
+else
+  webrtc_loopback_status="skipped"
+fi
+
 echo
 echo "ok: local Hermes voice stack verifier passed"
 echo "voice_bin=$voice_bin"
 echo "hermes_config=$hermes_status"
 echo "whatsapp_contract=checked"
 echo "sidecar_service=$sidecar_status"
+echo "webrtc_loopback=$webrtc_loopback_status"

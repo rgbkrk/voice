@@ -367,6 +367,10 @@ checks, run `scripts/verify_hermes_voice_config.py`,
 `scripts/verify_whatsapp_voice_contract.sh`, or
 `scripts/verify_webrtc_sidecar_service.py` directly.
 
+When the WebRTC Python dependencies are installed, add
+`--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`
+to run one full-duplex local media turn through the sidecar spike as well.
+
 For lower-level streaming, `stream_speak` emits `tts.started`, `tts.audio`, and
 terminal `tts.ended` / `tts.error` / `tts.cancelled` events over the same daemon
 frame protocol. `stream_transcribe` accepts client-sent `stt.audio` frames and

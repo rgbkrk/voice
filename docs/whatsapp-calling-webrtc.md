@@ -301,6 +301,23 @@ baseline/final cache counts, sampled before/after file details, and the fresh
 file descriptors selected for STT. If the window expires, the failure reports
 the latest stale candidate or that the cache stayed empty.
 
+For an unattended operator window, start the same non-draining profile as a
+transient user service and save evidence artifacts under `/tmp`:
+
+```bash
+scripts/start_whatsapp_attended_cache_watch.py \
+  --voice-bin "$(command -v voice)" \
+  --hermes-home ~/.hermes \
+  --hermes-config ~/.hermes/config.yaml \
+  --expected-agent-number 13236478455 \
+  --expected-agent-name Quill
+```
+
+The launcher prints the transient unit name, JSON artifact path, log path, and
+copyable `systemctl --user status ...` / `journalctl --user -u ... -f`
+commands. It runs `attended-cache-receive`, sends the voice-note prompt, then
+watches for a fresh `aud_*` cache file without polling `/messages`.
+
 Cloud/Calling readiness requires these external Meta settings in addition to
 the local sidecar:
 

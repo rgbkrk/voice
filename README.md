@@ -451,6 +451,19 @@ attended wait with `--whatsapp-alpha-wait-audio-cache-seconds` /
 `--whatsapp-alpha-wait-inbound-seconds`. The generated attended receive
 handoff commands include explicit 60-second wait windows by default.
 
+For a longer unattended receive window, start the non-draining cache watcher as
+a transient user service:
+
+```bash
+scripts/start_whatsapp_attended_cache_watch.py \
+  --voice-bin "$(command -v voice)" \
+  --hermes-home ~/.hermes \
+  --hermes-config ~/.hermes/config.yaml
+```
+
+It prints the unit name plus JSON/log artifact paths, then waits for a fresh
+`aud_*` file without polling the bridge `/messages` queue.
+
 To fail unless every alpha gate is complete, include the strict completion flag:
 
 ```bash

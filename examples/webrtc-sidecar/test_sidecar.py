@@ -95,6 +95,29 @@ def test_load_contract_falls_back_to_voice_stream_contract(monkeypatch, tmp_path
     assert calls == [(["/opt/voice", "stream-contract"], True, True, 5, True)]
 
 
+def test_sidecar_bind_host_defaults_to_loopback_only():
+    sidecar = load_sidecar()
+
+    for host in ("127.0.0.1", "127.10.20.30", "::1", "localhost"):
+        sidecar.validate_bind_host(host)
+
+    for host in ("0.0.0.0", "::", "192.168.1.10", "example.com"):
+        with pytest.raises(ValueError, match="non-loopback host"):
+            sidecar.validate_bind_host(host)
+
+
+def test_parse_args_requires_explicit_nonlocal_bind_opt_in():
+    sidecar = load_sidecar()
+
+    with pytest.raises(SystemExit):
+        sidecar.parse_args(["--host", "0.0.0.0"])
+
+    args = sidecar.parse_args(["--host", "0.0.0.0", "--allow-nonlocal"])
+
+    assert args.host == "0.0.0.0"
+    assert args.allow_nonlocal is True
+
+
 def test_contract_endpoint_returns_machine_readable_contract():
     sidecar = load_sidecar()
 

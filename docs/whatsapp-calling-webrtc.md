@@ -146,9 +146,10 @@ audio drain, close, and error payloads Hermes needs to drive WhatsApp Calling
 without hard-coding sidecar response shapes.
 
 The sidecar HTTP API is a local control plane, not a public web API. It should
-bind to localhost or a private socket, with Hermes as the caller. Only the
-WebRTC media negotiation needs normal network access for ICE, DTLS, SRTP, and
-possibly TURN.
+bind to localhost or a private socket, with Hermes as the caller. The Python
+spike rejects non-loopback `--host` values unless `--allow-nonlocal` is passed
+explicitly. Only the WebRTC media negotiation needs normal network access for
+ICE, DTLS, SRTP, and possibly TURN.
 
 ```http
 POST /offer

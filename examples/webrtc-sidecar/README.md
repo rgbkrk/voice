@@ -20,6 +20,9 @@ webhooks and Graph actions such as `pre_accept`, `accept`, and `terminate`.
 Do not expose the HTTP control API publicly; bind it to localhost or a private
 socket and let only the local Hermes process call it. The WebRTC media path may
 still need normal outbound ICE/STUN/TURN network access.
+The example enforces that by default: `--host` must be a loopback address such
+as `127.0.0.1`, `::1`, or `localhost`. Use `--allow-nonlocal` only behind a
+trusted local network or private socket boundary.
 
 ## Install
 

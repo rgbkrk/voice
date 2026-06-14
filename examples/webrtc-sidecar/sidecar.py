@@ -18,6 +18,7 @@ import base64
 import binascii
 import copy
 from fractions import Fraction
+import ipaddress
 import json
 import logging
 import os
@@ -133,6 +134,26 @@ DEFAULT_DRAIN_BYTES = int(AUDIO_CONTRACT["default_drain_bytes"])
 MAX_OUTBOUND_QUEUE_BYTES = int(AUDIO_CONTRACT["max_outbound_queue_bytes"])
 MAX_INBOUND_QUEUE_BYTES = int(AUDIO_CONTRACT["max_inbound_queue_bytes"])
 MAX_DRAIN_WAIT_MS = int(AUDIO_CONTRACT["max_drain_wait_ms"])
+LOCAL_HOSTNAMES = {"localhost"}
+
+
+def is_loopback_host(host: str) -> bool:
+    if host in LOCAL_HOSTNAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_bind_host(host: str, *, allow_nonlocal: bool = False) -> None:
+    if allow_nonlocal or is_loopback_host(host):
+        return
+    raise ValueError(
+        "refusing to bind the sidecar control plane to non-loopback host "
+        f"{host!r}; use --allow-nonlocal only behind a trusted local network "
+        "or private socket boundary"
+    )
 
 
 class PcmSource:
@@ -618,10 +639,15 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
     return app
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument(
+        "--allow-nonlocal",
+        action="store_true",
+        help="allow the local HTTP control plane to bind to a non-loopback host",
+    )
     parser.add_argument(
         "--tx-pcm",
         help="raw pcm_s16le mono 48 kHz source path, FIFO, or '-' for stdin",
@@ -635,7 +661,12 @@ def parse_args() -> argparse.Namespace:
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
     )
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    try:
+        validate_bind_host(args.host, allow_nonlocal=args.allow_nonlocal)
+    except ValueError as exc:
+        parser.error(str(exc))
+    return args
 
 
 def main() -> None:

@@ -93,6 +93,28 @@ Use `--wait-inbound-seconds N --require-inbound-audio` only during an attended
 test where someone can reply with a real WhatsApp voice note during the wait
 window.
 
+If the bridge has already downloaded inbound WhatsApp audio, validate that
+receive artifact without draining the live `/messages` queue:
+
+```bash
+scripts/verify_whatsapp_inbound_audio_cache.py \
+  --hermes-home ~/.hermes \
+  --require-cache \
+  --run-stt
+```
+
+The bridge writes inbound voice/audio media as `aud_*` files under
+`~/.hermes/audio_cache` by default. The cache verifier checks those files look
+like bridge downloads, validates the audio stream with `ffprobe`, and can replay
+one through `voice stream-transcribe --json`. The full stack gate exposes the
+same receive-side smoke behind an explicit opt-in:
+
+```bash
+scripts/verify_local_hermes_voice_stack.sh \
+  --hermes-home ~/.hermes \
+  --run-whatsapp-inbound-cache-smoke
+```
+
 Cloud/Calling readiness requires these external Meta settings in addition to
 the local sidecar:
 

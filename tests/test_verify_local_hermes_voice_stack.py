@@ -116,6 +116,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("hermes_gateway=skipped", result.stdout)
         self.assertIn("cli_mcp=checked", result.stdout)
         self.assertIn("whatsapp_bridge=checked", result.stdout)
+        self.assertIn("whatsapp_inbound_cache=skipped", result.stdout)
         self.assertIn("webrtc_loopback=skipped", result.stdout)
         self.assertEqual(
             [entry[0] for entry in entries],
@@ -229,6 +230,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("sidecar_service=skipped", result.stdout)
         self.assertIn("hermes_gateway=skipped", result.stdout)
         self.assertIn("whatsapp_bridge=skipped", result.stdout)
+        self.assertIn("whatsapp_inbound_cache=skipped", result.stdout)
         self.assertEqual([entry[0] for entry in entries], ["hermes", "cli_mcp", "whatsapp"])
         self.assertIn("--skip-tts-smoke", entries[0])
         self.assertIn("--skip-daemon", entries[1])
@@ -318,6 +320,83 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 "Outbound media smoke.",
                 "--max-queued-tx-ms",
                 "250",
+            ],
+        )
+
+    def test_whatsapp_inbound_cache_smoke_runs_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            hermes = tmp_path / "verify_hermes.py"
+            gateway = tmp_path / "verify_gateway.py"
+            cli_mcp = tmp_path / "verify_cli_mcp.py"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            bridge = tmp_path / "verify_whatsapp_bridge.py"
+            inbound = tmp_path / "verify_inbound_cache.py"
+            sidecar = tmp_path / "verify_sidecar.py"
+            voice = tmp_path / "voice"
+            audio_cache = tmp_path / "audio_cache"
+
+            write_helper(hermes, "hermes", log_path)
+            write_helper(gateway, "gateway", log_path)
+            write_helper(cli_mcp, "cli_mcp", log_path)
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_helper(bridge, "bridge", log_path)
+            write_helper(inbound, "inbound", log_path)
+            write_helper(sidecar, "sidecar", log_path)
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+            audio_cache.mkdir()
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-config",
+                    str(tmp_path / "missing.yaml"),
+                    "--hermes-home",
+                    str(tmp_path / "hermes"),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-daemon",
+                    "--skip-whatsapp-bridge",
+                    "--run-whatsapp-inbound-cache-smoke",
+                    "--whatsapp-audio-cache-dir",
+                    str(audio_cache),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "HERMES_CONFIG_VERIFY_SCRIPT": str(hermes),
+                    "HERMES_GATEWAY_VERIFY_SCRIPT": str(gateway),
+                    "CLI_MCP_SURFACE_VERIFY_SCRIPT": str(cli_mcp),
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_BRIDGE_VERIFY_SCRIPT": str(bridge),
+                    "WHATSAPP_INBOUND_CACHE_VERIFY_SCRIPT": str(inbound),
+                    "SIDECAR_SERVICE_VERIFY_SCRIPT": str(sidecar),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+
+        self.assertIn("whatsapp_inbound_cache=checked", result.stdout)
+        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "inbound"])
+        self.assertEqual(
+            entries[1],
+            [
+                "inbound",
+                "--voice-bin",
+                str(voice),
+                "--hermes-home",
+                str(tmp_path / "hermes"),
+                "--require-cache",
+                "--run-stt",
+                "--audio-cache-dir",
+                str(audio_cache),
             ],
         )
 

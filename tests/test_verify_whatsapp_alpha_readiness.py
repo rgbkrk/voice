@@ -70,6 +70,17 @@ def write_fake_helpers(
     bridge_payload = {
         "success": True,
         "checks": {
+            "baileys_identity": {
+                "name": "Quill",
+                "number": "13236478455",
+                "lid_number": "186999436771390",
+            },
+            "whatsapp_local_config": {
+                "home_channel": "20530681934008@lid",
+                "home_channel_kind": "lid",
+                "mode": "bot",
+                "allowed_users_count": 2,
+            },
             "whatsapp_cloud": {
                 "cloud_configured": cloud_configured,
                 "calling_sidecar_configured": True,
@@ -186,6 +197,17 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "attended-send-receive",
             gates["attended_fresh_receive"]["fallback_draining_command"],
         )
+        handoff = gates["attended_fresh_receive"]["operator_handoff"]
+        self.assertEqual(handoff["preferred_profile"], "attended-cache-receive")
+        self.assertEqual(handoff["fallback_profile"], "attended-send-receive")
+        self.assertEqual(handoff["home_channel"], "20530681934008@lid")
+        self.assertEqual(handoff["home_channel_kind"], "lid")
+        self.assertEqual(handoff["agent_name"], "Quill")
+        self.assertEqual(handoff["agent_number"], "13236478455")
+        self.assertFalse(handoff["drains_bridge_messages"])
+        self.assertTrue(handoff["fallback_drains_bridge_messages"])
+        self.assertIn("audio_cache", handoff["audio_cache_dir"])
+        self.assertEqual(len(handoff["steps"]), 3)
         self.assertEqual(
             gates["whatsapp_cloud_calling"]["status"],
             "external_setup_required",
@@ -329,15 +351,28 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("--profile attended-send-receive", result.stdout)
+        self.assertIn(
+            "attended_fresh_receive_operator=agent=Quill number=13236478455",
+            result.stdout,
+        )
+        self.assertIn(
+            "home_channel=20530681934008@lid",
+            result.stdout,
+        )
+        self.assertIn(
+            "attended_fresh_receive_step[1]=Start the preferred command",
+            result.stdout,
+        )
         self.assertIn("readiness=local_ready_pending_gates", result.stdout)
 
     def test_inbound_cache_smoke_adds_receive_component(self):
         with tempfile.TemporaryDirectory() as tmp:
+            audio_cache = Path(tmp) / "audio_cache"
             payload = self.run_readiness(
                 Path(tmp),
                 "--run-inbound-cache-smoke",
                 "--whatsapp-audio-cache-dir",
-                str(Path(tmp) / "audio_cache"),
+                str(audio_cache),
             )
 
         self.assertTrue(payload["success"])
@@ -350,6 +385,12 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertIn(
             "whatsapp_inbound_cache_stt",
             payload["by_category"]["voice_note"]["components"],
+        )
+        self.assertEqual(
+            payload["pending_gates"]["attended_fresh_receive"]["operator_handoff"][
+                "audio_cache_dir"
+            ],
+            str(audio_cache.resolve()),
         )
 
     def test_cached_receive_profile_adds_receive_component(self):

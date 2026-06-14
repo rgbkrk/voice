@@ -351,13 +351,18 @@ def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def bridge_cloud_summary(components: list[dict[str, Any]]) -> dict[str, Any]:
+    checks = bridge_runtime_checks(components)
+    cloud = checks.get("whatsapp_cloud")
+    return cloud if isinstance(cloud, dict) else {}
+
+
+def bridge_runtime_checks(components: list[dict[str, Any]]) -> dict[str, Any]:
     for item in components:
         if item["name"] != "whatsapp_bridge_runtime":
             continue
         summary = item.get("summary") or {}
         checks = summary.get("checks") or {}
-        cloud = checks.get("whatsapp_cloud")
-        return cloud if isinstance(cloud, dict) else {}
+        return checks if isinstance(checks, dict) else {}
     return {}
 
 
@@ -365,7 +370,11 @@ def attended_receive_gate(
     components: list[dict[str, Any]],
     *,
     hermes_home: Path,
+    audio_cache_dir: Path,
 ) -> dict[str, Any]:
+    bridge_checks = bridge_runtime_checks(components)
+    local_config = bridge_checks.get("whatsapp_local_config") or {}
+    identity = bridge_checks.get("baileys_identity") or {}
     receive_names = {"whatsapp_voice_note_receive", "whatsapp_voice_note_send_receive"}
     cached_receive_verified = any(
         item["name"] == "whatsapp_inbound_cache_stt" and item.get("success")
@@ -392,6 +401,24 @@ def attended_receive_gate(
             str(hermes_home),
             "--profile",
             "attended-send-receive",
+        ],
+    }
+    gate["operator_handoff"] = {
+        "preferred_profile": "attended-cache-receive",
+        "preferred_command": gate["command"],
+        "fallback_profile": "attended-send-receive",
+        "fallback_draining_command": gate["fallback_draining_command"],
+        "drains_bridge_messages": False,
+        "fallback_drains_bridge_messages": True,
+        "audio_cache_dir": str(audio_cache_dir),
+        "home_channel": local_config.get("home_channel"),
+        "home_channel_kind": local_config.get("home_channel_kind"),
+        "agent_number": identity.get("number"),
+        "agent_name": identity.get("name"),
+        "steps": [
+            "Start the preferred command and keep it running for the receive window.",
+            "From an allowed WhatsApp user, send a fresh voice note to the configured agent chat while the command is waiting.",
+            "Use the fallback command only when Hermes is not consuming the bridge queue and it is acceptable to drain GET /messages.",
         ],
     }
 
@@ -592,6 +619,11 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
         "attended_fresh_receive": attended_receive_gate(
             components,
             hermes_home=args.hermes_home.expanduser().resolve(),
+            audio_cache_dir=(
+                args.whatsapp_audio_cache_dir.expanduser().resolve()
+                if args.whatsapp_audio_cache_dir
+                else args.hermes_home.expanduser().resolve() / "audio_cache"
+            ),
         ),
         **external_meta_gate(external_meta_setup),
     }
@@ -822,6 +854,17 @@ def human_summary(result: dict[str, Any]) -> None:
                     "attended_fresh_receive_fallback_draining_command="
                     f"{shlex.join([str(part) for part in fallback])}"
                 )
+            handoff = attended.get("operator_handoff") or {}
+            if handoff:
+                print(
+                    "attended_fresh_receive_operator="
+                    f"agent={handoff.get('agent_name') or '<unknown>'} "
+                    f"number={handoff.get('agent_number') or '<unknown>'} "
+                    f"home_channel={handoff.get('home_channel') or '<unknown>'} "
+                    f"audio_cache_dir={handoff.get('audio_cache_dir')}"
+                )
+                for index, step in enumerate(handoff.get("steps") or [], start=1):
+                    print(f"attended_fresh_receive_step[{index}]={step}")
     print(
         "whatsapp_cloud="
         + ("configured" if external["cloud_configured"] else "not_configured")

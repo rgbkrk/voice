@@ -1,6 +1,6 @@
 # WhatsApp Calling / WebRTC Architecture
 
-Status: planning document, current as of 2026-06-13.
+Status: architecture and spike document, current as of 2026-06-14.
 
 This document describes how `voice` should fit into Hermes + WhatsApp beyond
 file-based voice notes. The short version:
@@ -140,7 +140,10 @@ implementation should favor debuggability over abstraction. The canonical v1
 PCM and endpoint contract is machine-readable at
 [`docs/contracts/webrtc-sidecar-v1.json`](contracts/webrtc-sidecar-v1.json), and
 installed `voice` binaries print the same object with `voice stream-contract`.
-The Python sidecar exposes the same object at `GET /contract`.
+The Python sidecar exposes the same object at `GET /contract`. The contract
+defines the fixed PCM audio shape plus the `/offer`, call-state, audio send,
+audio drain, close, and error payloads Hermes needs to drive WhatsApp Calling
+without hard-coding sidecar response shapes.
 
 The sidecar HTTP API is a local control plane, not a public web API. It should
 bind to localhost or a private socket, with Hermes as the caller. Only the
@@ -306,12 +309,14 @@ that path.
 
 ## PR Sequence
 
-1. Keep direct Ogg/Opus file output in `voice` and Hermes.
-2. Add this architecture document and track open questions.
-3. Add a `voice` streaming STT input API that accepts fixed PCM frames.
+1. Keep direct Ogg/Opus file output in `voice` and Hermes. Done for `voice`;
+   Hermes wiring is staged separately.
+2. Add this architecture document and track open questions. Done.
+3. Add a `voice` streaming STT input API that accepts fixed PCM frames. Done.
 4. Prototype a sidecar that accepts a synthetic SDP offer and round-trips PCM.
    The initial `examples/webrtc-sidecar` artifact covers the SDP answer,
-   outbound PCM-to-Opus/WebRTC track, and inbound decoded PCM sink.
+   outbound PCM-to-Opus/WebRTC track, inbound decoded PCM sink, and local HTTP
+   send/drain endpoints. Done as a spike.
 5. Wire Hermes WhatsApp Cloud `connect` webhooks to the sidecar.
 6. Build an inbound-call echo bot: WhatsApp audio in, same audio out.
 7. Replace echo with STT -> Hermes turn -> `stream_speak` TTS.

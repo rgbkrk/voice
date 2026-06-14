@@ -96,6 +96,36 @@ pub fn webrtc_sidecar_contract() -> serde_json::Value {
             }
         },
         "payloads": {
+            "offer_request": {
+                "call_id": "Required call session identifier from the WhatsApp Calling webhook.",
+                "type": "Required SDP type. v1 accepts offer.",
+                "sdp": "Required remote SDP offer from WhatsApp. remote_sdp is accepted as an alias by the Python sidecar."
+            },
+            "offer_response": {
+                "call_id": "Call session identifier.",
+                "type": "Local SDP type, usually answer.",
+                "sdp": "Local SDP answer to pass unchanged to WhatsApp pre_accept and accept actions.",
+                "audio": "Full fixed audio contract object defined by audio.",
+                "state": "Current call_state object after local SDP answer creation."
+            },
+            "call_state": {
+                "call_id": "Call session identifier.",
+                "closed": "Whether the local sidecar session has been closed.",
+                "connection_state": "WebRTC peer connection state.",
+                "ice_connection_state": "ICE connection state.",
+                "ice_gathering_state": "ICE gathering state.",
+                "signaling_state": "WebRTC signaling state.",
+                "tasks": "Number of active background media tasks owned by the session.",
+                "queued_tx_bytes": "Outbound PCM bytes queued for WebRTC transmission.",
+                "max_tx_queue_bytes": "Maximum outbound PCM bytes this sidecar will queue for one call.",
+                "queued_rx_bytes": "Inbound decoded PCM bytes queued for Hermes to drain.",
+                "audio": "Full fixed audio contract object defined by audio."
+            },
+            "call_status_response": "The call_state object for the requested call_id.",
+            "close_call_response": {
+                "call_id": "Call session identifier.",
+                "closed": "Always true when the close request succeeds."
+            },
             "send_audio_request": {
                 "sample_rate": "audio.sample_rate",
                 "channels": "audio.channels",
@@ -129,6 +159,9 @@ pub fn webrtc_sidecar_contract() -> serde_json::Value {
                 "max_outbound_queue_bytes": "audio.max_outbound_queue_bytes",
                 "max_inbound_queue_bytes": "audio.max_inbound_queue_bytes",
                 "max_drain_wait_ms": "audio.max_drain_wait_ms"
+            },
+            "error_response": {
+                "error": "Human-readable error message. Non-2xx responses use this shape."
             }
         }
     })
@@ -521,6 +554,24 @@ mod tests {
             WEBRTC_MAX_INBOUND_QUEUE_BYTES
         );
         assert_eq!(audio["max_drain_wait_ms"], WEBRTC_MAX_DRAIN_WAIT_MS);
+
+        let payloads = &contract["payloads"];
+        assert_eq!(
+            payloads["offer_request"]["call_id"],
+            "Required call session identifier from the WhatsApp Calling webhook."
+        );
+        assert_eq!(
+            payloads["offer_response"]["sdp"],
+            "Local SDP answer to pass unchanged to WhatsApp pre_accept and accept actions."
+        );
+        assert_eq!(
+            payloads["call_state"]["queued_rx_bytes"],
+            "Inbound decoded PCM bytes queued for Hermes to drain."
+        );
+        assert_eq!(
+            payloads["error_response"]["error"],
+            "Human-readable error message. Non-2xx responses use this shape."
+        );
     }
 
     #[test]

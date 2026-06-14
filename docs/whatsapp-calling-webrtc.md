@@ -318,7 +318,10 @@ that path.
    outbound PCM-to-Opus/WebRTC track, inbound decoded PCM sink, and local HTTP
    send/drain endpoints. Done as a spike.
 5. Wire Hermes WhatsApp Cloud `connect` webhooks to the sidecar.
-6. Build an inbound-call echo bot: WhatsApp audio in, same audio out.
+6. Build an inbound-call echo bot: WhatsApp audio in, same audio out. The
+   local `examples/webrtc-sidecar/echo_sidecar_audio.py` helper now covers the
+   sidecar-local drain-and-post loop; exercising it against a real WhatsApp
+   Cloud call still depends on a calling-enabled number.
 7. Replace echo with STT -> Hermes turn -> `stream_speak` TTS.
 8. Add interruption/barge-in: inbound voice cancels outbound TTS.
 

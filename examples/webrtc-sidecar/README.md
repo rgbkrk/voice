@@ -145,6 +145,18 @@ By default the drain helper requests the contract's `default_drain_bytes`
 window, currently 96000 bytes or about one second of mono 48 kHz s16le audio.
 Pass `--max-bytes 1920` for exact frame-by-frame polling.
 
+For a minimal live-call echo bot, drain inbound PCM and queue it back to the
+same sidecar call:
+
+```bash
+python examples/webrtc-sidecar/echo_sidecar_audio.py local-test \
+  --stop-after-empty 10
+```
+
+This proves the sidecar's local media bridge before adding STT, Hermes turns,
+or `voice stream` TTS. It exits with code 75 if the outbound queue is full, so
+Hermes can treat that as retryable audio backpressure.
+
 Queue outbound PCM for a live session:
 
 ```bash
@@ -218,6 +230,7 @@ python3 -m venv /tmp/voice-webrtc-venv
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_sidecar.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_post_voice_stream.py
 /tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_drain_sidecar_audio.py
+/tmp/voice-webrtc-venv/bin/python -m pytest -q examples/webrtc-sidecar/test_echo_sidecar_audio.py
 ```
 
 `loopback_smoke.py` starts the sidecar in-process, completes a local SDP

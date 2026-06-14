@@ -117,6 +117,21 @@ def test_inbound_pcm_sink_drains_queued_audio():
     assert sink.queued_bytes == 0
 
 
+def test_inbound_pcm_sink_waits_for_queued_audio():
+    sidecar = load_sidecar()
+
+    async def run():
+        sink = sidecar.InboundPcmSink(None)
+        waiter = asyncio.create_task(sink.wait_for_audio(500))
+        await asyncio.sleep(0)
+        assert not waiter.done()
+
+        sink.write(b"\x01\x00")
+        await asyncio.wait_for(waiter, timeout=1)
+
+    asyncio.run(run())
+
+
 def test_health_reports_audio_contract():
     sidecar = load_sidecar()
 
@@ -313,6 +328,49 @@ def test_audio_endpoint_drains_inbound_pcm_for_call():
                 "error": "max_bytes must contain whole s16le samples"
             }
 
+            wait_response = await client.get("/calls/call-1/audio?wait_ms=-1")
+            assert wait_response.status == 400
+            wait_body = await wait_response.json()
+            assert wait_body == {"error": "wait_ms must be non-negative"}
+
+    asyncio.run(run())
+
+
+def test_audio_endpoint_waits_for_inbound_pcm():
+    sidecar = load_sidecar()
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.inbound = sidecar.InboundPcmSink(None)
+
+        def snapshot(self):
+            return {"call_id": "call-1"}
+
+        async def close(self) -> None:
+            self.inbound.close()
+
+    async def run():
+        from aiohttp.test_utils import TestClient, TestServer
+
+        source = sidecar.PcmSource(None)
+        session = FakeSession()
+        app = sidecar.create_app(source, None)
+        app[sidecar.SESSIONS_KEY]["call-1"] = session
+
+        async with TestClient(TestServer(app)) as client:
+            pending = asyncio.create_task(
+                client.get("/calls/call-1/audio?max_bytes=2&wait_ms=500")
+            )
+            await asyncio.sleep(0.05)
+            assert not pending.done()
+
+            session.inbound.write(b"\x01\x00")
+            response = await asyncio.wait_for(pending, timeout=1)
+            assert response.status == 200
+            body = await response.json()
+            assert body["returned_bytes"] == 2
+            assert base64.b64decode(body["pcm_s16le_base64"]) == b"\x01\x00"
+
     asyncio.run(run())
 
 
@@ -452,7 +510,7 @@ def test_offer_loopback_drains_inbound_audio_over_http():
         deadline = asyncio.get_running_loop().time() + 5
         while asyncio.get_running_loop().time() < deadline:
             response = await client.get(
-                f"/calls/call-1/audio?max_bytes={sidecar.FRAME_BYTES}"
+                f"/calls/call-1/audio?max_bytes={sidecar.FRAME_BYTES}&wait_ms=500"
             )
             assert response.status == 200
             body = await response.json()

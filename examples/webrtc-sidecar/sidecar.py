@@ -46,6 +46,7 @@ BYTES_PER_SAMPLE = 2
 FRAME_BYTES = SAMPLES_PER_FRAME * CHANNELS * BYTES_PER_SAMPLE
 DEFAULT_DRAIN_BYTES = FRAME_BYTES * 50
 MAX_INBOUND_QUEUE_BYTES = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * 10
+MAX_DRAIN_WAIT_MS = 5_000
 
 
 class PcmSource:
@@ -139,6 +140,7 @@ class InboundPcmSink:
         self.max_queue_bytes = max_queue_bytes
         self.buffer = bytearray()
         self.file = None
+        self.ready = asyncio.Event()
 
     @property
     def queued_bytes(self) -> int:
@@ -155,13 +157,25 @@ class InboundPcmSink:
         self.buffer.extend(pcm_s16le)
         if len(self.buffer) > self.max_queue_bytes:
             del self.buffer[: len(self.buffer) - self.max_queue_bytes]
+        if self.buffer:
+            self.ready.set()
 
     def drain(self, max_bytes: int = DEFAULT_DRAIN_BYTES) -> bytes:
         if max_bytes <= 0 or not self.buffer:
             return b""
         chunk = bytes(self.buffer[:max_bytes])
         del self.buffer[:max_bytes]
+        if not self.buffer:
+            self.ready.clear()
         return chunk
+
+    async def wait_for_audio(self, wait_ms: int) -> None:
+        if self.buffer or wait_ms <= 0:
+            return
+        try:
+            await asyncio.wait_for(self.ready.wait(), timeout=wait_ms / 1_000)
+        except TimeoutError:
+            return
 
     def close(self) -> None:
         if self.file is not None:
@@ -358,6 +372,17 @@ def drain_size(request: web.Request) -> int:
     return min(parsed, MAX_INBOUND_QUEUE_BYTES)
 
 
+def drain_wait_ms(request: web.Request) -> int:
+    raw = str(request.query.get("wait_ms") or 0).strip()
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise ValueError("wait_ms must be an integer") from exc
+    if parsed < 0:
+        raise ValueError("wait_ms must be non-negative")
+    return min(parsed, MAX_DRAIN_WAIT_MS)
+
+
 def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
     app = web.Application()
     sessions: dict[str, CallSession] = {}
@@ -449,9 +474,11 @@ def create_app(source: PcmSource, rx_pcm: str | None) -> web.Application:
             return json_error("unknown call_id", status=404)
         try:
             max_bytes = drain_size(request)
+            wait_ms = drain_wait_ms(request)
         except ValueError as exc:
             return json_error(str(exc))
 
+        await session.inbound.wait_for_audio(wait_ms)
         pcm = session.inbound.drain(max_bytes)
         return web.json_response(
             {

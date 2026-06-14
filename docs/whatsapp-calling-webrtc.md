@@ -188,7 +188,7 @@ Runtime events:
 Inbound audio:
 
 ```http
-GET /calls/{call_id}/audio?max_bytes=1920
+GET /calls/{call_id}/audio?max_bytes=1920&wait_ms=500
 ```
 
 Response:
@@ -207,6 +207,9 @@ Response:
   }
 }
 ```
+
+`wait_ms` is optional, capped by the sidecar, and lets Hermes long-poll for the
+next decoded PCM chunk instead of running a hot polling loop.
 
 Outbound audio:
 

@@ -99,7 +99,7 @@ curl -sS http://127.0.0.1:8787/calls/local-test
 Drain decoded inbound PCM for a live session:
 
 ```bash
-curl -sS 'http://127.0.0.1:8787/calls/local-test/audio?max_bytes=1920'
+curl -sS 'http://127.0.0.1:8787/calls/local-test/audio?max_bytes=1920&wait_ms=500'
 ```
 
 Queue outbound PCM for a live session:

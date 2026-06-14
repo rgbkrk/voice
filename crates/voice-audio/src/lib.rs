@@ -344,6 +344,7 @@ fn ensure_parent_dir(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn temp_path(extension: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -362,6 +363,55 @@ mod tests {
                 (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.25
             })
             .collect()
+    }
+
+    fn command_available(command: &str) -> bool {
+        Command::new(command).arg("-version").output().is_ok()
+    }
+
+    fn ffprobe_audio_stream(path: &Path) -> Option<HashMap<String, String>> {
+        if !command_available("ffprobe") {
+            eprintln!("skipping ffprobe stream-shape check because ffprobe is not on PATH");
+            return None;
+        }
+
+        let output = Command::new("ffprobe")
+            .arg("-v")
+            .arg("error")
+            .arg("-select_streams")
+            .arg("a:0")
+            .arg("-show_entries")
+            .arg("stream=codec_name,sample_rate,channels")
+            .arg("-of")
+            .arg("default=noprint_wrappers=1")
+            .arg(path)
+            .output()
+            .expect("run ffprobe");
+
+        assert!(
+            output.status.success(),
+            "ffprobe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        Some(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let (key, value) = line.split_once('=')?;
+                    Some((key.to_string(), value.to_string()))
+                })
+                .collect(),
+        )
+    }
+
+    fn assert_ffprobe_ogg_opus_shape(path: &Path) {
+        let Some(stream) = ffprobe_audio_stream(path) else {
+            return;
+        };
+        assert_eq!(stream.get("codec_name").map(String::as_str), Some("opus"));
+        assert_eq!(stream.get("sample_rate").map(String::as_str), Some("48000"));
+        assert_eq!(stream.get("channels").map(String::as_str), Some("1"));
     }
 
     #[test]
@@ -383,6 +433,10 @@ mod tests {
             Some(AudioOutputFormat::Wav)
         );
         assert_eq!(AudioOutputFormat::from_name("mp3"), None);
+        assert_eq!(
+            AudioOutputFormat::OggOpus.mime_type(),
+            "audio/ogg; codecs=opus"
+        );
     }
 
     #[test]
@@ -414,8 +468,8 @@ mod tests {
     }
 
     #[test]
-    fn save_ogg_opus_writes_opus_head() {
-        if Command::new("ffmpeg").arg("-version").output().is_err() {
+    fn save_ogg_opus_writes_opus_mono_48khz() {
+        if !command_available("ffmpeg") {
             eprintln!("skipping Ogg/Opus encode test because ffmpeg is not on PATH");
             return;
         }
@@ -424,12 +478,13 @@ mod tests {
         let samples = sine_wave(24_000);
         save_ogg_opus(&samples, &path, 24_000).expect("save ogg opus");
         assert!(is_ogg_opus_file(&path));
+        assert_ffprobe_ogg_opus_shape(&path);
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn stream_ogg_opus_writer_writes_opus_head() {
-        if Command::new("ffmpeg").arg("-version").output().is_err() {
+    fn stream_ogg_opus_writer_writes_opus_mono_48khz() {
+        if !command_available("ffmpeg") {
             eprintln!("skipping streamed Ogg/Opus encode test because ffmpeg is not on PATH");
             return;
         }
@@ -452,6 +507,7 @@ mod tests {
         }
         writer.finish().expect("finish stream writer");
         assert!(is_ogg_opus_file(&path));
+        assert_ffprobe_ogg_opus_shape(&path);
         let _ = std::fs::remove_file(path);
     }
 }

@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+voice_bin="${VOICE_BIN:-}"
+hermes_config="${HERMES_CONFIG:-${HOME:-}/.hermes/config.yaml}"
+sidecar_url="${SIDECAR_URL:-http://127.0.0.1:8787}"
+text="${TEXT:-Local Hermes voice stack smoke test.}"
+skip_hermes_config="${SKIP_HERMES_CONFIG:-0}"
+skip_hermes_tts_smoke="${SKIP_HERMES_TTS_SMOKE:-0}"
+skip_sidecar="${SKIP_SIDECAR:-0}"
+skip_systemd="${SKIP_SYSTEMD:-0}"
+skip_daemon="${SKIP_DAEMON:-0}"
+skip_stt_smoke="${SKIP_STT_SMOKE:-0}"
+
+hermes_config_verify_script="${HERMES_CONFIG_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_voice_config.py}"
+whatsapp_contract_verify_script="${WHATSAPP_CONTRACT_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_voice_contract.sh}"
+sidecar_service_verify_script="${SIDECAR_SERVICE_VERIFY_SCRIPT:-$repo_root/scripts/verify_webrtc_sidecar_service.py}"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/verify_local_hermes_voice_stack.sh [OPTIONS]
+
+Run the local release gate for a Hermes host that uses voice for WhatsApp-ready
+TTS/STT and WebRTC sidecar streaming.
+
+By default this requires the voice daemon, runs the stream-transcribe smoke, and
+checks the WebRTC sidecar HTTP contract plus Linux systemd user services.
+
+Options:
+  --voice-bin PATH             installed voice binary to verify
+  --hermes-config PATH         Hermes config file (default: ~/.hermes/config.yaml)
+  --sidecar-url URL            sidecar base URL (default: http://127.0.0.1:8787)
+  --text TEXT                  smoke text used by TTS checks
+  --skip-hermes-config         skip Hermes config validation and TTS command smoke
+  --skip-hermes-tts-smoke      validate Hermes config without executing TTS
+  --skip-sidecar               skip WebRTC sidecar service verification
+  --skip-systemd               skip sidecar/daemon systemd service checks
+  --skip-daemon                skip daemon-backed stream checks
+  --skip-stt-smoke             skip stream-transcribe smoke
+  -h, --help                   show this help
+
+Environment aliases:
+  VOICE_BIN, HERMES_CONFIG, SIDECAR_URL, TEXT
+  SKIP_HERMES_CONFIG=1, SKIP_HERMES_TTS_SMOKE=1, SKIP_SIDECAR=1
+  SKIP_SYSTEMD=1, SKIP_DAEMON=1, SKIP_STT_SMOKE=1
+EOF
+}
+
+fail() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+require_file() {
+  local path="$1"
+  local label="$2"
+  [[ -f "$path" ]] || fail "$label not found: $path"
+}
+
+require_executable() {
+  local path="$1"
+  local label="$2"
+  [[ -x "$path" ]] || fail "$label is not executable: $path"
+}
+
+default_voice_bin() {
+  if [[ -n "$voice_bin" ]]; then
+    printf '%s\n' "$voice_bin"
+  elif command -v voice >/dev/null 2>&1; then
+    command -v voice
+  elif [[ -x "$repo_root/target/release/voice" ]]; then
+    printf '%s\n' "$repo_root/target/release/voice"
+  else
+    printf '%s\n' "voice"
+  fi
+}
+
+run_step() {
+  local label="$1"
+  shift
+  echo
+  echo "==> $label"
+  "$@"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --voice-bin)
+      [[ $# -ge 2 ]] || fail "--voice-bin requires a path"
+      voice_bin="$2"
+      shift 2
+      ;;
+    --hermes-config)
+      [[ $# -ge 2 ]] || fail "--hermes-config requires a path"
+      hermes_config="$2"
+      shift 2
+      ;;
+    --sidecar-url)
+      [[ $# -ge 2 ]] || fail "--sidecar-url requires a URL"
+      sidecar_url="$2"
+      shift 2
+      ;;
+    --text)
+      [[ $# -ge 2 ]] || fail "--text requires a value"
+      text="$2"
+      shift 2
+      ;;
+    --skip-hermes-config)
+      skip_hermes_config=1
+      shift
+      ;;
+    --skip-hermes-tts-smoke)
+      skip_hermes_tts_smoke=1
+      shift
+      ;;
+    --skip-sidecar)
+      skip_sidecar=1
+      shift
+      ;;
+    --skip-systemd)
+      skip_systemd=1
+      shift
+      ;;
+    --skip-daemon)
+      skip_daemon=1
+      shift
+      ;;
+    --skip-stt-smoke)
+      skip_stt_smoke=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      fail "unknown option: $1"
+      ;;
+  esac
+done
+
+voice_bin="$(default_voice_bin)"
+if [[ "$voice_bin" == */* ]]; then
+  require_executable "$voice_bin" "voice binary"
+elif ! command -v "$voice_bin" >/dev/null 2>&1; then
+  fail "voice binary not found on PATH: $voice_bin"
+fi
+
+require_executable "$whatsapp_contract_verify_script" "WhatsApp voice contract verifier"
+if [[ "$skip_hermes_config" != "1" ]]; then
+  require_executable "$hermes_config_verify_script" "Hermes voice config verifier"
+  require_file "$hermes_config" "Hermes config"
+fi
+if [[ "$skip_sidecar" != "1" ]]; then
+  require_executable "$sidecar_service_verify_script" "WebRTC sidecar verifier"
+fi
+
+if [[ "$skip_hermes_config" != "1" ]]; then
+  hermes_args=(
+    "$hermes_config_verify_script"
+    --config "$hermes_config"
+    --voice-bin "$voice_bin"
+    --text "$text"
+  )
+  if [[ "$skip_hermes_tts_smoke" == "1" ]]; then
+    hermes_args+=(--skip-tts-smoke)
+  fi
+  run_step "Hermes voice-native config" "${hermes_args[@]}"
+  hermes_status="checked"
+else
+  hermes_status="skipped"
+fi
+
+whatsapp_args=(
+  "$whatsapp_contract_verify_script"
+  --voice-bin "$voice_bin"
+  --text "$text"
+)
+if [[ "$skip_daemon" == "1" ]]; then
+  whatsapp_args+=(--skip-daemon)
+else
+  whatsapp_args+=(--require-daemon)
+  if [[ "$skip_stt_smoke" != "1" ]]; then
+    whatsapp_args+=(--run-stt-smoke)
+  fi
+fi
+run_step "Voice WhatsApp and streaming contract" "${whatsapp_args[@]}"
+
+if [[ "$skip_sidecar" != "1" ]]; then
+  sidecar_args=(
+    "$sidecar_service_verify_script"
+    --voice-bin "$voice_bin"
+    --sidecar-url "$sidecar_url"
+  )
+  if [[ "$skip_systemd" == "1" ]]; then
+    sidecar_args+=(--skip-systemd)
+  fi
+  run_step "Voice WebRTC sidecar service" "${sidecar_args[@]}"
+  sidecar_status="checked"
+else
+  sidecar_status="skipped"
+fi
+
+echo
+echo "ok: local Hermes voice stack verifier passed"
+echo "voice_bin=$voice_bin"
+echo "hermes_config=$hermes_status"
+echo "whatsapp_contract=checked"
+echo "sidecar_service=$sidecar_status"

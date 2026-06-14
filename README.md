@@ -352,16 +352,20 @@ For WhatsApp or Telegram voice-note delivery through Hermes, prefer
 Opus output directly. `output_format: wav` remains a compatibility fallback,
 with Hermes converting to OGG/Opus when needed.
 
-Use the local Hermes config verifier before a release or host update:
+Use the local Hermes stack verifier before a release or host update:
 
 ```bash
-scripts/verify_hermes_voice_config.py --config ~/.hermes/config.yaml
+scripts/verify_local_hermes_voice_stack.sh \
+  --voice-bin "$(command -v voice)" \
+  --hermes-config ~/.hermes/config.yaml
 ```
 
-It checks that Hermes' active command provider calls `voice say --format
-ogg-opus`, that the provider is marked `voice_compatible`, that STT routes to
-`voice stream-transcribe --quiet`, and that the configured TTS command writes
-valid mono 48 kHz Ogg/Opus.
+That single gate checks Hermes' active command provider, direct Ogg/Opus voice
+note output, daemon-backed streaming, `stream-transcribe`, and the local WebRTC
+sidecar service. It requires the daemon and sidecar by default. For narrower
+checks, run `scripts/verify_hermes_voice_config.py`,
+`scripts/verify_whatsapp_voice_contract.sh`, or
+`scripts/verify_webrtc_sidecar_service.py` directly.
 
 For lower-level streaming, `stream_speak` emits `tts.started`, `tts.audio`, and
 terminal `tts.ended` / `tts.error` / `tts.cancelled` events over the same daemon

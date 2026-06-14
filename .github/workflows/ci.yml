@@ -74,6 +74,7 @@ jobs:
             tests/test_install_webrtc_sidecar_service.py \
             tests/test_macos_release_compare.py \
             tests/test_verify_hermes_voice_config.py \
+            tests/test_verify_local_hermes_voice_stack.py \
             tests/test_verify_webrtc_sidecar_service.py
 
       - run: python -m unittest discover -s tests
@@ -82,4 +83,5 @@ jobs:
           bash -n \
             scripts/install_webrtc_sidecar_service.sh \
             scripts/verify_hermes_command_tts.sh \
+            scripts/verify_local_hermes_voice_stack.sh \
             scripts/verify_whatsapp_voice_contract.sh

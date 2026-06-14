@@ -39,7 +39,7 @@ daemon first, then install the sidecar as a systemd user service:
 ```bash
 voice daemon install
 scripts/install_webrtc_sidecar_service.sh --voice-bin "$(command -v voice)"
-curl -sS http://127.0.0.1:8787/health
+scripts/verify_webrtc_sidecar_service.py --voice-bin "$(command -v voice)"
 ```
 
 The installer creates a venv under the XDG data directory, writes
@@ -48,6 +48,10 @@ the service. It pins `VOICE_BIN` in the unit so the sidecar can discover the
 same `voice stream-contract` object Hermes expects. Use `--print-unit` to
 inspect the generated service without writing files, `--no-start` when another
 process will start it, and `--uninstall` to remove the user unit.
+The verifier compares the running sidecar's `/contract` response against
+`voice stream-contract`, checks `/health`, and confirms the sidecar plus voice
+daemon user services are active. Pass `--skip-systemd` for a contract-only
+check against a manually run sidecar.
 
 ## Run
 

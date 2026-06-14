@@ -343,6 +343,7 @@ sidecar as a separate user service after the daemon:
 
 ```bash
 scripts/install_webrtc_sidecar_service.sh --voice-bin "$(command -v voice)"
+scripts/verify_webrtc_sidecar_service.py --voice-bin "$(command -v voice)"
 ```
 
 For WhatsApp or Telegram voice-note delivery through Hermes, prefer

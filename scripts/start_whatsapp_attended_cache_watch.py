@@ -42,11 +42,13 @@ def default_voice_bin() -> str:
     env_value = os.environ.get("VOICE_BIN")
     if env_value:
         return env_value
+    found = shutil.which("voice")
+    if found:
+        return found
     release_bin = repo_root() / "target" / "release" / "voice"
     if release_bin.is_file() and os.access(release_bin, os.X_OK):
         return str(release_bin)
-    found = shutil.which("voice")
-    return found or "voice"
+    return "voice"
 
 
 def utc_timestamp() -> str:

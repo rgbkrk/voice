@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import json
+import os
 import subprocess
 import tempfile
 import textwrap
@@ -27,6 +28,47 @@ def command_log_entries(log_path: Path) -> list[list[str]]:
 
 
 class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
+    def test_dry_run_prefers_installed_voice_on_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            bin_dir.mkdir()
+            fake_voice = bin_dir / "voice"
+            write_executable(
+                fake_voice,
+                "#!/usr/bin/env bash\n"
+                "echo fake voice\n",
+            )
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+            }
+            env.pop("VOICE_BIN", None)
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--dry-run",
+                    "--json",
+                    "--timestamp",
+                    "20260614T225118Z",
+                    "--output-dir",
+                    str(tmp_path),
+                    "--hermes-home",
+                    str(tmp_path / "hermes"),
+                    "--hermes-config",
+                    str(tmp_path / "hermes" / "config.yaml"),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["manifest"]["voice_bin"], str(fake_voice))
+        self.assertIn(str(fake_voice), payload["alpha_command"])
+
     def test_dry_run_reports_repeatable_unit_and_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

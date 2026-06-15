@@ -530,7 +530,8 @@ groups. When a verified attended watch is available, the compact summary also
 reports whether the watch sent the prompt as a voice note, the local PTT
 transport and Ogg/Opus MIME it used, and whether it used the non-draining
 audio-cache receive path. A verified attended receive also stores compact
-redacted proof under `pending_gates.attended_fresh_receive.evidence`.
+redacted proof under `pending_gates.attended_fresh_receive.evidence`, including
+the attended-watch send format, send transport, and receive-watch mode.
 
 When the WebRTC Python dependencies are installed, add
 `--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`

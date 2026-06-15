@@ -93,6 +93,9 @@ def write_verified_attended_watch(
         "expected_agent_name": expected_agent_name,
         "attended_prompt": {
             "sends_prompt_voice_note": True,
+            "send_format": "audio/ogg; codecs=opus",
+            "send_transport": "local_whatsapp_bridge_ptt",
+            "receive_watch": "non_draining_audio_cache",
             "audio_cache_dir": str(directory / "audio_cache"),
         },
     }
@@ -1027,6 +1030,13 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertEqual(evidence["watch_profile"], "attended-cache-receive")
         self.assertEqual(evidence["watch_expected_agent_number"], "13236478455")
         self.assertEqual(evidence["watch_expected_agent_name"], "Quill")
+        self.assertTrue(evidence["watch_sends_prompt_voice_note"])
+        self.assertEqual(evidence["watch_send_format"], "audio/ogg; codecs=opus")
+        self.assertEqual(
+            evidence["watch_send_transport"],
+            "local_whatsapp_bridge_ptt",
+        )
+        self.assertEqual(evidence["watch_receive_watch"], "non_draining_audio_cache")
         self.assertEqual(evidence["audio"][0]["name"], "aud_watch.ogg")
         summary = payload["readiness_summary"]
         self.assertTrue(summary["attended_fresh_receive_verified"])

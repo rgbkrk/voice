@@ -190,6 +190,9 @@ attended receive status, and Cloud/Calling missing or invalid key groups. When
 a verified attended watch is available, the compact summary also shows whether
 the watch sent its prompt as a voice note, the local PTT transport and Ogg/Opus
 MIME it used, and whether it used the non-draining audio-cache receive path.
+The saved alpha JSON mirrors those details under
+`pending_gates.attended_fresh_receive.evidence` as `watch_send_format`,
+`watch_send_transport`, and `watch_receive_watch`.
 When a gate is still pending, the same summary also echoes the copyable attended
 receive command, fallback draining command, Cloud verification command, Calling
 verification command, and complete-alpha command if those commands are present

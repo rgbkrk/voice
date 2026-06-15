@@ -371,6 +371,9 @@ def verified_attended_watch_evidence(args: argparse.Namespace) -> dict[str, Any]
                 "watch_sends_prompt_voice_note": attended_prompt.get(
                     "sends_prompt_voice_note"
                 ),
+                "watch_send_format": attended_prompt.get("send_format"),
+                "watch_send_transport": attended_prompt.get("send_transport"),
+                "watch_receive_watch": attended_prompt.get("receive_watch"),
             }
         )
         return proof

@@ -361,6 +361,11 @@ except (OSError, json.JSONDecodeError) as exc:
 def csv(values):
     return ",".join(str(value) for value in (values or [])) or "none"
 
+def pair_csv(values):
+    if not isinstance(values, dict) or not values:
+        return "none"
+    return ",".join(f"{key}={values[key]}" for key in sorted(values))
+
 def calling_cloud_missing(cloud):
     return cloud.get("calling_cloud_missing") or [
         key for key in (cloud.get("calling_missing") or [])
@@ -377,6 +382,8 @@ def calling_sidecar_missing(cloud):
 checks = payload.get("checks") or {}
 identity = checks.get("baileys_identity") or {}
 health = checks.get("bridge_health") or {}
+local_config = checks.get("whatsapp_local_config") or {}
+bridge_process = (checks.get("bridge_process") or {}).get("selected") or {}
 cloud = checks.get("whatsapp_cloud") or {}
 webhook = cloud.get("webhook") or {}
 cloud_health = cloud.get("cloud_health") or {}
@@ -390,6 +397,21 @@ print(
     + f" queue={health.get('queueLength', 'unknown')}"
     + f" name={identity.get('name') or '<unknown>'}"
     + f" number={identity.get('number') or '<unknown>'}"
+)
+print(
+    "whatsapp_bridge_json_sources="
+    + f"session_dir={checks.get('session_dir') or '<unknown>'} "
+    + f"env_file={checks.get('env_file') or '<unknown>'} "
+    + f"bridge_process_session={bridge_process.get('session') or '<unknown>'} "
+    + f"expected_number={checks.get('expected_agent_number') or '<none>'} "
+    + f"expected_name={checks.get('expected_agent_name') or '<none>'} "
+    + f"home_channel={local_config.get('home_channel') or '<missing>'} "
+    + f"home_channel_kind={local_config.get('home_channel_kind') or '<unknown>'} "
+    + f"allowed_users={local_config.get('allowed_users_count', 0)}"
+)
+print(
+    "whatsapp_bridge_json_session_artifacts="
+    + pair_csv(checks.get("session_artifacts") or {})
 )
 print(
     "whatsapp_bridge_json_cloud="

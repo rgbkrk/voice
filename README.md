@@ -517,6 +517,11 @@ Cloud adapter health contract, and verifies the local webhook challenge echo
 without printing token or phone-number values. Failures from those explicit
 Cloud probes are reported as external Meta setup, not as local Baileys bridge or
 voice runtime failures.
+The stack bridge summary also prints non-secret Baileys provenance:
+`whatsapp_bridge_json_sources` shows the resolved session directory, Hermes env
+file, bridge process session, expected agent identity, and home channel, while
+`whatsapp_bridge_json_session_artifacts` reports auth/session file counts.
+
 The stack verifier runs alpha profiles through JSON internally so nonzero alpha
 results can still be classified as local runtime, attended receive, or external
 Meta setup. Use `--whatsapp-alpha-json-output` with any alpha profile when

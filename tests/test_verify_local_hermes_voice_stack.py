@@ -84,6 +84,10 @@ def write_external_meta_bridge_helper(path: Path, label: str, log_path: Path) ->
             {{
               "success": false,
               "checks": {{
+                "env_file": "/home/ubuntu/.hermes/.env",
+                "session_dir": "/home/ubuntu/.hermes/whatsapp/session",
+                "expected_agent_number": "13236478455",
+                "expected_agent_name": "Quill",
                 "baileys_identity": {{
                   "name": "Quill",
                   "number": "13236478455",
@@ -92,6 +96,23 @@ def write_external_meta_bridge_helper(path: Path, label: str, log_path: Path) ->
                 "bridge_health": {{
                   "status": "connected",
                   "queueLength": 0
+                }},
+                "bridge_process": {{
+                  "selected": {{
+                    "pid": 12345,
+                    "mode": "bot",
+                    "session": "/home/ubuntu/.hermes/whatsapp/session"
+                  }}
+                }},
+                "whatsapp_local_config": {{
+                  "home_channel": "20530681934008@lid",
+                  "home_channel_kind": "lid",
+                  "allowed_users_count": 2
+                }},
+                "session_artifacts": {{
+                  "lid_mapping": 6,
+                  "pre_key": 810,
+                  "session": 3
                 }},
                 "whatsapp_cloud": {{
                   "cloud_configured": false,
@@ -508,6 +529,21 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("--check-whatsapp-cloud-health", entries[1])
         self.assertIn(
             "whatsapp_bridge_json_cloud_health=failed",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_bridge_json_sources=session_dir="
+            "/home/ubuntu/.hermes/whatsapp/session "
+            "env_file=/home/ubuntu/.hermes/.env "
+            "bridge_process_session=/home/ubuntu/.hermes/whatsapp/session "
+            "expected_number=13236478455 expected_name=Quill "
+            "home_channel=20530681934008@lid home_channel_kind=lid "
+            "allowed_users=2",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_bridge_json_session_artifacts="
+            "lid_mapping=6,pre_key=810,session=3",
             result.stdout,
         )
         self.assertIn(

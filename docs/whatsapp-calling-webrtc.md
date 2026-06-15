@@ -215,7 +215,10 @@ for a non-external alpha failure. The compact bridge summary includes both
 `whatsapp_bridge_json_cloud` and `whatsapp_bridge_json_calling` lines so Cloud
 credential gaps and Calling sidecar gaps remain separate, plus
 `whatsapp_bridge_json_webhook` when the bridge JSON includes the Cloud webhook
-listener config.
+listener config. It also prints `whatsapp_bridge_json_sources` with the
+resolved Baileys session directory, Hermes env file, bridge process session,
+expected agent identity, and home channel, plus
+`whatsapp_bridge_json_session_artifacts` with auth/session file counts.
 
 Use the complete gate only when the local bridge, attended receive, Cloud API,
 and Calling setup are all expected to pass:

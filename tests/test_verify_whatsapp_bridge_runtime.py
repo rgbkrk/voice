@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -133,6 +134,101 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
 
         self.assertFalse(result["success"])
         self.assertIn("does not match expected", "\n".join(result["failures"]))
+
+    def test_bridge_script_hash_matches_health_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(
+                tmp_path,
+                skip_bridge_health=False,
+                skip_process_check=False,
+            )
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text("WHATSAPP_MODE=bot\n", encoding="utf-8")
+            bridge_script = tmp_path / "whatsapp-bridge" / "bridge.js"
+            bridge_script.parent.mkdir()
+            bridge_script.write_text("console.log('bridge');\n", encoding="utf-8")
+            script_hash = hashlib.sha256(bridge_script.read_bytes()).hexdigest()[:16]
+
+            original_fetch = self.script.fetch_bridge_health
+            original_processes = self.script.find_bridge_processes
+            self.script.fetch_bridge_health = lambda *_args, **_kwargs: (
+                {
+                    "status": "connected",
+                    "queueLength": 0,
+                    "scriptHash": script_hash,
+                },
+                None,
+            )
+            self.script.find_bridge_processes = lambda **_kwargs: [
+                {
+                    "pid": 1234,
+                    "script": str(bridge_script),
+                    "port": "3000",
+                    "session": str(args.session_dir),
+                    "mode": "bot",
+                }
+            ]
+            try:
+                result = self.script.verify(args)
+            finally:
+                self.script.fetch_bridge_health = original_fetch
+                self.script.find_bridge_processes = original_processes
+
+        self.assertTrue(result["success"], result["failures"])
+        hash_check = result["checks"]["bridge_script_hash"]
+        self.assertTrue(hash_check["checked"])
+        self.assertTrue(hash_check["ok"])
+        self.assertEqual(hash_check["reported"], script_hash)
+        self.assertEqual(hash_check["computed"], script_hash)
+
+    def test_bridge_script_hash_mismatch_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(
+                tmp_path,
+                skip_bridge_health=False,
+                skip_process_check=False,
+            )
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text("WHATSAPP_MODE=bot\n", encoding="utf-8")
+            bridge_script = tmp_path / "whatsapp-bridge" / "bridge.js"
+            bridge_script.parent.mkdir()
+            bridge_script.write_text("console.log('new bridge');\n", encoding="utf-8")
+
+            original_fetch = self.script.fetch_bridge_health
+            original_processes = self.script.find_bridge_processes
+            self.script.fetch_bridge_health = lambda *_args, **_kwargs: (
+                {
+                    "status": "connected",
+                    "queueLength": 0,
+                    "scriptHash": "stale00000000000",
+                },
+                None,
+            )
+            self.script.find_bridge_processes = lambda **_kwargs: [
+                {
+                    "pid": 1234,
+                    "script": str(bridge_script),
+                    "port": "3000",
+                    "session": str(args.session_dir),
+                    "mode": "bot",
+                }
+            ]
+            try:
+                result = self.script.verify(args)
+            finally:
+                self.script.fetch_bridge_health = original_fetch
+                self.script.find_bridge_processes = original_processes
+
+        self.assertFalse(result["success"])
+        self.assertIn("script hash mismatch", "\n".join(result["failures"]))
+        hash_check = result["checks"]["bridge_script_hash"]
+        self.assertTrue(hash_check["checked"])
+        self.assertFalse(hash_check["ok"])
+        self.assertEqual(hash_check["reported"], "stale00000000000")
 
     def test_require_cloud_fails_when_cloud_credentials_are_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

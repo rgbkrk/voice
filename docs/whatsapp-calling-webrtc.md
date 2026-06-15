@@ -59,6 +59,8 @@ The verifier checks:
 - the bridge health endpoint is connected
 - `~/.hermes/whatsapp/session/creds.json` has a paired WhatsApp identity
 - the running `whatsapp-bridge/bridge.js` process uses the expected session
+- the bridge `/health` `scriptHash` matches the running `bridge.js` file, so a
+  stale long-lived bridge process is detected before receive tests rely on it
 - LID-to-phone mapping files match the paired identity
 - WhatsApp Cloud and Calling environment keys are present or missing
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -222,6 +223,14 @@ def read_json_file(path: Path) -> tuple[Any | None, str | None]:
         return None, f"could not read {path}: {exc}"
 
 
+def file_script_hash(path: Path) -> tuple[str | None, str | None]:
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        return None, f"could not read bridge script for hashing: {exc}"
+    return digest[:16], None
+
+
 def session_artifact_counts(session_dir: Path) -> dict[str, int]:
     counts = {
         "pre_key": 0,
@@ -380,6 +389,48 @@ def fetch_bridge_health(bridge_url: str, *, timeout: float) -> tuple[dict[str, A
     if not isinstance(payload, dict):
         return None, "bridge health JSON must be an object"
     return payload, None
+
+
+def build_bridge_script_hash_check(
+    bridge_health: dict[str, Any],
+    bridge_process: dict[str, Any],
+) -> dict[str, Any]:
+    reported = bridge_health.get("scriptHash")
+    selected = bridge_process.get("selected") if isinstance(bridge_process, dict) else None
+    script = selected.get("script") if isinstance(selected, dict) else None
+    result: dict[str, Any] = {
+        "checked": False,
+        "ok": False,
+        "reported": reported if isinstance(reported, str) and reported else None,
+        "computed": None,
+        "script": script,
+        "reason": None,
+    }
+
+    if bridge_health.get("skipped"):
+        result["reason"] = "bridge health check skipped"
+        return result
+    if not result["reported"]:
+        result["reason"] = "bridge health did not report scriptHash"
+        return result
+    if bridge_process.get("skipped"):
+        result["reason"] = "bridge process check skipped"
+        return result
+    if not script:
+        result["reason"] = "bridge process script path unavailable"
+        return result
+
+    computed, error = file_script_hash(Path(str(script)).expanduser())
+    if error:
+        result["reason"] = error
+        return result
+
+    result["checked"] = True
+    result["computed"] = computed
+    result["ok"] = computed == result["reported"]
+    if not result["ok"]:
+        result["reason"] = "bridge health scriptHash does not match running script path"
+    return result
 
 
 def env_presence(env_sources: dict[str, dict[str, str]], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -871,6 +922,21 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
                     f"bridge process mode={process_mode!r}, expected {expected_mode!r}"
                 )
 
+    bridge_script_hash = build_bridge_script_hash_check(bridge_health, bridge_process)
+    if bridge_script_hash["checked"] and not bridge_script_hash["ok"]:
+        failures.append(
+            "WhatsApp bridge script hash mismatch: "
+            f"health reported {bridge_script_hash.get('reported')}, "
+            f"computed {bridge_script_hash.get('computed')} from "
+            f"{bridge_script_hash.get('script')}"
+        )
+    elif (
+        not bridge_script_hash["checked"]
+        and not args.skip_bridge_health
+        and not args.skip_process_check
+    ):
+        warnings.append(str(bridge_script_hash.get("reason")))
+
     cloud = build_cloud_summary(env_sources)
     if args.check_whatsapp_cloud_api:
         cloud_api = build_cloud_api_check(
@@ -921,6 +987,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "lid_mapping": lid_mapping,
         "bridge_health": bridge_health,
         "bridge_process": bridge_process,
+        "bridge_script_hash": bridge_script_hash,
         "env_key_sources": {
             source: sorted(key for key in values if key.startswith("WHATSAPP"))
             for source, values in env_sources.items()
@@ -973,6 +1040,7 @@ def human_summary(result: dict[str, Any]) -> None:
     identity = checks.get("baileys_identity") or {}
     health = checks.get("bridge_health") or {}
     process = (checks.get("bridge_process") or {}).get("selected") or {}
+    bridge_script_hash = checks.get("bridge_script_hash") or {}
     cloud = checks.get("whatsapp_cloud") or {}
     webhook = cloud.get("webhook") or {}
     cloud_api = cloud.get("cloud_api") or {}
@@ -1002,6 +1070,16 @@ def human_summary(result: dict[str, Any]) -> None:
             "bridge_process="
             f"pid={process.get('pid')} mode={process.get('mode') or '<unknown>'} "
             f"session={process.get('session') or '<unknown>'}"
+        )
+    if bridge_script_hash:
+        if bridge_script_hash.get("checked"):
+            hash_status = "matched" if bridge_script_hash.get("ok") else "mismatch"
+        else:
+            hash_status = "unchecked"
+        print(
+            "bridge_script_hash="
+            f"{hash_status} reported={bridge_script_hash.get('reported') or '<missing>'} "
+            f"computed={bridge_script_hash.get('computed') or '<missing>'}"
         )
     print(
         "whatsapp_local="

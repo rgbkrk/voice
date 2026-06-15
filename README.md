@@ -437,7 +437,9 @@ when the local Telegram bot token should already be configured.
 When a step fails, the aggregate verifier prints `failure_category=...` with
 values such as `voice_runtime`, `hermes_config`, `upstream_hermes`,
 `whatsapp_bridge_or_credentials`, `whatsapp_attended_watch`,
-`telegram_setup`, or `webrtc_sidecar`.
+`telegram_setup`, or `webrtc_sidecar`. When the stack continues after a
+classified nonzero check, such as external Meta setup or an alpha profile, the
+final footer also prints `stack_failure_category=...`.
 
 To include the categorized WhatsApp alpha report in the same command, add
 `--whatsapp-alpha-profile unattended`, `cached-receive`, `send`,

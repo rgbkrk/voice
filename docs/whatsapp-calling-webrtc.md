@@ -198,11 +198,14 @@ external Meta setup remains, the final summary marks
 `whatsapp_alpha=<profile>:external_meta_setup_pending`. If a direct bridge Cloud
 probe fails first, the stack gate reports `failure_category=external_meta_setup`,
 continues into the requested alpha profile, and marks
-`whatsapp_bridge=external_meta_setup_pending` in the final summary. The compact
-bridge summary includes both `whatsapp_bridge_json_cloud` and
-`whatsapp_bridge_json_calling` lines so Cloud credential gaps and Calling
-sidecar gaps remain separate, plus `whatsapp_bridge_json_webhook` when the
-bridge JSON includes the Cloud webhook listener config.
+`whatsapp_bridge=external_meta_setup_pending` in the final summary. The same
+footer includes `stack_failure_category=external_meta_setup` when the continuing
+failures are only external Meta setup, or `stack_failure_category=whatsapp_alpha`
+for a non-external alpha failure. The compact bridge summary includes both
+`whatsapp_bridge_json_cloud` and `whatsapp_bridge_json_calling` lines so Cloud
+credential gaps and Calling sidecar gaps remain separate, plus
+`whatsapp_bridge_json_webhook` when the bridge JSON includes the Cloud webhook
+listener config.
 
 Use the complete gate only when the local bridge, attended receive, Cloud API,
 and Calling setup are all expected to pass:

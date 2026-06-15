@@ -51,6 +51,7 @@ check_whatsapp_cloud_api="${CHECK_WHATSAPP_CLOUD_API:-0}"
 check_whatsapp_cloud_health="${CHECK_WHATSAPP_CLOUD_HEALTH:-0}"
 check_whatsapp_cloud_webhook="${CHECK_WHATSAPP_CLOUD_WEBHOOK:-0}"
 overall_status=0
+stack_failure_category=""
 temp_files=()
 
 cleanup_temp_files() {
@@ -225,6 +226,15 @@ run_step() {
   fi
 }
 
+mark_stack_failure() {
+  local category="$1"
+  if [[ -z "$stack_failure_category" ]]; then
+    stack_failure_category="$category"
+  elif [[ "$stack_failure_category" != "$category" ]]; then
+    stack_failure_category="multiple"
+  fi
+}
+
 run_whatsapp_bridge_step() {
   local label="WhatsApp bridge identity and credential readiness"
   local json_path
@@ -249,6 +259,7 @@ run_whatsapp_bridge_step() {
     echo "failure_category=external_meta_setup" >&2
     echo "failure_step=$label" >&2
     echo "failure_status=$status" >&2
+    mark_stack_failure "external_meta_setup"
     overall_status="$status"
     return 0
   fi
@@ -1237,9 +1248,11 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
     if whatsapp_alpha_json_external_meta_only "$whatsapp_alpha_json_path"; then
       echo "error: WhatsApp alpha readiness profile external Meta setup pending with exit $whatsapp_alpha_exit" >&2
       whatsapp_alpha_status="$whatsapp_alpha_profile:external_meta_setup_pending"
+      mark_stack_failure "external_meta_setup"
     else
       echo "error: WhatsApp alpha readiness profile failed with exit $whatsapp_alpha_exit" >&2
       whatsapp_alpha_status="$whatsapp_alpha_profile:failed"
+      mark_stack_failure "whatsapp_alpha"
     fi
     overall_status="$whatsapp_alpha_exit"
   else
@@ -1263,6 +1276,9 @@ echo "cli_mcp=$cli_mcp_status"
 echo "whatsapp_contract=checked"
 echo "telegram_voice_contract=$telegram_voice_contract_status"
 echo "whatsapp_bridge=$whatsapp_bridge_status"
+if [[ "$overall_status" != "0" && -n "$stack_failure_category" ]]; then
+  echo "stack_failure_category=$stack_failure_category"
+fi
 echo "whatsapp_inbound_cache=$whatsapp_inbound_cache_status"
 echo "whatsapp_alpha=$whatsapp_alpha_status"
 echo "whatsapp_attended_watch=$whatsapp_attended_watch_status"

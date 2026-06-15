@@ -531,6 +531,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             "whatsapp_bridge=external_meta_setup_pending",
             result.stdout,
         )
+        self.assertIn("stack_failure_category=external_meta_setup", result.stdout)
         self.assertIn(
             "error: local Hermes voice stack external Meta setup check failed",
             result.stderr,
@@ -1689,6 +1690,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             "whatsapp_alpha=cached-receive:external_meta_setup_pending",
             result.stdout,
         )
+        self.assertIn("stack_failure_category=external_meta_setup", result.stdout)
         self.assertIn(
             "error: WhatsApp alpha readiness profile external Meta setup pending "
             "with exit 1",
@@ -1803,6 +1805,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             "whatsapp_alpha=cached-receive:external_meta_setup_pending",
             result.stdout,
         )
+        self.assertIn("stack_failure_category=external_meta_setup", result.stdout)
         self.assertNotIn("whatsapp_alpha_json=/tmp/", result.stdout)
 
     def test_whatsapp_alpha_json_output_summarizes_nonzero_alpha(self):
@@ -1937,6 +1940,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             result.stdout,
         )
         self.assertIn("whatsapp_alpha=attended-cache-receive:failed", result.stdout)
+        self.assertIn("stack_failure_category=whatsapp_alpha", result.stdout)
         self.assertNotIn("ok: local Hermes voice stack verifier passed", result.stdout)
         self.assertIn(
             "error: WhatsApp alpha readiness profile failed with exit 3",

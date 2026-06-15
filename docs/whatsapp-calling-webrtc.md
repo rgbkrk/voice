@@ -87,6 +87,7 @@ The same stack gate can run the categorized alpha report as an explicit opt-in:
 scripts/verify_local_hermes_voice_stack.sh \
   --hermes-home ~/.hermes \
   --whatsapp-alpha-profile cached-receive \
+  --require-expected-whatsapp-agent-number \
   --whatsapp-alpha-json-output ./whatsapp-alpha.json
 ```
 
@@ -232,6 +233,7 @@ and Calling setup are all expected to pass:
 scripts/verify_whatsapp_alpha_readiness.py \
   --hermes-home ~/.hermes \
   --profile attended-cache-receive \
+  --require-expected-agent-number \
   --require-whatsapp-cloud \
   --require-whatsapp-calling \
   --check-whatsapp-cloud-api \

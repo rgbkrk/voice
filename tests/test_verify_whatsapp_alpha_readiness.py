@@ -620,6 +620,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
                 "13236478455",
                 "--expected-agent-name",
                 "Quill",
+                "--require-expected-agent-number",
                 "--bridge-url",
                 "http://127.0.0.1:3999",
                 "--sidecar-url",
@@ -653,6 +654,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             self.assertIn("13236478455", command)
             self.assertIn("--expected-agent-name", command)
             self.assertIn("Quill", command)
+            self.assertIn("--require-expected-agent-number", command)
 
     def test_require_complete_fails_when_alpha_gates_are_pending(self):
         with tempfile.TemporaryDirectory() as tmp:

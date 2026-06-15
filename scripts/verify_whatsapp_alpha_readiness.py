@@ -249,6 +249,8 @@ def alpha_handoff_base_command(args: argparse.Namespace) -> list[str]:
         command.extend(["--expected-agent-number", args.expected_agent_number])
     if args.expected_agent_name:
         command.extend(["--expected-agent-name", args.expected_agent_name])
+    if args.require_expected_agent_number:
+        command.append("--require-expected-agent-number")
     return command
 
 
@@ -483,6 +485,8 @@ def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
         bridge_cmd.extend(["--expected-agent-number", args.expected_agent_number])
     if args.expected_agent_name:
         bridge_cmd.extend(["--expected-agent-name", args.expected_agent_name])
+    if args.require_expected_agent_number:
+        bridge_cmd.append("--require-expected-agent-number")
     if args.check_whatsapp_cloud_api:
         bridge_cmd.append("--check-whatsapp-cloud-api")
     if args.check_whatsapp_cloud_health:
@@ -1352,6 +1356,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--expected-agent-number", default=os.environ.get("WHATSAPP_AGENT_NUMBER"))
     parser.add_argument("--expected-agent-name", default=os.environ.get("WHATSAPP_AGENT_NAME"))
+    parser.add_argument(
+        "--require-expected-agent-number",
+        "--require-expected-whatsapp-agent-number",
+        action="store_true",
+        help=(
+            "fail the bridge identity check unless an expected WhatsApp agent "
+            "number is configured"
+        ),
+    )
     parser.add_argument("--text", default=DEFAULT_TEXT)
     parser.add_argument(
         "--attended-prompt-text",

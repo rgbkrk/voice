@@ -495,6 +495,7 @@ scripts/verify_local_hermes_voice_stack.sh \
   --hermes-home ~/.hermes \
   --whatsapp-alpha-profile attended-cache-receive \
   --whatsapp-alpha-json-output ./whatsapp-alpha.json \
+  --require-expected-whatsapp-agent-number \
   --require-whatsapp-alpha-complete
 ```
 

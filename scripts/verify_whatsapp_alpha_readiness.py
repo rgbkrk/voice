@@ -164,6 +164,36 @@ def script_path(name: str) -> str:
     return str(path)
 
 
+def alpha_handoff_base_command(args: argparse.Namespace) -> list[str]:
+    command = [
+        "scripts/verify_whatsapp_alpha_readiness.py",
+        "--voice-bin",
+        str(args.voice_bin),
+        "--hermes-home",
+        str(args.hermes_home.expanduser().resolve()),
+        "--hermes-config",
+        str(args.hermes_config.expanduser().resolve()),
+        "--bridge-url",
+        args.bridge_url,
+        "--sidecar-url",
+        args.sidecar_url,
+        "--attended-prompt-text",
+        args.attended_prompt_text,
+    ]
+    if args.whatsapp_audio_cache_dir:
+        command.extend(
+            [
+                "--whatsapp-audio-cache-dir",
+                str(args.whatsapp_audio_cache_dir.expanduser().resolve()),
+            ]
+        )
+    if args.expected_agent_number:
+        command.extend(["--expected-agent-number", args.expected_agent_number])
+    if args.expected_agent_name:
+        command.extend(["--expected-agent-name", args.expected_agent_name])
+    return command
+
+
 def audio_cache_dir(args: argparse.Namespace, hermes_home: Path) -> Path:
     if args.whatsapp_audio_cache_dir:
         return args.whatsapp_audio_cache_dir.expanduser().resolve()
@@ -516,8 +546,8 @@ def bridge_audio_event_evidence(inbound: dict[str, Any]) -> dict[str, Any]:
 def attended_receive_gate(
     components: list[dict[str, Any]],
     *,
-    hermes_home: Path,
     audio_cache_dir: Path,
+    base_command: list[str],
     preferred_wait_audio_cache_seconds: float = DEFAULT_ATTENDED_CACHE_RECEIVE_SECONDS,
     fallback_wait_inbound_seconds: float = DEFAULT_ATTENDED_DRAIN_RECEIVE_SECONDS,
 ) -> dict[str, Any]:
@@ -535,18 +565,14 @@ def attended_receive_gate(
         "drains_bridge_messages": False,
         "reason": "fresh WhatsApp inbound voice-note receive has not been run",
         "command": [
-            "scripts/verify_whatsapp_alpha_readiness.py",
-            "--hermes-home",
-            str(hermes_home),
+            *base_command,
             "--profile",
             "attended-cache-receive",
             "--wait-audio-cache-seconds",
             str(preferred_wait_audio_cache_seconds),
         ],
         "fallback_draining_command": [
-            "scripts/verify_whatsapp_alpha_readiness.py",
-            "--hermes-home",
-            str(hermes_home),
+            *base_command,
             "--profile",
             "attended-send-receive",
             "--wait-inbound-seconds",
@@ -656,7 +682,7 @@ def cloud_setup_handoff(
     *,
     external_meta_setup: dict[str, Any],
     bridge_checks: dict[str, Any],
-    hermes_home: Path,
+    base_command: list[str],
 ) -> dict[str, Any]:
     cloud = bridge_checks.get("whatsapp_cloud") or {}
     cloud_required = cloud.get("cloud_required") or {}
@@ -665,9 +691,7 @@ def cloud_setup_handoff(
     invalid = [str(key) for key in external_meta_setup.get("cloud_invalid") or []]
     configured = bool(external_meta_setup.get("cloud_configured"))
     verify_command = [
-        "scripts/verify_whatsapp_alpha_readiness.py",
-        "--hermes-home",
-        str(hermes_home),
+        *base_command,
         "--require-whatsapp-cloud",
         "--check-whatsapp-cloud-api",
     ]
@@ -705,7 +729,8 @@ def calling_setup_handoff(
     *,
     external_meta_setup: dict[str, Any],
     bridge_checks: dict[str, Any],
-    hermes_home: Path,
+    base_command: list[str],
+    complete_wait_audio_cache_seconds: float,
 ) -> dict[str, Any]:
     cloud = bridge_checks.get("whatsapp_cloud") or {}
     calling = cloud.get("calling") or {}
@@ -719,19 +744,17 @@ def calling_setup_handoff(
     ]
     ready = bool(external_meta_setup.get("calling_ready"))
     verify_command = [
-        "scripts/verify_whatsapp_alpha_readiness.py",
-        "--hermes-home",
-        str(hermes_home),
+        *base_command,
         "--require-whatsapp-cloud",
         "--require-whatsapp-calling",
         "--check-whatsapp-cloud-api",
     ]
     complete_command = [
-        "scripts/verify_whatsapp_alpha_readiness.py",
-        "--hermes-home",
-        str(hermes_home),
+        *base_command,
         "--profile",
         "attended-cache-receive",
+        "--wait-audio-cache-seconds",
+        str(complete_wait_audio_cache_seconds),
         "--require-whatsapp-cloud",
         "--require-whatsapp-calling",
         "--check-whatsapp-cloud-api",
@@ -776,7 +799,8 @@ def external_meta_gate(
     external_meta_setup: dict[str, Any],
     *,
     bridge_checks: dict[str, Any],
-    hermes_home: Path,
+    base_command: list[str],
+    complete_wait_audio_cache_seconds: float,
 ) -> dict[str, Any]:
     cloud_missing = [str(key) for key in external_meta_setup.get("cloud_missing") or []]
     cloud_invalid = [str(key) for key in external_meta_setup.get("cloud_invalid") or []]
@@ -791,12 +815,13 @@ def external_meta_gate(
     cloud_handoff = cloud_setup_handoff(
         external_meta_setup=external_meta_setup,
         bridge_checks=bridge_checks,
-        hermes_home=hermes_home,
+        base_command=base_command,
     )
     calling_handoff = calling_setup_handoff(
         external_meta_setup=external_meta_setup,
         bridge_checks=bridge_checks,
-        hermes_home=hermes_home,
+        base_command=base_command,
+        complete_wait_audio_cache_seconds=complete_wait_audio_cache_seconds,
     )
     return {
         "whatsapp_cloud": {
@@ -1012,15 +1037,21 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
 
+    handoff_base_command = alpha_handoff_base_command(args)
+    complete_wait_audio_cache_seconds = (
+        args.wait_audio_cache_seconds
+        if args.profile == "attended-cache-receive"
+        else DEFAULT_ATTENDED_CACHE_RECEIVE_SECONDS
+    )
     pending_gates = {
         "attended_fresh_receive": attended_receive_gate(
             components,
-            hermes_home=args.hermes_home.expanduser().resolve(),
             audio_cache_dir=(
                 args.whatsapp_audio_cache_dir.expanduser().resolve()
                 if args.whatsapp_audio_cache_dir
                 else args.hermes_home.expanduser().resolve() / "audio_cache"
             ),
+            base_command=handoff_base_command,
             preferred_wait_audio_cache_seconds=(
                 args.wait_audio_cache_seconds
                 if args.profile == "attended-cache-receive"
@@ -1035,7 +1066,8 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
         **external_meta_gate(
             external_meta_setup,
             bridge_checks=bridge_checks,
-            hermes_home=args.hermes_home.expanduser().resolve(),
+            base_command=handoff_base_command,
+            complete_wait_audio_cache_seconds=complete_wait_audio_cache_seconds,
         ),
     }
     readiness_summary = build_readiness_summary(

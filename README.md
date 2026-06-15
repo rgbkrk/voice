@@ -497,10 +497,12 @@ separated from local daemon, bridge, and Hermes failures. It also prints the
 resolved Cloud webhook bind defaults and malformed webhook keys, so strict
 Cloud/Calling failures can distinguish missing credentials from invalid
 `WHATSAPP_CLOUD_WEBHOOK_*` settings. The generated complete-alpha handoff
+keeps the selected `voice` binary, Hermes config, bridge URL, sidecar URL,
+audio cache override, and expected agent identity from the current run. It also
 includes `--require-whatsapp-cloud`, `--require-whatsapp-calling`, and
-`--check-whatsapp-cloud-api`, so after real Cloud credentials are present it
-also makes an authenticated Graph API phone-number request without printing
-token or phone-number values.
+`--check-whatsapp-cloud-api`, so after real Cloud credentials are present it also
+makes an authenticated Graph API phone-number request without printing token or
+phone-number values.
 Use `--whatsapp-alpha-json-output` with any alpha profile when another local
 agent should consume the same structured `readiness_summary.next_actions`
 without rerunning the full stack gate. The stack verifier also echoes compact

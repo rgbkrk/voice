@@ -152,8 +152,10 @@ For the external Meta gates, the JSON report includes safe setup handoffs under
 `pending_gates.whatsapp_cloud.setup_handoff` and
 `pending_gates.whatsapp_cloud_calling.setup_handoff`. These handoffs list the
 required key names, which keys are missing, redacted source labels for values
-that were found, and the exact follow-up verifier commands. Secret values are
-never printed. The Cloud handoff also reports the resolved local webhook
+that were found, and the exact follow-up verifier commands. Those commands
+preserve the selected `voice` binary, Hermes config, bridge URL, sidecar URL,
+audio cache override, and expected agent identity from the current run. Secret
+values are never printed. The Cloud handoff also reports the resolved local webhook
 binding (`host`, `port`, `path`, and `api_version`), which values came from env
 sources versus Hermes defaults, and malformed webhook keys under `invalid`.
 `readiness_summary.next_actions` repeats the same non-secret commands,

@@ -243,7 +243,8 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
 
     def test_readiness_succeeds_for_baileys_alpha_when_cloud_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            payload = self.run_readiness(Path(tmp))
+            tmp_path = Path(tmp)
+            payload = self.run_readiness(tmp_path)
 
         self.assertTrue(payload["success"])
         self.assertEqual(payload["external_meta_setup"]["cloud_configured"], False)
@@ -262,6 +263,15 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "attended-cache-receive",
             gates["attended_fresh_receive"]["command"],
         )
+        self.assertIn("--voice-bin", gates["attended_fresh_receive"]["command"])
+        self.assertIn(str(tmp_path / "voice"), gates["attended_fresh_receive"]["command"])
+        self.assertIn("--hermes-config", gates["attended_fresh_receive"]["command"])
+        self.assertIn(str(tmp_path / "config.yaml"), gates["attended_fresh_receive"]["command"])
+        self.assertIn("--bridge-url", gates["attended_fresh_receive"]["command"])
+        self.assertIn("http://127.0.0.1:3000", gates["attended_fresh_receive"]["command"])
+        self.assertIn("--sidecar-url", gates["attended_fresh_receive"]["command"])
+        self.assertIn("http://127.0.0.1:8787", gates["attended_fresh_receive"]["command"])
+        self.assertIn("--attended-prompt-text", gates["attended_fresh_receive"]["command"])
         self.assertIn(
             "--wait-audio-cache-seconds",
             gates["attended_fresh_receive"]["command"],
@@ -273,6 +283,10 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         )
         self.assertIn(
             "--wait-inbound-seconds",
+            gates["attended_fresh_receive"]["fallback_draining_command"],
+        )
+        self.assertIn(
+            str(tmp_path / "voice"),
             gates["attended_fresh_receive"]["fallback_draining_command"],
         )
         self.assertIn(
@@ -319,6 +333,8 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             cloud_handoff["available_source_keys"]["systemd_service"],
         )
         self.assertIn("--require-whatsapp-cloud", cloud_handoff["verify_command"])
+        self.assertIn(str(tmp_path / "voice"), cloud_handoff["verify_command"])
+        self.assertIn(str(tmp_path / "config.yaml"), cloud_handoff["verify_command"])
         self.assertIn(
             "--check-whatsapp-cloud-api",
             cloud_handoff["verify_command"],
@@ -361,6 +377,8 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertIn("--require-whatsapp-calling", complete_command)
         self.assertIn("--check-whatsapp-cloud-api", complete_command)
         self.assertIn("--require-complete", complete_command)
+        self.assertIn("--wait-audio-cache-seconds", complete_command)
+        self.assertIn(str(tmp_path / "voice"), complete_command)
         self.assertEqual(len(calling_handoff["steps"]), 5)
         summary = payload["readiness_summary"]
         self.assertEqual(summary["status"], "local_ready_pending_gates")
@@ -457,6 +475,50 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         }["configure_whatsapp_cloud_calling"]
         self.assertEqual(action["missing_by_gate"]["whatsapp_cloud"], [])
         self.assertEqual(action["invalid_by_gate"]["whatsapp_cloud"], invalid)
+
+    def test_handoff_commands_include_explicit_host_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cache_dir = tmp_path / "custom-audio-cache"
+            payload = self.run_readiness(
+                tmp_path,
+                "--expected-agent-number",
+                "13236478455",
+                "--expected-agent-name",
+                "Quill",
+                "--bridge-url",
+                "http://127.0.0.1:3999",
+                "--sidecar-url",
+                "http://127.0.0.1:9888",
+                "--whatsapp-audio-cache-dir",
+                str(cache_dir),
+            )
+
+        gates = payload["pending_gates"]
+        commands = [
+            gates["attended_fresh_receive"]["command"],
+            gates["attended_fresh_receive"]["fallback_draining_command"],
+            gates["whatsapp_cloud"]["setup_handoff"]["verify_command"],
+            gates["whatsapp_cloud_calling"]["setup_handoff"]["verify_command"],
+            gates["whatsapp_cloud_calling"]["setup_handoff"][
+                "complete_verification_command"
+            ],
+        ]
+        for command in commands:
+            self.assertIn("--voice-bin", command)
+            self.assertIn(str(tmp_path / "voice"), command)
+            self.assertIn("--hermes-config", command)
+            self.assertIn(str(tmp_path / "config.yaml"), command)
+            self.assertIn("--bridge-url", command)
+            self.assertIn("http://127.0.0.1:3999", command)
+            self.assertIn("--sidecar-url", command)
+            self.assertIn("http://127.0.0.1:9888", command)
+            self.assertIn("--whatsapp-audio-cache-dir", command)
+            self.assertIn(str(cache_dir.resolve()), command)
+            self.assertIn("--expected-agent-number", command)
+            self.assertIn("13236478455", command)
+            self.assertIn("--expected-agent-name", command)
+            self.assertIn("Quill", command)
 
     def test_require_complete_fails_when_alpha_gates_are_pending(self):
         with tempfile.TemporaryDirectory() as tmp:

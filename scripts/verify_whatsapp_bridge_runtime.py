@@ -630,6 +630,157 @@ def local_webhook_url(webhook: dict[str, Any]) -> str | None:
     return f"http://{host}:{port}{path}"
 
 
+def local_cloud_health_url(webhook: dict[str, Any]) -> str | None:
+    port = webhook.get("port")
+    if not isinstance(port, int):
+        return None
+    host = str(webhook.get("host") or DEFAULT_WHATSAPP_CLOUD_WEBHOOK_HOST).strip()
+    if host in ("", "0.0.0.0", "::", "[::]"):
+        host = "127.0.0.1"
+    elif ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}/health"
+
+
+def fetch_cloud_health(
+    *,
+    url: str,
+    timeout: float,
+) -> tuple[dict[str, Any] | None, int | None, dict[str, Any] | None]:
+    request = Request(url, headers={"Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            status = getattr(response, "status", 200)
+            body = response.read()
+    except HTTPError as exc:
+        return None, exc.code, {"message": f"Cloud health returned HTTP {exc.code}"}
+    except URLError as exc:
+        return None, None, {"message": f"Cloud health request failed: {exc.reason}"}
+    except OSError as exc:
+        return None, None, {"message": f"Cloud health request failed: {exc}"}
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        return None, status, {"message": f"Cloud health did not return JSON: {exc}"}
+    if not isinstance(payload, dict):
+        return None, status, {"message": "Cloud health JSON must be an object"}
+    return payload, int(status), None
+
+
+def build_cloud_health_check(
+    env_sources: dict[str, dict[str, str]],
+    *,
+    webhook: dict[str, Any],
+    require_calling_sidecar: bool,
+    timeout: float,
+) -> dict[str, Any]:
+    phone_number_id, phone_sources = first_env_value(
+        env_sources,
+        "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+    )
+    url = local_cloud_health_url(webhook)
+    check: dict[str, Any] = {
+        "checked": True,
+        "ok": False,
+        "local_url": url,
+        "phone_number_id_present": phone_number_id is not None,
+        "phone_number_id_sources": phone_sources,
+        "require_calling_sidecar": require_calling_sidecar,
+        "missing": [],
+        "invalid": [],
+    }
+    if not phone_number_id:
+        check["missing"].append("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
+    if not url:
+        check["invalid"].extend(str(key) for key in webhook.get("invalid") or [])
+        if not check["invalid"]:
+            check["invalid"].append("WHATSAPP_CLOUD_WEBHOOK_PORT")
+    if check["missing"] or check["invalid"]:
+        check["error"] = {
+            "message": (
+                "Cloud health check requires a local health URL and phone number ID"
+            )
+        }
+        return check
+
+    payload, status, error = fetch_cloud_health(url=str(url), timeout=timeout)
+    check["http_status"] = status
+    if error:
+        check["error"] = error
+        return check
+
+    payload = payload or {}
+    health = {
+        "status": payload.get("status"),
+        "platform": payload.get("platform"),
+        "phone_number_id_matches_config": str(payload.get("phone_number_id") or "")
+        == str(phone_number_id),
+        "webhook_path_matches_config": str(payload.get("webhook_path") or "")
+        == str(webhook.get("path") or DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PATH),
+        "verify_token_configured": payload.get("verify_token_configured") is True,
+        "app_secret_configured": payload.get("app_secret_configured") is True,
+        "calling_sidecar_configured": payload.get("calling_sidecar_configured") is True,
+        "calling_sidecar_contract_loaded": (
+            payload.get("calling_sidecar_contract_loaded") is True
+        ),
+        "calling_sidecar_tts_stream_configured": (
+            payload.get("calling_sidecar_tts_stream_configured") is True
+        ),
+        "ffmpeg_present": payload.get("ffmpeg_present") is True,
+        "accepted": (
+            payload.get("accepted") if isinstance(payload.get("accepted"), int) else None
+        ),
+        "duplicates": (
+            payload.get("duplicates")
+            if isinstance(payload.get("duplicates"), int)
+            else None
+        ),
+        "rejected_signature": (
+            payload.get("rejected_signature")
+            if isinstance(payload.get("rejected_signature"), int)
+            else None
+        ),
+    }
+    check["health"] = health
+    if health["status"] != "ok":
+        check["error"] = {"message": "Cloud health status was not ok"}
+        return check
+    if health["platform"] != "whatsapp_cloud":
+        check["error"] = {"message": "Cloud health reported the wrong platform"}
+        return check
+    if not health["phone_number_id_matches_config"]:
+        check["error"] = {
+            "message": "Cloud health phone number ID did not match configuration"
+        }
+        return check
+    if not health["webhook_path_matches_config"]:
+        check["error"] = {
+            "message": "Cloud health webhook path did not match configuration"
+        }
+        return check
+    if not health["verify_token_configured"]:
+        check["error"] = {"message": "Cloud health verify token is not configured"}
+        return check
+    if not health["app_secret_configured"]:
+        check["error"] = {"message": "Cloud health app secret is not configured"}
+        return check
+    if require_calling_sidecar:
+        if not health["calling_sidecar_configured"]:
+            check["error"] = {
+                "message": "Cloud health Calling sidecar is not configured"
+            }
+            return check
+        if not health["calling_sidecar_tts_stream_configured"]:
+            check["error"] = {
+                "message": "Cloud health Calling sidecar TTS stream is not configured"
+            }
+            return check
+
+    check["ok"] = True
+    return check
+
+
 def fetch_webhook_challenge(
     *,
     url: str,
@@ -1043,6 +1194,24 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         warnings.append(str(bridge_script_hash.get("reason")))
 
     cloud = build_cloud_summary(env_sources)
+    if args.check_whatsapp_cloud_health:
+        cloud_health = build_cloud_health_check(
+            env_sources,
+            webhook=cloud["webhook"],
+            require_calling_sidecar=args.require_whatsapp_calling,
+            timeout=args.timeout,
+        )
+        cloud["cloud_health"] = cloud_health
+        if not cloud_health.get("ok"):
+            failures.append(
+                "WhatsApp Cloud health check failed: "
+                + str(
+                    (cloud_health.get("error") or {}).get("message")
+                    or "unknown error"
+                )
+            )
+    else:
+        cloud["cloud_health"] = {"checked": False}
     if args.check_whatsapp_cloud_api:
         cloud_api = build_cloud_api_check(
             env_sources,
@@ -1150,6 +1319,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--check-whatsapp-cloud-health",
+        action="store_true",
+        help=(
+            "call the local WhatsApp Cloud adapter /health endpoint and verify "
+            "the gateway loaded the expected Cloud config"
+        ),
+    )
+    parser.add_argument(
         "--check-whatsapp-cloud-webhook",
         action="store_true",
         help=(
@@ -1182,6 +1359,7 @@ def human_summary(result: dict[str, Any]) -> None:
     bridge_script_hash = checks.get("bridge_script_hash") or {}
     cloud = checks.get("whatsapp_cloud") or {}
     webhook = cloud.get("webhook") or {}
+    cloud_health = cloud.get("cloud_health") or {}
     webhook_challenge = cloud.get("webhook_challenge") or {}
     cloud_api = cloud.get("cloud_api") or {}
     local_config = checks.get("whatsapp_local_config") or {}
@@ -1255,6 +1433,35 @@ def human_summary(result: dict[str, Any]) -> None:
         + " invalid="
         + (",".join(webhook.get("invalid") or []) or "none")
     )
+    if cloud_health.get("checked"):
+        health = cloud_health.get("health") or {}
+        health_error = cloud_health.get("error") or {}
+        print(
+            "whatsapp_cloud_health="
+            + ("ok" if cloud_health.get("ok") else "failed")
+            + f" local_url={cloud_health.get('local_url') or '<invalid>'}"
+            + f" http_status={cloud_health.get('http_status') or '<none>'}"
+            + " phone_number_id_present="
+            + str(cloud_health.get("phone_number_id_present"))
+            + " phone_number_id_matches_config="
+            + str(health.get("phone_number_id_matches_config"))
+            + " webhook_path_matches_config="
+            + str(health.get("webhook_path_matches_config"))
+            + " verify_token_configured="
+            + str(health.get("verify_token_configured"))
+            + " app_secret_configured="
+            + str(health.get("app_secret_configured"))
+            + " calling_sidecar_configured="
+            + str(health.get("calling_sidecar_configured"))
+            + " calling_sidecar_tts_stream_configured="
+            + str(health.get("calling_sidecar_tts_stream_configured"))
+            + " missing="
+            + (",".join(cloud_health.get("missing") or []) or "none")
+            + " invalid="
+            + (",".join(cloud_health.get("invalid") or []) or "none")
+            + " error="
+            + str(health_error.get("message") or "none")
+        )
     if webhook_challenge.get("checked"):
         challenge_error = webhook_challenge.get("error") or {}
         print(

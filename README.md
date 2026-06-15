@@ -508,10 +508,11 @@ Cloud/Calling failures can distinguish missing credentials from invalid
 keeps the selected `voice` binary, Hermes config, bridge URL, sidecar URL,
 audio cache override, and expected agent identity from the current run. It also
 includes `--require-whatsapp-cloud`, `--require-whatsapp-calling`,
-`--check-whatsapp-cloud-api`, and `--check-whatsapp-cloud-webhook`, so after real
-Cloud credentials are present it also makes an authenticated Graph API
-phone-number request and verifies the local webhook challenge echo without
-printing token or phone-number values.
+`--check-whatsapp-cloud-api`, `--check-whatsapp-cloud-health`, and
+`--check-whatsapp-cloud-webhook`, so after real Cloud credentials are present it
+also makes an authenticated Graph API phone-number request, verifies the local
+Cloud adapter health contract, and verifies the local webhook challenge echo
+without printing token or phone-number values.
 Use `--whatsapp-alpha-json-output` with any alpha profile when another local
 agent should consume the same structured `readiness_summary.next_actions`
 without rerunning the full stack gate. The stack verifier also echoes compact

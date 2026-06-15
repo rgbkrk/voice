@@ -779,6 +779,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                     "--require-whatsapp-calling",
                     "--require-whatsapp-alpha-complete",
                     "--check-whatsapp-cloud-api",
+                    "--check-whatsapp-cloud-health",
                     "--check-whatsapp-cloud-webhook",
                     "--skip-hermes-config",
                     "--skip-hermes-gateway",
@@ -857,6 +858,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 "--require-whatsapp-cloud",
                 "--require-whatsapp-calling",
                 "--check-whatsapp-cloud-api",
+                "--check-whatsapp-cloud-health",
                 "--check-whatsapp-cloud-webhook",
                 "--require-complete",
             ],
@@ -1026,7 +1028,9 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                               "--hermes-home",
                               "/home/ubuntu/.hermes",
                               "--require-whatsapp-cloud",
-                              "--check-whatsapp-cloud-api"
+                              "--check-whatsapp-cloud-api",
+                              "--check-whatsapp-cloud-health",
+                              "--check-whatsapp-cloud-webhook"
                             ]
                           }}
                         }},
@@ -1046,7 +1050,9 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                               "/home/ubuntu/.hermes",
                               "--require-whatsapp-cloud",
                               "--require-whatsapp-calling",
-                              "--check-whatsapp-cloud-api"
+                              "--check-whatsapp-cloud-api",
+                              "--check-whatsapp-cloud-health",
+                              "--check-whatsapp-cloud-webhook"
                             ],
                             "complete_verification_command": [
                               "scripts/verify_whatsapp_alpha_readiness.py",
@@ -1057,6 +1063,8 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                               "--require-whatsapp-cloud",
                               "--require-whatsapp-calling",
                               "--check-whatsapp-cloud-api",
+                              "--check-whatsapp-cloud-health",
+                              "--check-whatsapp-cloud-webhook",
                               "--require-complete"
                             ]
                           }}
@@ -1135,7 +1143,9 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn(
             "whatsapp_alpha_json_cloud_verify_command="
             "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
-            "/home/ubuntu/.hermes --require-whatsapp-cloud --check-whatsapp-cloud-api",
+            "/home/ubuntu/.hermes --require-whatsapp-cloud "
+            "--check-whatsapp-cloud-api --check-whatsapp-cloud-health "
+            "--check-whatsapp-cloud-webhook",
             result.stdout,
         )
         self.assertIn(
@@ -1148,7 +1158,8 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             "whatsapp_alpha_json_calling_verify_command="
             "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
             "/home/ubuntu/.hermes --require-whatsapp-cloud "
-            "--require-whatsapp-calling --check-whatsapp-cloud-api",
+            "--require-whatsapp-calling --check-whatsapp-cloud-api "
+            "--check-whatsapp-cloud-health --check-whatsapp-cloud-webhook",
             result.stdout,
         )
         self.assertIn(
@@ -1156,7 +1167,8 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
             "/home/ubuntu/.hermes --profile attended-cache-receive "
             "--require-whatsapp-cloud --require-whatsapp-calling "
-            "--check-whatsapp-cloud-api "
+            "--check-whatsapp-cloud-api --check-whatsapp-cloud-health "
+            "--check-whatsapp-cloud-webhook "
             "--require-complete",
             result.stdout,
         )
@@ -1484,6 +1496,8 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                               "--require-whatsapp-cloud",
                               "--require-whatsapp-calling",
                               "--check-whatsapp-cloud-api",
+                              "--check-whatsapp-cloud-health",
+                              "--check-whatsapp-cloud-webhook",
                               "--require-complete"
                             ]
                           }}

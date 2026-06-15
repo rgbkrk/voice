@@ -408,6 +408,10 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             cloud_handoff["verify_command"],
         )
         self.assertIn(
+            "--check-whatsapp-cloud-health",
+            cloud_handoff["verify_command"],
+        )
+        self.assertIn(
             "--check-whatsapp-cloud-webhook",
             cloud_handoff["verify_command"],
         )
@@ -445,6 +449,10 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             calling_handoff["verify_command"],
         )
         self.assertIn(
+            "--check-whatsapp-cloud-health",
+            calling_handoff["verify_command"],
+        )
+        self.assertIn(
             "--check-whatsapp-cloud-webhook",
             calling_handoff["verify_command"],
         )
@@ -452,6 +460,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertIn("--require-whatsapp-cloud", complete_command)
         self.assertIn("--require-whatsapp-calling", complete_command)
         self.assertIn("--check-whatsapp-cloud-api", complete_command)
+        self.assertIn("--check-whatsapp-cloud-health", complete_command)
         self.assertIn("--check-whatsapp-cloud-webhook", complete_command)
         self.assertIn("--require-complete", complete_command)
         self.assertIn("--wait-audio-cache-seconds", complete_command)
@@ -526,6 +535,10 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         )
         self.assertIn(
             "--check-whatsapp-cloud-api",
+            meta_action["complete_verification_command"],
+        )
+        self.assertIn(
+            "--check-whatsapp-cloud-health",
             meta_action["complete_verification_command"],
         )
         self.assertIn(
@@ -774,6 +787,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self.assertIn("--require-whatsapp-cloud", result.stdout)
         self.assertIn("--require-whatsapp-calling", result.stdout)
         self.assertIn("--check-whatsapp-cloud-api", result.stdout)
+        self.assertIn("--check-whatsapp-cloud-health", result.stdout)
         self.assertIn("--check-whatsapp-cloud-webhook", result.stdout)
         self.assertIn("--require-complete", result.stdout)
         self.assertIn(
@@ -805,6 +819,18 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             component["name"]: component for component in payload["components"]
         }["whatsapp_bridge_runtime"]
         self.assertIn("--check-whatsapp-cloud-webhook", bridge["command"])
+
+    def test_cloud_health_check_is_forwarded_to_bridge_verifier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.run_readiness(
+                Path(tmp),
+                "--check-whatsapp-cloud-health",
+            )
+
+        bridge = {
+            component["name"]: component for component in payload["components"]
+        }["whatsapp_bridge_runtime"]
+        self.assertIn("--check-whatsapp-cloud-health", bridge["command"])
 
     def test_inbound_cache_smoke_adds_receive_component(self):
         with tempfile.TemporaryDirectory() as tmp:

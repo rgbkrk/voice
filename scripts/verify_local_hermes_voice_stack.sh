@@ -48,6 +48,7 @@ require_whatsapp_cloud="${REQUIRE_WHATSAPP_CLOUD:-0}"
 require_whatsapp_calling="${REQUIRE_WHATSAPP_CALLING:-0}"
 require_whatsapp_alpha_complete="${REQUIRE_WHATSAPP_ALPHA_COMPLETE:-0}"
 check_whatsapp_cloud_api="${CHECK_WHATSAPP_CLOUD_API:-0}"
+check_whatsapp_cloud_health="${CHECK_WHATSAPP_CLOUD_HEALTH:-0}"
 check_whatsapp_cloud_webhook="${CHECK_WHATSAPP_CLOUD_WEBHOOK:-0}"
 overall_status=0
 temp_files=()
@@ -118,6 +119,8 @@ Options:
                                fail unless all WhatsApp alpha readiness gates are complete
   --check-whatsapp-cloud-api   call the Meta Graph API phone-number endpoint when Cloud
                                credentials are configured
+  --check-whatsapp-cloud-health
+                               verify the local Cloud adapter /health contract
   --check-whatsapp-cloud-webhook
                                verify the local Cloud webhook subscription challenge echo
   --run-whatsapp-inbound-cache-smoke
@@ -163,6 +166,7 @@ Environment aliases:
   WHATSAPP_AUDIO_CACHE_DIR, WHATSAPP_AGENT_NUMBER, WHATSAPP_AGENT_NAME
   REQUIRE_WHATSAPP_CLOUD=1, REQUIRE_WHATSAPP_CALLING=1
   REQUIRE_WHATSAPP_ALPHA_COMPLETE=1, CHECK_WHATSAPP_CLOUD_API=1
+  CHECK_WHATSAPP_CLOUD_HEALTH=1, CHECK_WHATSAPP_CLOUD_WEBHOOK=1
   RUN_WHATSAPP_INBOUND_CACHE_SMOKE=1, WHATSAPP_ALPHA_PROFILE
   WHATSAPP_ALPHA_TEXT, WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID
   WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS, WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS
@@ -526,6 +530,10 @@ while [[ $# -gt 0 ]]; do
       check_whatsapp_cloud_api=1
       shift
       ;;
+    --check-whatsapp-cloud-health)
+      check_whatsapp_cloud_health=1
+      shift
+      ;;
     --check-whatsapp-cloud-webhook)
       check_whatsapp_cloud_webhook=1
       shift
@@ -814,6 +822,9 @@ if [[ "$skip_whatsapp_bridge" != "1" ]]; then
   if [[ "$check_whatsapp_cloud_api" == "1" ]]; then
     whatsapp_bridge_args+=(--check-whatsapp-cloud-api)
   fi
+  if [[ "$check_whatsapp_cloud_health" == "1" ]]; then
+    whatsapp_bridge_args+=(--check-whatsapp-cloud-health)
+  fi
   if [[ "$check_whatsapp_cloud_webhook" == "1" ]]; then
     whatsapp_bridge_args+=(--check-whatsapp-cloud-webhook)
   fi
@@ -958,6 +969,9 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
   fi
   if [[ "$check_whatsapp_cloud_api" == "1" ]]; then
     whatsapp_alpha_args+=(--check-whatsapp-cloud-api)
+  fi
+  if [[ "$check_whatsapp_cloud_health" == "1" ]]; then
+    whatsapp_alpha_args+=(--check-whatsapp-cloud-health)
   fi
   if [[ "$check_whatsapp_cloud_webhook" == "1" ]]; then
     whatsapp_alpha_args+=(--check-whatsapp-cloud-webhook)

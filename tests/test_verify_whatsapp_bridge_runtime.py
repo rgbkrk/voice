@@ -71,6 +71,7 @@ def make_args(tmp_path: Path, **overrides):
         "require_whatsapp_cloud": False,
         "require_whatsapp_calling": False,
         "check_whatsapp_cloud_api": False,
+        "check_whatsapp_cloud_health": False,
         "check_whatsapp_cloud_webhook": False,
         "whatsapp_cloud_webhook_challenge": "unit-challenge",
         "graph_api_base_url": "https://graph.facebook.com",
@@ -508,6 +509,179 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
         self.assertFalse(cloud_api["ok"])
         self.assertEqual(cloud_api["http_status"], 403)
         self.assertEqual(cloud_api["error"]["code"], 100)
+        self.assertNotIn("secret-token", json.dumps(result))
+
+    def test_cloud_health_check_uses_local_health_without_leaking_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(tmp_path, check_whatsapp_cloud_health=True)
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text(
+                "\n".join(
+                    [
+                        "WHATSAPP_MODE=bot",
+                        "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                        "WHATSAPP_CLOUD_ACCESS_TOKEN=secret-token",
+                        "WHATSAPP_CLOUD_APP_SECRET=secret-app",
+                        "WHATSAPP_CLOUD_VERIFY_TOKEN=secret-verify",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            original_fetch = self.script.fetch_cloud_health
+            calls = []
+
+            def fake_fetch(**kwargs):
+                calls.append(kwargs)
+                return (
+                    {
+                        "status": "ok",
+                        "platform": "whatsapp_cloud",
+                        "phone_number_id": "7794189252778687",
+                        "webhook_path": "/whatsapp/webhook",
+                        "verify_token_configured": True,
+                        "app_secret_configured": True,
+                        "ffmpeg_present": True,
+                        "accepted": 1,
+                        "duplicates": 0,
+                        "rejected_signature": 0,
+                    },
+                    200,
+                    None,
+                )
+
+            self.script.fetch_cloud_health = fake_fetch
+            try:
+                result = self.script.verify(args)
+            finally:
+                self.script.fetch_cloud_health = original_fetch
+
+        self.assertTrue(result["success"], result["failures"])
+        self.assertEqual(calls[0]["url"], "http://127.0.0.1:8090/health")
+        cloud_health = result["checks"]["whatsapp_cloud"]["cloud_health"]
+        self.assertTrue(cloud_health["checked"])
+        self.assertTrue(cloud_health["ok"])
+        self.assertEqual(cloud_health["http_status"], 200)
+        health = cloud_health["health"]
+        self.assertTrue(health["phone_number_id_matches_config"])
+        self.assertTrue(health["webhook_path_matches_config"])
+        self.assertTrue(health["verify_token_configured"])
+        self.assertTrue(health["app_secret_configured"])
+        self.assertTrue(health["ffmpeg_present"])
+        self.assertEqual(health["accepted"], 1)
+        serialized = json.dumps(result)
+        self.assertNotIn("secret-token", serialized)
+        self.assertNotIn("secret-verify", serialized)
+        self.assertNotIn("secret-app", serialized)
+
+    def test_cloud_health_check_can_require_calling_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(
+                tmp_path,
+                check_whatsapp_cloud_health=True,
+                require_whatsapp_calling=True,
+            )
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text(
+                "\n".join(
+                    [
+                        "WHATSAPP_MODE=bot",
+                        "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                        "WHATSAPP_CLOUD_ACCESS_TOKEN=secret-token",
+                        "WHATSAPP_CLOUD_APP_SECRET=secret-app",
+                        "WHATSAPP_CLOUD_VERIFY_TOKEN=secret-verify",
+                        "WHATSAPP_CLOUD_CALLING_SIDECAR_URL=http://127.0.0.1:8787",
+                        "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND=voice stream",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            original_fetch = self.script.fetch_cloud_health
+
+            def fake_fetch(**_kwargs):
+                return (
+                    {
+                        "status": "ok",
+                        "platform": "whatsapp_cloud",
+                        "phone_number_id": "7794189252778687",
+                        "webhook_path": "/whatsapp/webhook",
+                        "verify_token_configured": True,
+                        "app_secret_configured": True,
+                        "calling_sidecar_configured": True,
+                        "calling_sidecar_contract_loaded": True,
+                        "calling_sidecar_tts_stream_configured": True,
+                    },
+                    200,
+                    None,
+                )
+
+            self.script.fetch_cloud_health = fake_fetch
+            try:
+                result = self.script.verify(args)
+            finally:
+                self.script.fetch_cloud_health = original_fetch
+
+        self.assertTrue(result["success"], result["failures"])
+        cloud_health = result["checks"]["whatsapp_cloud"]["cloud_health"]
+        self.assertTrue(cloud_health["ok"])
+        self.assertTrue(cloud_health["require_calling_sidecar"])
+        self.assertTrue(cloud_health["health"]["calling_sidecar_configured"])
+        self.assertTrue(cloud_health["health"]["calling_sidecar_tts_stream_configured"])
+
+    def test_cloud_health_check_fails_on_mismatched_phone_number(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(tmp_path, check_whatsapp_cloud_health=True)
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text(
+                "\n".join(
+                    [
+                        "WHATSAPP_MODE=bot",
+                        "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                        "WHATSAPP_CLOUD_ACCESS_TOKEN=secret-token",
+                        "WHATSAPP_CLOUD_APP_SECRET=secret-app",
+                        "WHATSAPP_CLOUD_VERIFY_TOKEN=secret-verify",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            original_fetch = self.script.fetch_cloud_health
+
+            def fake_fetch(**_kwargs):
+                return (
+                    {
+                        "status": "ok",
+                        "platform": "whatsapp_cloud",
+                        "phone_number_id": "wrong-phone",
+                        "webhook_path": "/whatsapp/webhook",
+                        "verify_token_configured": True,
+                        "app_secret_configured": True,
+                    },
+                    200,
+                    None,
+                )
+
+            self.script.fetch_cloud_health = fake_fetch
+            try:
+                result = self.script.verify(args)
+            finally:
+                self.script.fetch_cloud_health = original_fetch
+
+        self.assertFalse(result["success"])
+        self.assertIn("WhatsApp Cloud health check failed", "\n".join(result["failures"]))
+        cloud_health = result["checks"]["whatsapp_cloud"]["cloud_health"]
+        self.assertFalse(cloud_health["ok"])
+        self.assertFalse(cloud_health["health"]["phone_number_id_matches_config"])
         self.assertNotIn("secret-token", json.dumps(result))
 
     def test_cloud_webhook_challenge_uses_local_url_without_leaking_token(self):

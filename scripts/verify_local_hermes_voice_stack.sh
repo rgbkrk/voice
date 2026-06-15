@@ -361,6 +361,19 @@ except (OSError, json.JSONDecodeError) as exc:
 def csv(values):
     return ",".join(str(value) for value in (values or [])) or "none"
 
+def calling_cloud_missing(cloud):
+    return cloud.get("calling_cloud_missing") or [
+        key for key in (cloud.get("calling_missing") or [])
+        if str(key).startswith("WHATSAPP_CLOUD_")
+        and not str(key).startswith("WHATSAPP_CLOUD_CALLING_SIDECAR_")
+    ]
+
+def calling_sidecar_missing(cloud):
+    return cloud.get("calling_sidecar_missing") or [
+        key for key in (cloud.get("calling_missing") or [])
+        if str(key).startswith("WHATSAPP_CLOUD_CALLING_SIDECAR_")
+    ]
+
 checks = payload.get("checks") or {}
 identity = checks.get("baileys_identity") or {}
 health = checks.get("bridge_health") or {}
@@ -395,6 +408,10 @@ print(
     + str(cloud.get("calling_sidecar_configured"))
     + " missing="
     + csv(cloud.get("calling_missing"))
+    + " cloud_missing="
+    + csv(calling_cloud_missing(cloud))
+    + " sidecar_missing="
+    + csv(calling_sidecar_missing(cloud))
     + " invalid="
     + csv(cloud.get("calling_invalid"))
 )
@@ -501,6 +518,19 @@ def verified_watch(path):
             return watch
     return None
 
+def handoff_cloud_missing(handoff):
+    return handoff.get("cloud_missing") or [
+        key for key in (handoff.get("missing") or [])
+        if str(key).startswith("WHATSAPP_CLOUD_")
+        and not str(key).startswith("WHATSAPP_CLOUD_CALLING_SIDECAR_")
+    ]
+
+def handoff_sidecar_missing(handoff):
+    return handoff.get("sidecar_missing") or [
+        key for key in (handoff.get("missing") or [])
+        if str(key).startswith("WHATSAPP_CLOUD_CALLING_SIDECAR_")
+    ]
+
 
 summary = payload.get("readiness_summary") or {}
 pending = payload.get("pending_gates") or {}
@@ -596,6 +626,8 @@ if calling:
         "whatsapp_alpha_json_calling="
         f"{calling.get('status')} "
         f"missing={csv(calling_handoff.get('missing') or calling.get('missing'))} "
+        f"cloud_missing={csv(handoff_cloud_missing(calling_handoff))} "
+        f"sidecar_missing={csv(handoff_sidecar_missing(calling_handoff))} "
         f"invalid={csv(calling_handoff.get('invalid') or calling.get('invalid'))}"
     )
     if calling.get("status") != "ready":

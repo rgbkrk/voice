@@ -193,6 +193,9 @@ MIME it used, and whether it used the non-draining audio-cache receive path.
 The saved alpha JSON mirrors those details under
 `pending_gates.attended_fresh_receive.evidence` as `watch_send_format`,
 `watch_send_transport`, and `watch_receive_watch`.
+Calling summaries also split missing setup into `cloud_missing` for Meta Cloud
+credentials and `sidecar_missing` for local WebRTC sidecar environment keys, so
+an external Meta approval gap is not confused with local sidecar drift.
 When a gate is still pending, the same summary also echoes the copyable attended
 receive command, fallback draining command, Cloud verification command, Calling
 verification command, and complete-alpha command if those commands are present

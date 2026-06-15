@@ -532,6 +532,8 @@ transport and Ogg/Opus MIME it used, and whether it used the non-draining
 audio-cache receive path. A verified attended receive also stores compact
 redacted proof under `pending_gates.attended_fresh_receive.evidence`, including
 the attended-watch send format, send transport, and receive-watch mode.
+Calling summaries split missing setup into `cloud_missing` for Meta credentials
+and `sidecar_missing` for local WebRTC sidecar environment keys.
 
 When the WebRTC Python dependencies are installed, add
 `--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`

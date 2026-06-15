@@ -513,7 +513,10 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn(
             "whatsapp_bridge_json_calling=not_ready sidecar_configured=True "
             "missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,WHATSAPP_CLOUD_ACCESS_TOKEN,"
-            "WHATSAPP_CLOUD_APP_SECRET,WHATSAPP_CLOUD_VERIFY_TOKEN invalid=none",
+            "WHATSAPP_CLOUD_APP_SECRET,WHATSAPP_CLOUD_VERIFY_TOKEN "
+            "cloud_missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,"
+            "WHATSAPP_CLOUD_ACCESS_TOKEN,WHATSAPP_CLOUD_APP_SECRET,"
+            "WHATSAPP_CLOUD_VERIFY_TOKEN sidecar_missing=none invalid=none",
             result.stdout,
         )
         self.assertIn(
@@ -1311,7 +1314,10 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn(
             "whatsapp_alpha_json_calling=external_setup_required "
             "missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,WHATSAPP_CLOUD_ACCESS_TOKEN,"
-            "WHATSAPP_CLOUD_APP_SECRET,WHATSAPP_CLOUD_VERIFY_TOKEN invalid=none",
+            "WHATSAPP_CLOUD_APP_SECRET,WHATSAPP_CLOUD_VERIFY_TOKEN "
+            "cloud_missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,"
+            "WHATSAPP_CLOUD_ACCESS_TOKEN,WHATSAPP_CLOUD_APP_SECRET,"
+            "WHATSAPP_CLOUD_VERIFY_TOKEN sidecar_missing=none invalid=none",
             result.stdout,
         )
         self.assertIn(

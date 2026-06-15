@@ -612,6 +612,8 @@ def build_cloud_summary(env_sources: dict[str, dict[str, str]]) -> dict[str, Any
         "calling_sidecar_configured": not sidecar_missing,
         "calling_ready": not calling_missing and not cloud_invalid,
         "calling_missing": calling_missing,
+        "calling_cloud_missing": cloud_missing,
+        "calling_sidecar_missing": sidecar_missing,
         "calling_invalid": cloud_invalid,
         "calling": calling_presence,
     }
@@ -1506,6 +1508,10 @@ def human_summary(result: dict[str, Any]) -> None:
         + ("yes" if cloud.get("calling_ready") else "no")
         + " missing="
         + (",".join(cloud.get("calling_missing") or []) or "none")
+        + " cloud_missing="
+        + (",".join(cloud.get("calling_cloud_missing") or []) or "none")
+        + " sidecar_missing="
+        + (",".join(cloud.get("calling_sidecar_missing") or []) or "none")
         + " invalid="
         + (",".join(cloud.get("calling_invalid") or []) or "none")
     )

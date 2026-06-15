@@ -1634,6 +1634,10 @@ def human_summary(result: dict[str, Any]) -> None:
             f"sidecar_configured={calling_handoff.get('calling_sidecar_configured')} "
             "missing="
             + (",".join(calling_handoff.get("missing") or []) or "none")
+            + " cloud_missing="
+            + (",".join(calling_handoff.get("cloud_missing") or []) or "none")
+            + " sidecar_missing="
+            + (",".join(calling_handoff.get("sidecar_missing") or []) or "none")
             + " invalid="
             + (",".join(calling_handoff.get("invalid") or []) or "none")
         )

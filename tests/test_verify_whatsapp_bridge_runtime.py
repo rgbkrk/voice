@@ -282,6 +282,8 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
         self.assertTrue(summary["calling_sidecar_configured"])
         self.assertTrue(summary["calling_ready"])
         self.assertEqual(summary["calling_missing"], [])
+        self.assertEqual(summary["calling_cloud_missing"], [])
+        self.assertEqual(summary["calling_sidecar_missing"], [])
         self.assertEqual(summary["cloud_invalid"], [])
         self.assertEqual(summary["webhook"]["host"], "0.0.0.0")
         self.assertEqual(summary["webhook"]["port"], 8090)
@@ -290,6 +292,28 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
         self.assertIn(
             "WHATSAPP_CLOUD_WEBHOOK_PORT",
             summary["webhook"]["defaulted"],
+        )
+
+    def test_cloud_calling_summary_splits_cloud_and_sidecar_missing_keys(self):
+        summary = self.script.build_cloud_summary({"env_file": {}})
+
+        self.assertFalse(summary["cloud_configured"])
+        self.assertFalse(summary["calling_sidecar_configured"])
+        self.assertFalse(summary["calling_ready"])
+        self.assertIn(
+            "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+            summary["calling_cloud_missing"],
+        )
+        self.assertIn(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_URL",
+            summary["calling_sidecar_missing"],
+        )
+        self.assertEqual(
+            summary["calling_missing"],
+            [
+                *summary["calling_cloud_missing"],
+                *summary["calling_sidecar_missing"],
+            ],
         )
 
     def test_invalid_cloud_webhook_config_fails_strict_cloud_readiness(self):

@@ -816,6 +816,11 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             result.stdout,
         )
         self.assertIn(
+            "cloud_missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,WHATSAPP_CLOUD_ACCESS_TOKEN",
+            result.stdout,
+        )
+        self.assertIn("sidecar_missing=none", result.stdout)
+        self.assertIn(
             "whatsapp_calling_verify_command=scripts/verify_whatsapp_alpha_readiness.py",
             result.stdout,
         )

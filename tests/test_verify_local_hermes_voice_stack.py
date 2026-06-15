@@ -1584,6 +1584,120 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             result.stdout,
         )
 
+    def test_whatsapp_alpha_json_output_classifies_external_meta_only_alpha(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            alpha = tmp_path / "verify_alpha.py"
+            voice = tmp_path / "voice"
+            json_output = tmp_path / "alpha.json"
+
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_executable(
+                alpha,
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    printf 'alpha' >> {str(log_path)!r}
+                    printf '\\0' >> {str(log_path)!r}
+                    printf '%s\\0' "$@" >> {str(log_path)!r}
+                    printf '\\n' >> {str(log_path)!r}
+                    cat <<'JSON'
+                    {{
+                      "profile": "cached-receive",
+                      "readiness_summary": {{
+                        "status": "local_ready_pending_gates",
+                        "complete": false,
+                        "local_checks_passed": true,
+                        "attended_fresh_receive_verified": true,
+                        "external_meta_setup_required": true,
+                        "operator_action_required": true,
+                        "next_actions": [
+                          {{"id": "configure_whatsapp_cloud_calling"}}
+                        ]
+                      }},
+                      "pending_gates": {{
+                        "attended_fresh_receive": {{
+                          "status": "verified",
+                          "cached_receive_verified": true
+                        }},
+                        "whatsapp_cloud": {{
+                          "status": "external_setup_required",
+                          "setup_handoff": {{
+                            "missing": ["WHATSAPP_CLOUD_PHONE_NUMBER_ID"],
+                            "invalid": []
+                          }}
+                        }},
+                        "whatsapp_cloud_calling": {{
+                          "status": "external_setup_required",
+                          "setup_handoff": {{
+                            "missing": ["WHATSAPP_CLOUD_PHONE_NUMBER_ID"],
+                            "invalid": []
+                          }}
+                        }}
+                      }},
+                      "failures": [
+                        {{
+                          "name": "whatsapp_cloud_probe",
+                          "category": "external_meta_setup",
+                          "failures": ["WhatsApp Cloud health check failed"]
+                        }}
+                      ]
+                    }}
+                    JSON
+                    exit 1
+                    """
+                ),
+            )
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-whatsapp-bridge",
+                    "--skip-systemd",
+                    "--skip-daemon",
+                    "--whatsapp-alpha-profile",
+                    "cached-receive",
+                    "--whatsapp-alpha-json-output",
+                    str(json_output),
+                ],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_ALPHA_READINESS_SCRIPT": str(alpha),
+                },
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "whatsapp_alpha_json_next_actions=configure_whatsapp_cloud_calling",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha=cached-receive:external_meta_setup_pending",
+            result.stdout,
+        )
+        self.assertIn(
+            "error: WhatsApp alpha readiness profile external Meta setup pending "
+            "with exit 1",
+            result.stderr,
+        )
+        self.assertNotIn(
+            "error: WhatsApp alpha readiness profile failed with exit 1",
+            result.stderr,
+        )
+
     def test_whatsapp_alpha_json_output_summarizes_nonzero_alpha(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

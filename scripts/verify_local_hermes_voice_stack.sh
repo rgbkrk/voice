@@ -588,6 +588,44 @@ if calling:
 PY
 }
 
+whatsapp_alpha_json_external_meta_only() {
+  local json_path="$1"
+  python3 - "$json_path" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+summary = payload.get("readiness_summary") or {}
+if summary.get("local_checks_passed") is not True:
+    raise SystemExit(1)
+if summary.get("external_meta_setup_required") is not True:
+    raise SystemExit(1)
+
+actions = [
+    str(action.get("id"))
+    for action in (summary.get("next_actions") or [])
+    if isinstance(action, dict) and action.get("id")
+]
+if actions != ["configure_whatsapp_cloud_calling"]:
+    raise SystemExit(1)
+
+failures = payload.get("failures") or []
+if not failures:
+    raise SystemExit(1)
+if all(
+    isinstance(failure, dict) and failure.get("category") == "external_meta_setup"
+    for failure in failures
+):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --voice-bin)
@@ -1182,9 +1220,14 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
     echo "whatsapp_alpha_json=$whatsapp_alpha_json_output"
     print_whatsapp_alpha_json_summary "$whatsapp_alpha_json_output" "$whatsapp_attended_watch_json"
     if [[ "$whatsapp_alpha_exit" != "0" ]]; then
-      echo "error: WhatsApp alpha readiness profile failed with exit $whatsapp_alpha_exit" >&2
+      if whatsapp_alpha_json_external_meta_only "$whatsapp_alpha_json_output"; then
+        echo "error: WhatsApp alpha readiness profile external Meta setup pending with exit $whatsapp_alpha_exit" >&2
+        whatsapp_alpha_status="$whatsapp_alpha_profile:external_meta_setup_pending"
+      else
+        echo "error: WhatsApp alpha readiness profile failed with exit $whatsapp_alpha_exit" >&2
+        whatsapp_alpha_status="$whatsapp_alpha_profile:failed"
+      fi
       overall_status="$whatsapp_alpha_exit"
-      whatsapp_alpha_status="$whatsapp_alpha_profile:failed"
     else
       whatsapp_alpha_status="$whatsapp_alpha_profile"
     fi

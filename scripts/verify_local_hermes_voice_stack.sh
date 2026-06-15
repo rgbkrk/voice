@@ -376,6 +376,16 @@ print(
     + " calling_ready="
     + ("yes" if cloud.get("calling_ready") else "no")
 )
+print(
+    "whatsapp_bridge_json_calling="
+    + ("ready" if cloud.get("calling_ready") else "not_ready")
+    + " sidecar_configured="
+    + str(cloud.get("calling_sidecar_configured"))
+    + " missing="
+    + csv(cloud.get("calling_missing"))
+    + " invalid="
+    + csv(cloud.get("calling_invalid"))
+)
 if cloud_api.get("checked"):
     print(
         "whatsapp_bridge_json_cloud_api="

@@ -96,6 +96,7 @@ def write_external_meta_bridge_helper(path: Path, label: str, log_path: Path) ->
                 "whatsapp_cloud": {{
                   "cloud_configured": false,
                   "calling_ready": false,
+                  "calling_sidecar_configured": true,
                   "cloud_missing": [
                     "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
                     "WHATSAPP_CLOUD_ACCESS_TOKEN",
@@ -103,6 +104,13 @@ def write_external_meta_bridge_helper(path: Path, label: str, log_path: Path) ->
                     "WHATSAPP_CLOUD_VERIFY_TOKEN"
                   ],
                   "cloud_invalid": [],
+                  "calling_missing": [
+                    "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+                    "WHATSAPP_CLOUD_ACCESS_TOKEN",
+                    "WHATSAPP_CLOUD_APP_SECRET",
+                    "WHATSAPP_CLOUD_VERIFY_TOKEN"
+                  ],
+                  "calling_invalid": [],
                   "cloud_health": {{
                     "checked": true,
                     "ok": false,
@@ -492,6 +500,12 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("--check-whatsapp-cloud-health", entries[1])
         self.assertIn(
             "whatsapp_bridge_json_cloud_health=failed",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_bridge_json_calling=not_ready sidecar_configured=True "
+            "missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,WHATSAPP_CLOUD_ACCESS_TOKEN,"
+            "WHATSAPP_CLOUD_APP_SECRET,WHATSAPP_CLOUD_VERIFY_TOKEN invalid=none",
             result.stdout,
         )
         self.assertIn(

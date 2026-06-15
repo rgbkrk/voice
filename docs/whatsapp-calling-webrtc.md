@@ -195,7 +195,10 @@ alpha profile exits non-zero while writing a valid JSON report, such as a
 summary before returning the alpha failure status. If a direct bridge Cloud
 probe fails first, the stack gate reports `failure_category=external_meta_setup`,
 continues into the requested alpha profile, and marks
-`whatsapp_bridge=external_meta_setup_pending` in the final summary.
+`whatsapp_bridge=external_meta_setup_pending` in the final summary. The compact
+bridge summary includes both `whatsapp_bridge_json_cloud` and
+`whatsapp_bridge_json_calling` lines so Cloud credential gaps and Calling
+sidecar gaps remain separate.
 
 Use the complete gate only when the local bridge, attended receive, Cloud API,
 and Calling setup are all expected to pass:

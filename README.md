@@ -424,7 +424,9 @@ scripts/verify_local_hermes_voice_stack.sh \
 That single gate checks plain CLI/MCP daemon behavior, Hermes' active command
 provider, the voice-owned config installer dry-run, direct Ogg/Opus voice note
 output, daemon-backed streaming, `stream-transcribe`, and the local WebRTC
-sidecar service. It requires the daemon and sidecar by default. For narrower checks, run
+sidecar service. It also reports active and saved attended WhatsApp receive
+watchers so the same gate shows whether a fresh-reply window is already
+running. It requires the daemon and sidecar by default. For narrower checks, run
 `scripts/verify_cli_mcp_surface.py`, `scripts/verify_hermes_voice_config.py`,
 `scripts/verify_whatsapp_voice_contract.sh`,
 `scripts/verify_telegram_voice_contract.sh`, or
@@ -434,7 +436,8 @@ preflight output in the aggregate gate; add `--require-telegram-credentials`
 when the local Telegram bot token should already be configured.
 When a step fails, the aggregate verifier prints `failure_category=...` with
 values such as `voice_runtime`, `hermes_config`, `upstream_hermes`,
-`whatsapp_bridge_or_credentials`, `telegram_setup`, or `webrtc_sidecar`.
+`whatsapp_bridge_or_credentials`, `whatsapp_attended_watch`,
+`telegram_setup`, or `webrtc_sidecar`.
 
 To include the categorized WhatsApp alpha report in the same command, add
 `--whatsapp-alpha-profile unattended`, `cached-receive`, `send`,

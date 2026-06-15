@@ -155,10 +155,12 @@ expected Hermes home, exports `WHATSAPP_CLOUD_CALLING_SIDECAR_URL`, and uses a
 `voice stream --raw-output -` command for the WhatsApp Calling sidecar path.
 The aggregate stack verifier also dry-runs `install_hermes_voice_config.py`
 against the active config, so one command now checks both config drift
-detection and the voice-owned repair path.
+detection and the voice-owned repair path. It also reports active and saved
+attended WhatsApp receive watchers with `whatsapp_attended_watch=checked`, so
+the same gate shows whether a fresh-reply window is already running.
 If any step fails, it emits `failure_category=...` so automation can distinguish
 voice runtime, Hermes config/service, WhatsApp bridge or credential, inbound
-audio, and WebRTC sidecar failures.
+audio, attended watch status, and WebRTC sidecar failures.
 
 ## CLI Smoke Test
 

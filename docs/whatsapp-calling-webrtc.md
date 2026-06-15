@@ -338,6 +338,10 @@ run:
 scripts/start_whatsapp_attended_cache_watch.py --list
 ```
 
+The aggregate stack gate runs the same non-draining status check by default and
+prints `whatsapp_attended_watch=checked`, so a release or host-health run also
+shows whether an attended receive window is already active.
+
 To stop a stale watch without deleting its JSON/log artifacts:
 
 ```bash

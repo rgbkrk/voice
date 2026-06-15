@@ -17,6 +17,7 @@ skip_hermes_stt_smoke="${SKIP_HERMES_STT_SMOKE:-0}"
 skip_hermes_gateway="${SKIP_HERMES_GATEWAY:-0}"
 skip_sidecar="${SKIP_SIDECAR:-0}"
 skip_whatsapp_bridge="${SKIP_WHATSAPP_BRIDGE:-0}"
+skip_whatsapp_attended_watch_status="${SKIP_WHATSAPP_ATTENDED_WATCH_STATUS:-0}"
 skip_systemd="${SKIP_SYSTEMD:-0}"
 skip_cli_mcp="${SKIP_CLI_MCP:-0}"
 skip_daemon="${SKIP_DAEMON:-0}"
@@ -31,6 +32,8 @@ whatsapp_alpha_voice_note_chat_id="${WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID:-}"
 whatsapp_alpha_wait_audio_cache_seconds="${WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS:-}"
 whatsapp_alpha_wait_inbound_seconds="${WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS:-}"
 whatsapp_alpha_json_output="${WHATSAPP_ALPHA_JSON_OUTPUT:-}"
+whatsapp_attended_watch_output_dir="${WHATSAPP_ATTENDED_WATCH_OUTPUT_DIR:-/tmp}"
+whatsapp_attended_watch_unit_prefix="${WHATSAPP_ATTENDED_WATCH_UNIT_PREFIX:-voice-whatsapp-attended-cache-watch}"
 run_webrtc_loopback_smoke="${RUN_WEBRTC_LOOPBACK_SMOKE:-0}"
 webrtc_python="${VOICE_WEBRTC_PYTHON:-python3}"
 webrtc_timeout="${VOICE_WEBRTC_TIMEOUT:-60}"
@@ -55,6 +58,7 @@ whatsapp_contract_verify_script="${WHATSAPP_CONTRACT_VERIFY_SCRIPT:-$repo_root/s
 whatsapp_bridge_verify_script="${WHATSAPP_BRIDGE_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_bridge_runtime.py}"
 whatsapp_inbound_cache_verify_script="${WHATSAPP_INBOUND_CACHE_VERIFY_SCRIPT:-$repo_root/scripts/verify_whatsapp_inbound_audio_cache.py}"
 whatsapp_alpha_readiness_script="${WHATSAPP_ALPHA_READINESS_SCRIPT:-$repo_root/scripts/verify_whatsapp_alpha_readiness.py}"
+whatsapp_attended_watch_script="${WHATSAPP_ATTENDED_WATCH_SCRIPT:-$repo_root/scripts/start_whatsapp_attended_cache_watch.py}"
 telegram_contract_verify_script="${TELEGRAM_CONTRACT_VERIFY_SCRIPT:-$repo_root/scripts/verify_telegram_voice_contract.sh}"
 sidecar_service_verify_script="${SIDECAR_SERVICE_VERIFY_SCRIPT:-$repo_root/scripts/verify_webrtc_sidecar_service.py}"
 webrtc_loopback_smoke_script="${WEBRTC_LOOPBACK_SMOKE_SCRIPT:-$repo_root/examples/webrtc-sidecar/full_duplex_loopback_smoke.py}"
@@ -83,6 +87,8 @@ Options:
   --skip-hermes-gateway        skip running Hermes gateway service verification
   --skip-cli-mcp               skip plain CLI/MCP daemon surface verification
   --skip-whatsapp-bridge       skip local WhatsApp bridge identity verification
+  --skip-whatsapp-attended-watch-status
+                               skip reporting active/known attended receive watchers
   --skip-sidecar               skip WebRTC sidecar service verification
   --skip-systemd               skip Hermes gateway, sidecar, and daemon systemd service checks
   --skip-daemon                skip daemon-backed stream checks
@@ -123,6 +129,10 @@ Options:
                                override attended-send-receive bridge poll time
   --whatsapp-alpha-json-output PATH
                                save the categorized alpha readiness JSON report
+  --whatsapp-attended-watch-output-dir PATH
+                               artifact directory for attended watch status (default: /tmp)
+  --whatsapp-attended-watch-unit-prefix PREFIX
+                               systemd/artifact prefix for attended watch status
   --run-webrtc-loopback-smoke  run one local full-duplex WebRTC media turn
   --webrtc-python PATH         Python used for the WebRTC smoke (default: python3)
   --webrtc-timeout SECONDS     timeout passed to the WebRTC smoke (default: 60)
@@ -134,6 +144,7 @@ Environment aliases:
   SKIP_HERMES_CONFIG=1, SKIP_HERMES_INSTALL_DRY_RUN=1
   SKIP_HERMES_TTS_SMOKE=1, SKIP_HERMES_STT_SMOKE=1
   SKIP_SIDECAR=1, SKIP_HERMES_GATEWAY=1, SKIP_WHATSAPP_BRIDGE=1
+  SKIP_WHATSAPP_ATTENDED_WATCH_STATUS=1
   SKIP_SYSTEMD=1, SKIP_CLI_MCP=1, SKIP_DAEMON=1, SKIP_STT_SMOKE=1
   RUN_WEBRTC_LOOPBACK_SMOKE=1
   WHATSAPP_BRIDGE_URL, WHATSAPP_SESSION_DIR, WHATSAPP_ENV_FILE
@@ -144,6 +155,7 @@ Environment aliases:
   WHATSAPP_ALPHA_TEXT, WHATSAPP_ALPHA_VOICE_NOTE_CHAT_ID
   WHATSAPP_ALPHA_WAIT_AUDIO_CACHE_SECONDS, WHATSAPP_ALPHA_WAIT_INBOUND_SECONDS
   WHATSAPP_ALPHA_JSON_OUTPUT
+  WHATSAPP_ATTENDED_WATCH_OUTPUT_DIR, WHATSAPP_ATTENDED_WATCH_UNIT_PREFIX
   RUN_TELEGRAM_VOICE_CONTRACT=1, TELEGRAM_ENV_FILE, HERMES_ENV
   REQUIRE_TELEGRAM_CREDENTIALS=1
   VOICE_WEBRTC_PYTHON, VOICE_WEBRTC_TIMEOUT
@@ -211,6 +223,9 @@ step_failure_category() {
       ;;
     "WhatsApp bridge identity and credential readiness")
       echo "whatsapp_bridge_or_credentials"
+      ;;
+    "WhatsApp attended cache watch status")
+      echo "whatsapp_attended_watch"
       ;;
     "WhatsApp inbound cached audio STT smoke")
       echo "whatsapp_inbound_audio"
@@ -390,6 +405,10 @@ while [[ $# -gt 0 ]]; do
       skip_whatsapp_bridge=1
       shift
       ;;
+    --skip-whatsapp-attended-watch-status)
+      skip_whatsapp_attended_watch_status=1
+      shift
+      ;;
     --skip-cli-mcp)
       skip_cli_mcp=1
       shift
@@ -499,6 +518,16 @@ while [[ $# -gt 0 ]]; do
       whatsapp_alpha_json_output="$2"
       shift 2
       ;;
+    --whatsapp-attended-watch-output-dir)
+      [[ $# -ge 2 ]] || fail "--whatsapp-attended-watch-output-dir requires a path"
+      whatsapp_attended_watch_output_dir="$2"
+      shift 2
+      ;;
+    --whatsapp-attended-watch-unit-prefix)
+      [[ $# -ge 2 ]] || fail "--whatsapp-attended-watch-unit-prefix requires a value"
+      whatsapp_attended_watch_unit_prefix="$2"
+      shift 2
+      ;;
     --run-webrtc-loopback-smoke)
       run_webrtc_loopback_smoke=1
       shift
@@ -563,6 +592,9 @@ if [[ "$run_telegram_voice_contract" == "1" ]]; then
 fi
 if [[ -n "$whatsapp_alpha_profile" ]]; then
   require_executable "$whatsapp_alpha_readiness_script" "WhatsApp alpha readiness verifier"
+fi
+if [[ "$skip_whatsapp_attended_watch_status" != "1" && "$skip_systemd" != "1" ]]; then
+  require_executable "$whatsapp_attended_watch_script" "WhatsApp attended watch launcher"
 fi
 if [[ "$skip_hermes_config" != "1" ]]; then
   require_executable "$hermes_config_verify_script" "Hermes voice config verifier"
@@ -761,6 +793,19 @@ else
   sidecar_status="skipped"
 fi
 
+if [[ "$skip_whatsapp_attended_watch_status" != "1" && "$skip_systemd" != "1" ]]; then
+  attended_watch_args=(
+    "$whatsapp_attended_watch_script"
+    --list
+    --output-dir "$whatsapp_attended_watch_output_dir"
+    --unit-prefix "$whatsapp_attended_watch_unit_prefix"
+  )
+  run_step "WhatsApp attended cache watch status" "${attended_watch_args[@]}"
+  whatsapp_attended_watch_status="checked"
+else
+  whatsapp_attended_watch_status="skipped"
+fi
+
 if [[ "$run_webrtc_loopback_smoke" == "1" ]]; then
   run_step "Full-duplex WebRTC media smoke" \
     "$webrtc_python" "$webrtc_loopback_smoke_script" \
@@ -887,6 +932,7 @@ echo "telegram_voice_contract=$telegram_voice_contract_status"
 echo "whatsapp_bridge=$whatsapp_bridge_status"
 echo "whatsapp_inbound_cache=$whatsapp_inbound_cache_status"
 echo "whatsapp_alpha=$whatsapp_alpha_status"
+echo "whatsapp_attended_watch=$whatsapp_attended_watch_status"
 if [[ -n "$whatsapp_alpha_json_output" ]]; then
   echo "whatsapp_alpha_json=$whatsapp_alpha_json_output"
 fi

@@ -141,6 +141,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("telegram_voice_contract=skipped", result.stdout)
         self.assertIn("whatsapp_inbound_cache=skipped", result.stdout)
         self.assertIn("whatsapp_alpha=skipped", result.stdout)
+        self.assertIn("whatsapp_attended_watch=skipped", result.stdout)
         self.assertIn("webrtc_loopback=skipped", result.stdout)
         self.assertEqual(
             [entry[0] for entry in entries],
@@ -209,6 +210,78 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 "--sidecar-url",
                 "http://127.0.0.1:9999",
                 "--skip-systemd",
+            ],
+        )
+
+    def test_attended_watch_status_runs_when_systemd_checks_are_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            watch = tmp_path / "start_watch.py"
+            voice = tmp_path / "voice"
+            output_dir = tmp_path / "watch-artifacts"
+
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_executable(
+                watch,
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    printf 'watch' >> {str(log_path)!r}
+                    printf '\\0' >> {str(log_path)!r}
+                    printf '%s\\0' "$@" >> {str(log_path)!r}
+                    printf '\\n' >> {str(log_path)!r}
+                    echo "ok: WhatsApp attended cache watch list"
+                    echo "count=1"
+                    echo "watch[1]=watch-active status=waiting_for_fresh_audio active_state=active"
+                    """
+                ),
+            )
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-whatsapp-bridge",
+                    "--skip-daemon",
+                    "--whatsapp-attended-watch-output-dir",
+                    str(output_dir),
+                    "--whatsapp-attended-watch-unit-prefix",
+                    "watch",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_ATTENDED_WATCH_SCRIPT": str(watch),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+
+        self.assertIn("==> WhatsApp attended cache watch status", result.stdout)
+        self.assertIn("ok: WhatsApp attended cache watch list", result.stdout)
+        self.assertIn("whatsapp_attended_watch=checked", result.stdout)
+        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "watch"])
+        self.assertEqual(
+            entries[1],
+            [
+                "watch",
+                "--list",
+                "--output-dir",
+                str(output_dir),
+                "--unit-prefix",
+                "watch",
             ],
         )
 

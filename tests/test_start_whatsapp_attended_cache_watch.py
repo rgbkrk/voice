@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
-from pathlib import Path
+from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 import subprocess
 import tempfile
 import textwrap
@@ -344,6 +345,16 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (tmp_path / "watch.log").write_text("done\n", encoding="utf-8")
+            audio_cache = tmp_path / "audio_cache"
+            audio_cache.mkdir()
+            stale_audio = audio_cache / "aud_stale.ogg"
+            stale_audio.write_bytes(b"stale")
+            fresh_audio = audio_cache / "aud_fresh.ogg"
+            fresh_audio.write_bytes(b"fresh-audio")
+            stale_time = datetime(2026, 6, 14, 22, 50, tzinfo=timezone.utc).timestamp()
+            fresh_time = datetime(2026, 6, 14, 22, 52, tzinfo=timezone.utc).timestamp()
+            os.utime(stale_audio, (stale_time, stale_time))
+            os.utime(fresh_audio, (fresh_time, fresh_time))
             (tmp_path / "watch.manifest.json").write_text(
                 json.dumps(
                     {
@@ -356,7 +367,7 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
                         "attended_prompt": {
                             "sends_prompt_voice_note": True,
                             "prompt_text": "reply with a voice note",
-                            "audio_cache_dir": str(tmp_path / "audio_cache"),
+                            "audio_cache_dir": str(audio_cache),
                         },
                         "expected_agent_number": "13236478455",
                         "expected_agent_name": "Quill",
@@ -409,6 +420,20 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertEqual(payload["timing"]["deadline_utc"], "2026-06-14T22:53:18Z")
         self.assertEqual(payload["timing"]["wait_seconds"], 120.0)
         self.assertTrue(payload["timing"]["expired"])
+        self.assertEqual(payload["audio_cache"]["path"], str(audio_cache))
+        self.assertTrue(payload["audio_cache"]["exists"])
+        self.assertEqual(payload["audio_cache"]["candidate_count"], 2)
+        self.assertEqual(payload["audio_cache"]["latest_file"], "aud_fresh.ogg")
+        self.assertEqual(payload["audio_cache"]["latest_path"], str(fresh_audio))
+        self.assertEqual(
+            payload["audio_cache"]["latest_mtime_utc"],
+            "2026-06-14T22:52:00Z",
+        )
+        self.assertEqual(
+            payload["audio_cache"]["latest_size_bytes"],
+            len(b"fresh-audio"),
+        )
+        self.assertTrue(payload["audio_cache"]["fresh_since_created"])
 
     def test_list_discovers_active_units_and_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:

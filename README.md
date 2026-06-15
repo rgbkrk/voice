@@ -474,9 +474,12 @@ Use `--status <unit-or-service>` with the printed unit name to summarize
 whether the watch is still waiting, failed, completed, or verified fresh
 receive evidence. Status and list output also include the computed deadline and
 remaining wait time from the manifest, so long attended windows can be checked
-without hand-parsing timestamps. Use `--list` to discover active watches and
-matching artifacts from a later session. Use `--stop <unit-or-service>` to stop
-a stale watch without deleting its JSON/log/manifest artifacts.
+without hand-parsing timestamps. When the manifest names an audio cache
+directory, status and list output also show the latest cached `aud_*` file and
+whether it is newer than the watch start time. Use `--list` to discover active
+watches and matching artifacts from a later session. Use `--stop
+<unit-or-service>` to stop a stale watch without deleting its JSON/log/manifest
+artifacts.
 
 To fail unless every alpha gate is complete, include the strict completion flag:
 

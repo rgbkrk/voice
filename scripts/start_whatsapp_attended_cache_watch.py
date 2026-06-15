@@ -21,6 +21,7 @@ DEFAULT_ATTENDED_PROMPT_TEXT = (
     "Please reply with a fresh WhatsApp voice note so I can verify the voice runtime."
 )
 ATTENDED_PROFILE = "attended-cache-receive"
+AUDIO_CACHE_SUFFIXES = {".ogg", ".opus", ".m4a"}
 
 
 def repo_root() -> Path:
@@ -321,6 +322,60 @@ def summarize_watch_timing(manifest_summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def summarize_audio_cache(manifest_summary: dict[str, Any]) -> dict[str, Any]:
+    attended_prompt = manifest_summary.get("attended_prompt")
+    attended_prompt = attended_prompt if isinstance(attended_prompt, dict) else {}
+    audio_cache_dir = attended_prompt.get("audio_cache_dir")
+    if not isinstance(audio_cache_dir, str) or not audio_cache_dir:
+        return {}
+
+    created_at = parse_utc(manifest_summary.get("created_at_utc"))
+    cache_dir = Path(audio_cache_dir).expanduser()
+    summary: dict[str, Any] = {
+        "path": str(cache_dir),
+        "exists": cache_dir.is_dir(),
+        "candidate_count": 0,
+        "latest_path": None,
+        "latest_file": None,
+        "latest_mtime_utc": None,
+        "latest_size_bytes": None,
+        "latest_age_seconds": None,
+        "fresh_since_created": None if created_at is None else False,
+    }
+    if not cache_dir.is_dir():
+        return summary
+
+    candidates = [
+        path
+        for path in cache_dir.iterdir()
+        if path.is_file()
+        and path.name.startswith("aud_")
+        and path.suffix.lower() in AUDIO_CACHE_SUFFIXES
+    ]
+    summary["candidate_count"] = len(candidates)
+    if not candidates:
+        return summary
+
+    latest = max(candidates, key=lambda path: path.stat().st_mtime)
+    stat = latest.stat()
+    latest_mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+    summary.update(
+        {
+            "latest_path": str(latest),
+            "latest_file": latest.name,
+            "latest_mtime_utc": format_utc(latest_mtime),
+            "latest_size_bytes": stat.st_size,
+            "latest_age_seconds": round(
+                max(0.0, (datetime.now(timezone.utc) - latest_mtime).total_seconds()),
+                3,
+            ),
+        }
+    )
+    if created_at is not None:
+        summary["fresh_since_created"] = latest_mtime > created_at
+    return summary
+
+
 def classify_watch_status(
     *,
     systemd_state: dict[str, str],
@@ -374,6 +429,7 @@ def inspect_unit(unit_or_service: str, args: argparse.Namespace) -> dict[str, An
     manifest_artifact = artifact_status(manifest_path)
     manifest_summary = summarize_manifest_payload(manifest_artifact.get("payload"))
     timing_summary = summarize_watch_timing(manifest_summary)
+    audio_cache_summary = summarize_audio_cache(manifest_summary)
     manifest_artifact.pop("payload", None)
     alpha_summary = summarize_alpha_payload(json_artifact.get("payload"))
     watch_status = classify_watch_status(
@@ -395,6 +451,7 @@ def inspect_unit(unit_or_service: str, args: argparse.Namespace) -> dict[str, An
         "manifest": manifest_artifact,
         "manifest_summary": manifest_summary,
         "timing": timing_summary,
+        "audio_cache": audio_cache_summary,
         "alpha": alpha_summary,
         "status_command": ["systemctl", "--user", "status", service],
         "journal_command": ["journalctl", "--user", "-u", service, "-f"],
@@ -574,6 +631,17 @@ def print_status_human(result: dict[str, Any]) -> None:
             f"remaining_seconds={timing.get('remaining_seconds')} "
             f"expired={timing.get('expired')}"
         )
+    audio_cache = result.get("audio_cache") or {}
+    if audio_cache:
+        print(
+            "audio_cache="
+            f"path={audio_cache.get('path')} "
+            f"exists={audio_cache.get('exists')} "
+            f"candidate_count={audio_cache.get('candidate_count')} "
+            f"latest_file={audio_cache.get('latest_file')} "
+            f"latest_mtime_utc={audio_cache.get('latest_mtime_utc')} "
+            f"fresh_since_created={audio_cache.get('fresh_since_created')}"
+        )
     alpha = result.get("alpha") or {}
     if alpha:
         print(
@@ -624,6 +692,7 @@ def print_list_human(result: dict[str, Any]) -> None:
         json_artifact = watch.get("json") or {}
         manifest_summary = watch.get("manifest_summary") or {}
         timing = watch.get("timing") or {}
+        audio_cache = watch.get("audio_cache") or {}
         print(
             f"watch[{index}]={watch.get('unit')} "
             f"status={watch.get('watch_status')} "
@@ -632,6 +701,8 @@ def print_list_human(result: dict[str, Any]) -> None:
             f"manifest_wait_seconds={manifest_summary.get('wait_seconds')} "
             f"remaining_seconds={timing.get('remaining_seconds')} "
             f"deadline_utc={timing.get('deadline_utc')} "
+            f"latest_audio={audio_cache.get('latest_file')} "
+            f"latest_audio_fresh={audio_cache.get('fresh_since_created')} "
             "sends_prompt_voice_note="
             f"{(manifest_summary.get('attended_prompt') or {}).get('sends_prompt_voice_note')}"
         )

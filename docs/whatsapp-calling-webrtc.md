@@ -332,7 +332,9 @@ scripts/start_whatsapp_attended_cache_watch.py \
 ```
 
 Status output reports whether the watch is still waiting, has no artifact yet,
-failed, completed, or verified fresh receive evidence.
+failed, completed, or verified fresh receive evidence. When a manifest is
+available, status and list output also show the computed deadline and remaining
+wait time for the active receive window.
 To discover active watches and matching `/tmp` artifacts from a later session,
 run:
 

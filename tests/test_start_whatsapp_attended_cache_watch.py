@@ -405,6 +405,10 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
             payload["manifest_summary"]["attended_prompt"]["prompt_text"],
             "reply with a voice note",
         )
+        self.assertEqual(payload["timing"]["created_at_utc"], "2026-06-14T22:51:18Z")
+        self.assertEqual(payload["timing"]["deadline_utc"], "2026-06-14T22:53:18Z")
+        self.assertEqual(payload["timing"]["wait_seconds"], 120.0)
+        self.assertTrue(payload["timing"]["expired"])
 
     def test_list_discovers_active_units_and_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -523,6 +527,10 @@ class WhatsAppAttendedCacheWatchLauncherTests(unittest.TestCase):
         self.assertEqual(
             by_unit["watch-manifest"]["manifest_summary"]["wait_seconds"],
             60.0,
+        )
+        self.assertEqual(
+            by_unit["watch-manifest"]["timing"]["deadline_utc"],
+            "2026-06-14T22:52:18Z",
         )
         self.assertTrue(
             by_unit["watch-manifest"]["manifest_summary"]["attended_prompt"][

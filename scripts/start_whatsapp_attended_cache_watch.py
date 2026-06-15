@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -274,6 +274,53 @@ def summarize_manifest_payload(payload: dict[str, Any] | None) -> dict[str, Any]
     }
 
 
+def format_utc(dt: datetime) -> str:
+    return (
+        dt.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def parse_utc(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def summarize_watch_timing(manifest_summary: dict[str, Any]) -> dict[str, Any]:
+    created_at = parse_utc(manifest_summary.get("created_at_utc"))
+    wait_seconds = manifest_summary.get("wait_seconds")
+    try:
+        wait_seconds = float(wait_seconds)
+    except (TypeError, ValueError):
+        wait_seconds = None
+
+    if created_at is None or wait_seconds is None:
+        return {}
+
+    now = datetime.now(timezone.utc)
+    deadline = created_at + timedelta(seconds=wait_seconds)
+    elapsed_seconds = (now - created_at).total_seconds()
+    remaining_seconds = (deadline - now).total_seconds()
+    return {
+        "created_at_utc": format_utc(created_at),
+        "deadline_utc": format_utc(deadline),
+        "wait_seconds": wait_seconds,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "remaining_seconds": round(max(0.0, remaining_seconds), 3),
+        "expired": remaining_seconds <= 0,
+    }
+
+
 def classify_watch_status(
     *,
     systemd_state: dict[str, str],
@@ -326,6 +373,7 @@ def inspect_unit(unit_or_service: str, args: argparse.Namespace) -> dict[str, An
     log_artifact.pop("payload", None)
     manifest_artifact = artifact_status(manifest_path)
     manifest_summary = summarize_manifest_payload(manifest_artifact.get("payload"))
+    timing_summary = summarize_watch_timing(manifest_summary)
     manifest_artifact.pop("payload", None)
     alpha_summary = summarize_alpha_payload(json_artifact.get("payload"))
     watch_status = classify_watch_status(
@@ -346,6 +394,7 @@ def inspect_unit(unit_or_service: str, args: argparse.Namespace) -> dict[str, An
         "log": log_artifact,
         "manifest": manifest_artifact,
         "manifest_summary": manifest_summary,
+        "timing": timing_summary,
         "alpha": alpha_summary,
         "status_command": ["systemctl", "--user", "status", service],
         "journal_command": ["journalctl", "--user", "-u", service, "-f"],
@@ -516,6 +565,15 @@ def print_status_human(result: dict[str, Any]) -> None:
                 f"prompt_text={attended_prompt.get('prompt_text')} "
                 f"audio_cache_dir={attended_prompt.get('audio_cache_dir')}"
             )
+    timing = result.get("timing") or {}
+    if timing:
+        print(
+            "timing="
+            f"deadline_utc={timing.get('deadline_utc')} "
+            f"elapsed_seconds={timing.get('elapsed_seconds')} "
+            f"remaining_seconds={timing.get('remaining_seconds')} "
+            f"expired={timing.get('expired')}"
+        )
     alpha = result.get("alpha") or {}
     if alpha:
         print(
@@ -565,12 +623,15 @@ def print_list_human(result: dict[str, Any]) -> None:
     for index, watch in enumerate(result.get("watches") or [], start=1):
         json_artifact = watch.get("json") or {}
         manifest_summary = watch.get("manifest_summary") or {}
+        timing = watch.get("timing") or {}
         print(
             f"watch[{index}]={watch.get('unit')} "
             f"status={watch.get('watch_status')} "
             f"active_state={(watch.get('systemd') or {}).get('ActiveState')} "
             f"json_size={json_artifact.get('size_bytes')} "
             f"manifest_wait_seconds={manifest_summary.get('wait_seconds')} "
+            f"remaining_seconds={timing.get('remaining_seconds')} "
+            f"deadline_utc={timing.get('deadline_utc')} "
             "sends_prompt_voice_note="
             f"{(manifest_summary.get('attended_prompt') or {}).get('sends_prompt_voice_note')}"
         )

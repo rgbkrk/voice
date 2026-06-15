@@ -272,7 +272,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("==> WhatsApp attended cache watch status", result.stdout)
         self.assertIn("ok: WhatsApp attended cache watch list", result.stdout)
         self.assertIn("whatsapp_attended_watch=checked", result.stdout)
-        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "watch"])
+        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "watch", "watch"])
         self.assertEqual(
             entries[1],
             [
@@ -284,6 +284,8 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 "watch",
             ],
         )
+        self.assertEqual(entries[2][0], "watch")
+        self.assertIn("--json", entries[2])
 
     def test_step_failure_reports_hermes_config_category(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1265,6 +1267,148 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             "scripts/verify_whatsapp_alpha_readiness.py --hermes-home "
             "/home/ubuntu/.hermes --profile attended-send-receive "
             "--wait-inbound-seconds 60.0",
+            result.stdout,
+        )
+
+    def test_whatsapp_alpha_json_summary_prints_effective_actions_from_verified_watch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            watch = tmp_path / "start_watch.py"
+            alpha = tmp_path / "verify_alpha.py"
+            voice = tmp_path / "voice"
+            json_output = tmp_path / "alpha.json"
+
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_executable(
+                watch,
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    printf 'watch' >> {str(log_path)!r}
+                    printf '\\0' >> {str(log_path)!r}
+                    printf '%s\\0' "$@" >> {str(log_path)!r}
+                    printf '\\n' >> {str(log_path)!r}
+                    if [[ "$*" == *"--json"* ]]; then
+                      cat <<'JSON'
+                    {{
+                      "watches": [
+                        {{
+                          "unit": "watch-done",
+                          "watch_status": "verified",
+                          "alpha": {{
+                            "attended_fresh_receive_verified": true,
+                            "fresh_count": 1
+                          }},
+                          "audio_cache": {{
+                            "latest_file": "aud_new.ogg",
+                            "fresh_since_created": true
+                          }}
+                        }}
+                      ]
+                    }}
+                    JSON
+                    else
+                      echo "ok: WhatsApp attended cache watch list"
+                      echo "watch[1]=watch-done status=verified latest_audio=aud_new.ogg latest_audio_fresh=True"
+                    fi
+                    """
+                ),
+            )
+            write_executable(
+                alpha,
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    printf 'alpha' >> {str(log_path)!r}
+                    printf '\\0' >> {str(log_path)!r}
+                    printf '%s\\0' "$@" >> {str(log_path)!r}
+                    printf '\\n' >> {str(log_path)!r}
+                    cat <<'JSON'
+                    {{
+                      "profile": "cached-receive",
+                      "readiness_summary": {{
+                        "status": "local_ready_pending_gates",
+                        "complete": false,
+                        "local_checks_passed": true,
+                        "attended_fresh_receive_verified": false,
+                        "external_meta_setup_required": true,
+                        "operator_action_required": true,
+                        "next_actions": [
+                          {{"id": "run_attended_fresh_receive"}},
+                          {{"id": "configure_whatsapp_cloud_calling"}}
+                        ]
+                      }},
+                      "pending_gates": {{
+                        "attended_fresh_receive": {{
+                          "status": "pending_attended",
+                          "cached_receive_verified": true,
+                          "command": [
+                            "scripts/verify_whatsapp_alpha_readiness.py",
+                            "--profile",
+                            "attended-cache-receive"
+                          ]
+                        }},
+                        "whatsapp_cloud": {{"status": "external_setup_required"}},
+                        "whatsapp_cloud_calling": {{"status": "external_setup_required"}}
+                      }}
+                    }}
+                    JSON
+                    """
+                ),
+            )
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-whatsapp-bridge",
+                    "--skip-daemon",
+                    "--whatsapp-attended-watch-output-dir",
+                    str(tmp_path / "watch-artifacts"),
+                    "--whatsapp-attended-watch-unit-prefix",
+                    "watch",
+                    "--whatsapp-alpha-profile",
+                    "cached-receive",
+                    "--whatsapp-alpha-json-output",
+                    str(json_output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_ATTENDED_WATCH_SCRIPT": str(watch),
+                    "WHATSAPP_ALPHA_READINESS_SCRIPT": str(alpha),
+                },
+            )
+            entries = command_log_entries(log_path)
+
+        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "watch", "watch", "alpha"])
+        self.assertIn(
+            "whatsapp_alpha_json_next_actions="
+            "run_attended_fresh_receive,configure_whatsapp_cloud_calling",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_attended_watch_evidence=verified "
+            "unit=watch-done fresh_count=1 latest_audio=aud_new.ogg "
+            "latest_audio_fresh=True",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_alpha_json_effective_next_actions="
+            "configure_whatsapp_cloud_calling",
             result.stdout,
         )
 

@@ -49,6 +49,15 @@ require_whatsapp_calling="${REQUIRE_WHATSAPP_CALLING:-0}"
 require_whatsapp_alpha_complete="${REQUIRE_WHATSAPP_ALPHA_COMPLETE:-0}"
 check_whatsapp_cloud_api="${CHECK_WHATSAPP_CLOUD_API:-0}"
 overall_status=0
+temp_files=()
+
+cleanup_temp_files() {
+  local path
+  for path in "${temp_files[@]:-}"; do
+    rm -f "$path"
+  done
+}
+trap cleanup_temp_files EXIT
 
 hermes_config_verify_script="${HERMES_CONFIG_VERIFY_SCRIPT:-$repo_root/scripts/verify_hermes_voice_config.py}"
 hermes_config_install_script="${HERMES_CONFIG_INSTALL_SCRIPT:-$repo_root/scripts/install_hermes_voice_config.py}"
@@ -247,12 +256,14 @@ step_failure_category() {
 
 print_whatsapp_alpha_json_summary() {
   local json_path="$1"
-  python3 - "$json_path" <<'PY'
+  local attended_watch_json_path="${2:-}"
+  python3 - "$json_path" "$attended_watch_json_path" <<'PY'
 import json
 import shlex
 import sys
 
 path = sys.argv[1]
+watch_path = sys.argv[2] if len(sys.argv) > 2 else ""
 with open(path, "r", encoding="utf-8") as handle:
     payload = json.load(handle)
 
@@ -267,6 +278,29 @@ def command_line(parts):
     return shlex.join([str(part) for part in parts])
 
 
+def verified_watch(path):
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    watches = payload.get("watches") if isinstance(payload, dict) else None
+    if not isinstance(watches, list):
+        return None
+    for watch in watches:
+        if not isinstance(watch, dict):
+            continue
+        alpha = watch.get("alpha") or {}
+        if (
+            watch.get("watch_status") == "verified"
+            and alpha.get("attended_fresh_receive_verified") is True
+        ):
+            return watch
+    return None
+
+
 summary = payload.get("readiness_summary") or {}
 pending = payload.get("pending_gates") or {}
 attended = pending.get("attended_fresh_receive") or {}
@@ -279,6 +313,12 @@ actions = [
     for action in (summary.get("next_actions") or [])
     if action.get("id")
 ]
+watch = verified_watch(watch_path)
+effective_actions = list(actions)
+if watch is not None and "run_attended_fresh_receive" in effective_actions:
+    effective_actions = [
+        action for action in effective_actions if action != "run_attended_fresh_receive"
+    ]
 
 print(f"whatsapp_alpha_json_profile={payload.get('profile')}")
 print(
@@ -293,6 +333,18 @@ print(
     f"operator_action_required={summary.get('operator_action_required')}"
 )
 print(f"whatsapp_alpha_json_next_actions={csv(actions)}")
+if watch is not None:
+    audio_cache = watch.get("audio_cache") or {}
+    alpha = watch.get("alpha") or {}
+    print(
+        "whatsapp_alpha_json_attended_watch_evidence="
+        f"verified unit={watch.get('unit')} "
+        f"fresh_count={alpha.get('fresh_count')} "
+        f"latest_audio={audio_cache.get('latest_file')} "
+        f"latest_audio_fresh={audio_cache.get('fresh_since_created')}"
+    )
+    if effective_actions != actions:
+        print(f"whatsapp_alpha_json_effective_next_actions={csv(effective_actions)}")
 if attended:
     print(
         "whatsapp_alpha_json_attended_fresh_receive="
@@ -801,9 +853,16 @@ if [[ "$skip_whatsapp_attended_watch_status" != "1" && "$skip_systemd" != "1" ]]
     --unit-prefix "$whatsapp_attended_watch_unit_prefix"
   )
   run_step "WhatsApp attended cache watch status" "${attended_watch_args[@]}"
+  whatsapp_attended_watch_json="$(mktemp "${TMPDIR:-/tmp}/voice-whatsapp-attended-watch.XXXXXX.json")"
+  temp_files+=("$whatsapp_attended_watch_json")
+  if ! "${attended_watch_args[@]}" --json >"$whatsapp_attended_watch_json"; then
+    rm -f "$whatsapp_attended_watch_json"
+    whatsapp_attended_watch_json=""
+  fi
   whatsapp_attended_watch_status="checked"
 else
   whatsapp_attended_watch_status="skipped"
+  whatsapp_attended_watch_json=""
 fi
 
 if [[ "$run_webrtc_loopback_smoke" == "1" ]]; then
@@ -900,7 +959,7 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
     whatsapp_alpha_exit=$?
     set -e
     echo "whatsapp_alpha_json=$whatsapp_alpha_json_output"
-    print_whatsapp_alpha_json_summary "$whatsapp_alpha_json_output"
+    print_whatsapp_alpha_json_summary "$whatsapp_alpha_json_output" "$whatsapp_attended_watch_json"
     if [[ "$whatsapp_alpha_exit" != "0" ]]; then
       echo "error: WhatsApp alpha readiness profile failed with exit $whatsapp_alpha_exit" >&2
       overall_status="$whatsapp_alpha_exit"

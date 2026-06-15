@@ -69,6 +69,65 @@ def write_fake_python(path: Path, label: str, log_path: Path) -> None:
     )
 
 
+def write_external_meta_bridge_helper(path: Path, label: str, log_path: Path) -> None:
+    write_executable(
+        path,
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            printf '{label}' >> {str(log_path)!r}
+            printf '\\0' >> {str(log_path)!r}
+            printf '%s\\0' "$@" >> {str(log_path)!r}
+            printf '\\n' >> {str(log_path)!r}
+            cat <<'JSON'
+            {{
+              "success": false,
+              "checks": {{
+                "baileys_identity": {{
+                  "name": "Quill",
+                  "number": "13236478455",
+                  "lid_number": "186999436771390"
+                }},
+                "bridge_health": {{
+                  "status": "connected",
+                  "queueLength": 0
+                }},
+                "whatsapp_cloud": {{
+                  "cloud_configured": false,
+                  "calling_ready": false,
+                  "cloud_missing": [
+                    "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+                    "WHATSAPP_CLOUD_ACCESS_TOKEN",
+                    "WHATSAPP_CLOUD_APP_SECRET",
+                    "WHATSAPP_CLOUD_VERIFY_TOKEN"
+                  ],
+                  "cloud_invalid": [],
+                  "cloud_health": {{
+                    "checked": true,
+                    "ok": false,
+                    "local_url": "http://127.0.0.1:8090/health",
+                    "missing": ["WHATSAPP_CLOUD_PHONE_NUMBER_ID"],
+                    "invalid": [],
+                    "error": {{
+                      "message": "Cloud health check requires a local health URL and phone number ID"
+                    }}
+                  }},
+                  "cloud_api": {{"checked": false}},
+                  "webhook_challenge": {{"checked": false}}
+                }}
+              }},
+              "failures": [
+                "WhatsApp Cloud health check failed: Cloud health check requires a local health URL and phone number ID"
+              ]
+            }}
+            JSON
+            exit 1
+            """
+        ),
+    )
+
+
 def command_log_entries(log_path: Path) -> list[list[str]]:
     entries: list[list[str]] = []
     for line in log_path.read_bytes().splitlines():
@@ -382,6 +441,77 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         self.assertIn("failure_category=whatsapp_bridge_or_credentials", result.stderr)
         self.assertIn("failure_step=WhatsApp bridge identity and credential readiness", result.stderr)
         self.assertIn("failure_status=23", result.stderr)
+        self.assertNotIn("ok: local Hermes voice stack verifier passed", result.stdout)
+
+    def test_cloud_probe_bridge_failure_continues_to_alpha_as_external_setup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            log_path = tmp_path / "commands.log"
+            whatsapp = tmp_path / "verify_whatsapp.sh"
+            bridge = tmp_path / "verify_whatsapp_bridge.py"
+            alpha = tmp_path / "verify_alpha.py"
+            voice = tmp_path / "voice"
+
+            write_helper(whatsapp, "whatsapp", log_path)
+            write_external_meta_bridge_helper(bridge, "bridge", log_path)
+            write_helper(alpha, "alpha", log_path)
+            write_executable(voice, "#!/usr/bin/env bash\nexit 0\n")
+
+            result = subprocess.run(
+                [
+                    str(SCRIPT_PATH),
+                    "--voice-bin",
+                    str(voice),
+                    "--hermes-config",
+                    str(tmp_path / "missing.yaml"),
+                    "--skip-hermes-config",
+                    "--skip-hermes-gateway",
+                    "--skip-cli-mcp",
+                    "--skip-sidecar",
+                    "--skip-systemd",
+                    "--skip-daemon",
+                    "--check-whatsapp-cloud-health",
+                    "--whatsapp-alpha-profile",
+                    "cached-receive",
+                ],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "WHATSAPP_CONTRACT_VERIFY_SCRIPT": str(whatsapp),
+                    "WHATSAPP_BRIDGE_VERIFY_SCRIPT": str(bridge),
+                    "WHATSAPP_ALPHA_READINESS_SCRIPT": str(alpha),
+                },
+            )
+
+            entries = command_log_entries(log_path)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual([entry[0] for entry in entries], ["whatsapp", "bridge", "alpha"])
+        self.assertIn("--json", entries[1])
+        self.assertIn("--check-whatsapp-cloud-health", entries[1])
+        self.assertIn(
+            "whatsapp_bridge_json_cloud_health=failed",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_bridge_json_failure=WhatsApp Cloud health check failed",
+            result.stdout,
+        )
+        self.assertIn("whatsapp_alpha=cached-receive", result.stdout)
+        self.assertIn(
+            "whatsapp_bridge=external_meta_setup_pending",
+            result.stdout,
+        )
+        self.assertIn(
+            "error: local Hermes voice stack external Meta setup check failed",
+            result.stderr,
+        )
+        self.assertIn("failure_category=external_meta_setup", result.stderr)
+        self.assertNotIn(
+            "failure_category=whatsapp_bridge_or_credentials",
+            result.stderr,
+        )
         self.assertNotIn("ok: local Hermes voice stack verifier passed", result.stdout)
 
     def test_skip_flags_disable_optional_release_checks(self):

@@ -192,7 +192,10 @@ draining command, Cloud verification command, Calling verification command, and
 complete-alpha command if those commands are present in the saved JSON. If the
 alpha profile exits non-zero while writing a valid JSON report, such as a
 `--require-complete` run with pending gates, the stack gate still prints this
-summary before returning the alpha failure status.
+summary before returning the alpha failure status. If a direct bridge Cloud
+probe fails first, the stack gate reports `failure_category=external_meta_setup`,
+continues into the requested alpha profile, and marks
+`whatsapp_bridge=external_meta_setup_pending` in the final summary.
 
 Use the complete gate only when the local bridge, attended receive, Cloud API,
 and Calling setup are all expected to pass:

@@ -225,6 +225,41 @@ run_step() {
   fi
 }
 
+run_whatsapp_bridge_step() {
+  local label="WhatsApp bridge identity and credential readiness"
+  local json_path
+  json_path="$(mktemp)"
+  temp_files+=("$json_path")
+
+  echo
+  echo "==> $label"
+  set +e
+  "$@" --json >"$json_path"
+  local status=$?
+  set -e
+
+  print_whatsapp_bridge_json_summary "$json_path"
+
+  if [[ "$status" == "0" ]]; then
+    return 0
+  fi
+
+  if whatsapp_bridge_json_external_meta_only "$json_path"; then
+    echo "error: local Hermes voice stack external Meta setup check failed: $label" >&2
+    echo "failure_category=external_meta_setup" >&2
+    echo "failure_step=$label" >&2
+    echo "failure_status=$status" >&2
+    overall_status="$status"
+    return 0
+  fi
+
+  echo "error: local Hermes voice stack step failed: $label" >&2
+  echo "failure_category=$(step_failure_category "$label")" >&2
+  echo "failure_step=$label" >&2
+  echo "failure_status=$status" >&2
+  return "$status"
+}
+
 step_failure_category() {
   local label="$1"
   case "$label" in
@@ -259,6 +294,127 @@ step_failure_category() {
       echo "unknown"
       ;;
   esac
+}
+
+whatsapp_cloud_probe_enabled() {
+  [[ "$require_whatsapp_cloud" == "1" \
+    || "$require_whatsapp_calling" == "1" \
+    || "$check_whatsapp_cloud_api" == "1" \
+    || "$check_whatsapp_cloud_health" == "1" \
+    || "$check_whatsapp_cloud_webhook" == "1" ]]
+}
+
+whatsapp_bridge_json_external_meta_only() {
+  local json_path="$1"
+  python3 - "$json_path" <<'PY'
+import json
+import sys
+
+prefixes = (
+    "WhatsApp Cloud API phone number check failed:",
+    "WhatsApp Cloud health check failed:",
+    "WhatsApp Cloud webhook challenge check failed:",
+    "WhatsApp Cloud credentials missing:",
+    "WhatsApp Cloud config invalid:",
+    "WhatsApp Cloud Calling not ready;",
+    "WhatsApp Cloud Calling config invalid:",
+)
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+failures = [str(item) for item in payload.get("failures") or []]
+if failures and all(failure.startswith(prefixes) for failure in failures):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+print_whatsapp_bridge_json_summary() {
+  local json_path="$1"
+  python3 - "$json_path" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, json.JSONDecodeError) as exc:
+    print(f"whatsapp_bridge_json=unreadable error={exc}")
+    raise SystemExit(0)
+
+def csv(values):
+    return ",".join(str(value) for value in (values or [])) or "none"
+
+checks = payload.get("checks") or {}
+identity = checks.get("baileys_identity") or {}
+health = checks.get("bridge_health") or {}
+cloud = checks.get("whatsapp_cloud") or {}
+cloud_health = cloud.get("cloud_health") or {}
+cloud_api = cloud.get("cloud_api") or {}
+webhook_challenge = cloud.get("webhook_challenge") or {}
+
+print(
+    "whatsapp_bridge_json="
+    + ("ok" if payload.get("success") else "failed")
+    + f" bridge_status={health.get('status', 'unknown')}"
+    + f" queue={health.get('queueLength', 'unknown')}"
+    + f" name={identity.get('name') or '<unknown>'}"
+    + f" number={identity.get('number') or '<unknown>'}"
+)
+print(
+    "whatsapp_bridge_json_cloud="
+    + ("configured" if cloud.get("cloud_configured") else "not_configured")
+    + " missing="
+    + csv(cloud.get("cloud_missing"))
+    + " invalid="
+    + csv(cloud.get("cloud_invalid"))
+    + " calling_ready="
+    + ("yes" if cloud.get("calling_ready") else "no")
+)
+if cloud_api.get("checked"):
+    print(
+        "whatsapp_bridge_json_cloud_api="
+        + ("ok" if cloud_api.get("ok") else "failed")
+        + f" http_status={cloud_api.get('http_status') or '<none>'}"
+        + " missing="
+        + csv(cloud_api.get("missing"))
+        + " invalid="
+        + csv(cloud_api.get("invalid"))
+    )
+if cloud_health.get("checked"):
+    error = cloud_health.get("error") or {}
+    print(
+        "whatsapp_bridge_json_cloud_health="
+        + ("ok" if cloud_health.get("ok") else "failed")
+        + f" local_url={cloud_health.get('local_url') or '<invalid>'}"
+        + " missing="
+        + csv(cloud_health.get("missing"))
+        + " invalid="
+        + csv(cloud_health.get("invalid"))
+        + " error="
+        + str(error.get("message") or "none")
+    )
+if webhook_challenge.get("checked"):
+    error = webhook_challenge.get("error") or {}
+    print(
+        "whatsapp_bridge_json_webhook_challenge="
+        + ("ok" if webhook_challenge.get("ok") else "failed")
+        + f" local_url={webhook_challenge.get('local_url') or '<invalid>'}"
+        + " missing="
+        + csv(webhook_challenge.get("missing"))
+        + " invalid="
+        + csv(webhook_challenge.get("invalid"))
+        + " error="
+        + str(error.get("message") or "none")
+    )
+for failure in payload.get("failures") or []:
+    print(f"whatsapp_bridge_json_failure={failure}")
+PY
 }
 
 print_whatsapp_alpha_json_summary() {
@@ -828,8 +984,17 @@ if [[ "$skip_whatsapp_bridge" != "1" ]]; then
   if [[ "$check_whatsapp_cloud_webhook" == "1" ]]; then
     whatsapp_bridge_args+=(--check-whatsapp-cloud-webhook)
   fi
-  run_step "WhatsApp bridge identity and credential readiness" "${whatsapp_bridge_args[@]}"
-  whatsapp_bridge_status="checked"
+  if whatsapp_cloud_probe_enabled; then
+    run_whatsapp_bridge_step "${whatsapp_bridge_args[@]}"
+    if [[ "$overall_status" == "0" ]]; then
+      whatsapp_bridge_status="checked"
+    else
+      whatsapp_bridge_status="external_meta_setup_pending"
+    fi
+  else
+    run_step "WhatsApp bridge identity and credential readiness" "${whatsapp_bridge_args[@]}"
+    whatsapp_bridge_status="checked"
+  fi
 else
   whatsapp_bridge_status="skipped"
 fi

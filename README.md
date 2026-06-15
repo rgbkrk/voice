@@ -521,6 +521,10 @@ The stack bridge summary also prints non-secret Baileys provenance:
 `whatsapp_bridge_json_sources` shows the resolved session directory, Hermes env
 file, bridge process session, expected agent identity, and home channel, while
 `whatsapp_bridge_json_session_artifacts` reports auth/session file counts.
+Set `WHATSAPP_AGENT_NUMBER` or pass `--expected-whatsapp-agent-number` when the
+paired number should be checked against an independent expected value; add
+`--require-expected-whatsapp-agent-number` to fail if that expected value is
+missing.
 
 The stack verifier runs alpha profiles through JSON internally so nonzero alpha
 results can still be classified as local runtime, attended receive, or external

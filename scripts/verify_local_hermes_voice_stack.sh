@@ -44,6 +44,7 @@ whatsapp_env_file="${WHATSAPP_ENV_FILE:-}"
 whatsapp_audio_cache_dir="${WHATSAPP_AUDIO_CACHE_DIR:-}"
 expected_whatsapp_agent_number="${WHATSAPP_AGENT_NUMBER:-}"
 expected_whatsapp_agent_name="${WHATSAPP_AGENT_NAME:-}"
+require_expected_whatsapp_agent_number="${REQUIRE_EXPECTED_WHATSAPP_AGENT_NUMBER:-0}"
 require_whatsapp_cloud="${REQUIRE_WHATSAPP_CLOUD:-0}"
 require_whatsapp_calling="${REQUIRE_WHATSAPP_CALLING:-0}"
 require_whatsapp_alpha_complete="${REQUIRE_WHATSAPP_ALPHA_COMPLETE:-0}"
@@ -114,6 +115,8 @@ Options:
                                require Baileys creds to be paired to this number
   --expected-whatsapp-agent-name NAME
                                require Baileys creds to expose this profile name
+  --require-expected-whatsapp-agent-number
+                               fail unless an expected WhatsApp agent number is configured
   --require-whatsapp-cloud     fail when WhatsApp Cloud credentials are missing
   --require-whatsapp-calling   fail when Cloud Calling credentials/readiness are missing
   --require-whatsapp-alpha-complete
@@ -165,6 +168,7 @@ Environment aliases:
   RUN_WEBRTC_LOOPBACK_SMOKE=1
   WHATSAPP_BRIDGE_URL, WHATSAPP_SESSION_DIR, WHATSAPP_ENV_FILE
   WHATSAPP_AUDIO_CACHE_DIR, WHATSAPP_AGENT_NUMBER, WHATSAPP_AGENT_NAME
+  REQUIRE_EXPECTED_WHATSAPP_AGENT_NUMBER=1
   REQUIRE_WHATSAPP_CLOUD=1, REQUIRE_WHATSAPP_CALLING=1
   REQUIRE_WHATSAPP_ALPHA_COMPLETE=1, CHECK_WHATSAPP_CLOUD_API=1
   CHECK_WHATSAPP_CLOUD_HEALTH=1, CHECK_WHATSAPP_CLOUD_WEBHOOK=1
@@ -404,7 +408,10 @@ print(
     + f"env_file={checks.get('env_file') or '<unknown>'} "
     + f"bridge_process_session={bridge_process.get('session') or '<unknown>'} "
     + f"expected_number={checks.get('expected_agent_number') or '<none>'} "
+    + f"expected_number_enforced={checks.get('expected_agent_number_enforced')} "
+    + f"expected_number_required={checks.get('expected_agent_number_required')} "
     + f"expected_name={checks.get('expected_agent_name') or '<none>'} "
+    + f"expected_name_enforced={checks.get('expected_agent_name_enforced')} "
     + f"home_channel={local_config.get('home_channel') or '<missing>'} "
     + f"home_channel_kind={local_config.get('home_channel_kind') or '<unknown>'} "
     + f"allowed_users={local_config.get('allowed_users_count', 0)}"
@@ -807,6 +814,10 @@ while [[ $# -gt 0 ]]; do
       expected_whatsapp_agent_name="$2"
       shift 2
       ;;
+    --require-expected-whatsapp-agent-number)
+      require_expected_whatsapp_agent_number=1
+      shift
+      ;;
     --require-whatsapp-cloud)
       require_whatsapp_cloud=1
       shift
@@ -1102,6 +1113,9 @@ if [[ "$skip_whatsapp_bridge" != "1" ]]; then
   fi
   if [[ -n "$expected_whatsapp_agent_name" ]]; then
     whatsapp_bridge_args+=(--expected-agent-name "$expected_whatsapp_agent_name")
+  fi
+  if [[ "$require_expected_whatsapp_agent_number" == "1" ]]; then
+    whatsapp_bridge_args+=(--require-expected-agent-number)
   fi
   if [[ "$skip_systemd" == "1" ]]; then
     whatsapp_bridge_args+=(--skip-systemd)

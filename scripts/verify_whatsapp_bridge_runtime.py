@@ -1078,6 +1078,11 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     expected_agent_number = normalize_whatsapp_identifier(args.expected_agent_number)
     expected_agent_name = args.expected_agent_name
     expected_mode = args.expected_mode or env_sources["env_file"].get("WHATSAPP_MODE")
+    if args.require_expected_agent_number and not expected_agent_number:
+        failures.append(
+            "Expected WhatsApp agent number is required but not configured; "
+            "set WHATSAPP_AGENT_NUMBER or pass --expected-agent-number"
+        )
     local_config = build_local_config_summary(env_sources)
     if local_config["enabled"] is False:
         failures.append("WHATSAPP_ENABLED is explicitly disabled")
@@ -1274,6 +1279,9 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "session_dir": str(session_dir),
         "expected_agent_number": expected_agent_number,
         "expected_agent_name": expected_agent_name,
+        "expected_agent_number_enforced": bool(expected_agent_number),
+        "expected_agent_name_enforced": bool(expected_agent_name),
+        "expected_agent_number_required": bool(args.require_expected_agent_number),
         "expected_mode": expected_mode,
         "whatsapp_local_config": local_config,
         "baileys_identity": identity,
@@ -1305,6 +1313,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--service-name", default=DEFAULT_SERVICE_NAME)
     parser.add_argument("--expected-agent-number", default=os.environ.get("WHATSAPP_AGENT_NUMBER"))
     parser.add_argument("--expected-agent-name", default=os.environ.get("WHATSAPP_AGENT_NAME"))
+    parser.add_argument(
+        "--require-expected-agent-number",
+        action="store_true",
+        help=(
+            "fail unless an expected WhatsApp agent number is configured via "
+            "WHATSAPP_AGENT_NUMBER or --expected-agent-number"
+        ),
+    )
     parser.add_argument("--expected-mode", default=None)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--skip-bridge-health", action="store_true")
@@ -1384,6 +1400,14 @@ def human_summary(result: dict[str, Any]) -> None:
         f"number={identity.get('number') or '<unknown>'} "
         f"lid={identity.get('lid_number') or '<unknown>'} "
         f"platform={identity.get('platform') or '<unknown>'}"
+    )
+    print(
+        "expected_agent_identity="
+        f"number={checks.get('expected_agent_number') or '<none>'} "
+        f"number_enforced={checks.get('expected_agent_number_enforced')} "
+        f"number_required={checks.get('expected_agent_number_required')} "
+        f"name={checks.get('expected_agent_name') or '<none>'} "
+        f"name_enforced={checks.get('expected_agent_name_enforced')}"
     )
     if process:
         print(

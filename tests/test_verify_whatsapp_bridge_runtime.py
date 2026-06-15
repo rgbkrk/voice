@@ -63,6 +63,7 @@ def make_args(tmp_path: Path, **overrides):
         "service_name": "hermes-gateway.service",
         "expected_agent_number": "13236478455",
         "expected_agent_name": "Quill",
+        "require_expected_agent_number": False,
         "expected_mode": None,
         "timeout": 1.0,
         "skip_bridge_health": True,
@@ -137,6 +138,29 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
 
         self.assertFalse(result["success"])
         self.assertIn("does not match expected", "\n".join(result["failures"]))
+
+    def test_require_expected_agent_number_fails_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(
+                tmp_path,
+                expected_agent_number=None,
+                require_expected_agent_number=True,
+            )
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text("WHATSAPP_MODE=bot\n", encoding="utf-8")
+
+            result = self.script.verify(args)
+
+        self.assertFalse(result["success"])
+        self.assertIn(
+            "Expected WhatsApp agent number is required but not configured",
+            "\n".join(result["failures"]),
+        )
+        checks = result["checks"]
+        self.assertFalse(checks["expected_agent_number_enforced"])
+        self.assertTrue(checks["expected_agent_number_required"])
 
     def test_bridge_script_hash_matches_health_report(self):
         with tempfile.TemporaryDirectory() as tmp:

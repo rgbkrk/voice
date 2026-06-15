@@ -88,6 +88,9 @@ def write_external_meta_bridge_helper(path: Path, label: str, log_path: Path) ->
                 "session_dir": "/home/ubuntu/.hermes/whatsapp/session",
                 "expected_agent_number": "13236478455",
                 "expected_agent_name": "Quill",
+                "expected_agent_number_enforced": true,
+                "expected_agent_name_enforced": true,
+                "expected_agent_number_required": false,
                 "baileys_identity": {{
                   "name": "Quill",
                   "number": "13236478455",
@@ -536,7 +539,9 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             "/home/ubuntu/.hermes/whatsapp/session "
             "env_file=/home/ubuntu/.hermes/.env "
             "bridge_process_session=/home/ubuntu/.hermes/whatsapp/session "
-            "expected_number=13236478455 expected_name=Quill "
+            "expected_number=13236478455 expected_number_enforced=True "
+            "expected_number_required=False expected_name=Quill "
+            "expected_name_enforced=True "
             "home_channel=20530681934008@lid home_channel_kind=lid "
             "allowed_users=2",
             result.stdout,

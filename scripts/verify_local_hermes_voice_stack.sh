@@ -354,6 +354,7 @@ checks = payload.get("checks") or {}
 identity = checks.get("baileys_identity") or {}
 health = checks.get("bridge_health") or {}
 cloud = checks.get("whatsapp_cloud") or {}
+webhook = cloud.get("webhook") or {}
 cloud_health = cloud.get("cloud_health") or {}
 cloud_api = cloud.get("cloud_api") or {}
 webhook_challenge = cloud.get("webhook_challenge") or {}
@@ -386,6 +387,18 @@ print(
     + " invalid="
     + csv(cloud.get("calling_invalid"))
 )
+if webhook:
+    print(
+        "whatsapp_bridge_json_webhook="
+        + f"host={webhook.get('host') or '<unset>'}"
+        + f" port={webhook.get('port') or '<unset>'}"
+        + f" path={webhook.get('path') or '<unset>'}"
+        + f" api_version={webhook.get('api_version') or '<unset>'}"
+        + " defaulted="
+        + csv(webhook.get("defaulted"))
+        + " invalid="
+        + csv(webhook.get("invalid"))
+    )
 if cloud_api.get("checked"):
     print(
         "whatsapp_bridge_json_cloud_api="

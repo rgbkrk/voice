@@ -111,6 +111,14 @@ def write_external_meta_bridge_helper(path: Path, label: str, log_path: Path) ->
                     "WHATSAPP_CLOUD_VERIFY_TOKEN"
                   ],
                   "calling_invalid": [],
+                  "webhook": {{
+                    "host": "127.0.0.1",
+                    "port": "8090",
+                    "path": "/webhook",
+                    "api_version": "v23.0",
+                    "defaulted": ["WHATSAPP_CLOUD_WEBHOOK_HOST"],
+                    "invalid": []
+                  }},
                   "cloud_health": {{
                     "checked": true,
                     "ok": false,
@@ -506,6 +514,12 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             "whatsapp_bridge_json_calling=not_ready sidecar_configured=True "
             "missing=WHATSAPP_CLOUD_PHONE_NUMBER_ID,WHATSAPP_CLOUD_ACCESS_TOKEN,"
             "WHATSAPP_CLOUD_APP_SECRET,WHATSAPP_CLOUD_VERIFY_TOKEN invalid=none",
+            result.stdout,
+        )
+        self.assertIn(
+            "whatsapp_bridge_json_webhook=host=127.0.0.1 port=8090 "
+            "path=/webhook api_version=v23.0 "
+            "defaulted=WHATSAPP_CLOUD_WEBHOOK_HOST invalid=none",
             result.stdout,
         )
         self.assertIn(

@@ -198,7 +198,8 @@ continues into the requested alpha profile, and marks
 `whatsapp_bridge=external_meta_setup_pending` in the final summary. The compact
 bridge summary includes both `whatsapp_bridge_json_cloud` and
 `whatsapp_bridge_json_calling` lines so Cloud credential gaps and Calling
-sidecar gaps remain separate.
+sidecar gaps remain separate, plus `whatsapp_bridge_json_webhook` when the
+bridge JSON includes the Cloud webhook listener config.
 
 Use the complete gate only when the local bridge, attended receive, Cloud API,
 and Calling setup are all expected to pass:

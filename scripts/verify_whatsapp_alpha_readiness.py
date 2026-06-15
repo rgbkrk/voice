@@ -20,6 +20,7 @@ DEFAULT_TEXT = "WhatsApp alpha readiness smoke."
 DEFAULT_ATTENDED_PROMPT_TEXT = (
     "Please reply with a fresh WhatsApp voice note so I can verify the voice runtime."
 )
+DEFAULT_ATTENDED_WATCH_UNIT_PREFIX = "voice-whatsapp-attended-cache-watch"
 PROFILE_CHOICES = (
     "unattended",
     "cached-receive",
@@ -187,6 +188,15 @@ def alpha_handoff_base_command(args: argparse.Namespace) -> list[str]:
                 str(args.whatsapp_audio_cache_dir.expanduser().resolve()),
             ]
         )
+    if args.attended_watch_output_dir:
+        command.extend(
+            [
+                "--attended-watch-output-dir",
+                str(args.attended_watch_output_dir.expanduser().resolve()),
+                "--attended-watch-unit-prefix",
+                args.attended_watch_unit_prefix,
+            ]
+        )
     if args.expected_agent_number:
         command.extend(["--expected-agent-number", args.expected_agent_number])
     if args.expected_agent_name:
@@ -213,6 +223,111 @@ def latest_cached_inbound_audio(audio_dir: Path) -> Path | None:
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def load_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def attended_watch_unit_from_json_path(path: Path, unit_prefix: str) -> str | None:
+    name = path.name
+    if name.endswith(".manifest.json") or not name.endswith(".json"):
+        return None
+    unit = name[: -len(".json")]
+    if not unit.startswith(f"{unit_prefix}-"):
+        return None
+    return unit
+
+
+def attended_watch_manifest_matches(
+    manifest: dict[str, Any] | None,
+    args: argparse.Namespace,
+) -> bool:
+    if not isinstance(manifest, dict):
+        return False
+    if manifest.get("profile") != "attended-cache-receive":
+        return False
+    if manifest.get("drains_bridge_messages") is not False:
+        return False
+    attended_prompt = manifest.get("attended_prompt")
+    attended_prompt = attended_prompt if isinstance(attended_prompt, dict) else {}
+    if attended_prompt.get("sends_prompt_voice_note") is not True:
+        return False
+    if args.expected_agent_number and str(
+        manifest.get("expected_agent_number") or ""
+    ) != str(args.expected_agent_number):
+        return False
+    if args.expected_agent_name and str(manifest.get("expected_agent_name") or "") != str(
+        args.expected_agent_name
+    ):
+        return False
+    return True
+
+
+def verified_attended_watch_evidence(args: argparse.Namespace) -> dict[str, Any] | None:
+    if not args.attended_watch_output_dir:
+        return None
+    output_dir = args.attended_watch_output_dir.expanduser().resolve()
+    if not output_dir.is_dir():
+        return None
+
+    candidates: list[tuple[str, Path]] = []
+    for path in output_dir.glob(f"{args.attended_watch_unit_prefix}-*.json"):
+        unit = attended_watch_unit_from_json_path(path, args.attended_watch_unit_prefix)
+        if unit:
+            candidates.append((unit, path))
+
+    for unit, json_path in sorted(candidates, key=lambda item: item[0], reverse=True):
+        payload = load_json_object(json_path)
+        if payload is None:
+            continue
+        manifest_path = output_dir / f"{unit}.manifest.json"
+        manifest = load_json_object(manifest_path)
+        if not attended_watch_manifest_matches(manifest, args):
+            continue
+
+        summary = payload.get("readiness_summary")
+        summary = summary if isinstance(summary, dict) else {}
+        pending = payload.get("pending_gates")
+        pending = pending if isinstance(pending, dict) else {}
+        attended = pending.get("attended_fresh_receive")
+        attended = attended if isinstance(attended, dict) else {}
+        if (
+            summary.get("attended_fresh_receive_verified") is not True
+            or attended.get("status") != "verified"
+        ):
+            continue
+
+        evidence = attended.get("evidence")
+        proof = dict(evidence) if isinstance(evidence, dict) else {}
+        attended_prompt = manifest.get("attended_prompt")
+        attended_prompt = attended_prompt if isinstance(attended_prompt, dict) else {}
+        proof.setdefault("kind", "attended_watch_artifact")
+        proof.update(
+            {
+                "source": "attended_watch_artifact",
+                "watch_unit": unit,
+                "watch_json": str(json_path),
+                "watch_manifest": str(manifest_path),
+                "watch_profile": payload.get("profile"),
+                "watch_success": bool(payload.get("success")),
+                "watch_readiness_status": summary.get("status"),
+                "watch_created_at_utc": manifest.get("created_at_utc"),
+                "watch_wait_seconds": manifest.get("wait_seconds"),
+                "watch_expected_agent_number": manifest.get("expected_agent_number"),
+                "watch_expected_agent_name": manifest.get("expected_agent_name"),
+                "watch_sends_prompt_voice_note": attended_prompt.get(
+                    "sends_prompt_voice_note"
+                ),
+            }
+        )
+        return proof
+
+    return None
 
 
 def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -548,6 +663,7 @@ def attended_receive_gate(
     *,
     audio_cache_dir: Path,
     base_command: list[str],
+    attended_watch_evidence: dict[str, Any] | None = None,
     preferred_wait_audio_cache_seconds: float = DEFAULT_ATTENDED_CACHE_RECEIVE_SECONDS,
     fallback_wait_inbound_seconds: float = DEFAULT_ATTENDED_DRAIN_RECEIVE_SECONDS,
 ) -> dict[str, Any]:
@@ -649,6 +765,17 @@ def attended_receive_gate(
                 gate["reason"] = "fresh audio cache receive verifier failed"
                 gate["failures"] = item.get("failures") or []
             break
+    if gate["status"] == "pending_attended" and attended_watch_evidence is not None:
+        gate["status"] = "verified"
+        gate["component"] = "attended_watch_artifact"
+        gate["cached_receive_verified"] = True
+        gate["requires_operator"] = False
+        gate["drains_bridge_messages"] = bool(
+            attended_watch_evidence.get("drains_bridge_messages")
+        )
+        gate["reason"] = "verified attended cache watch artifact observed"
+        gate["watch_unit"] = attended_watch_evidence.get("watch_unit")
+        gate["evidence"] = attended_watch_evidence
     return gate
 
 
@@ -1043,6 +1170,7 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
         if args.profile == "attended-cache-receive"
         else DEFAULT_ATTENDED_CACHE_RECEIVE_SECONDS
     )
+    attended_watch_evidence = verified_attended_watch_evidence(args)
     pending_gates = {
         "attended_fresh_receive": attended_receive_gate(
             components,
@@ -1052,6 +1180,7 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
                 else args.hermes_home.expanduser().resolve() / "audio_cache"
             ),
             base_command=handoff_base_command,
+            attended_watch_evidence=attended_watch_evidence,
             preferred_wait_audio_cache_seconds=(
                 args.wait_audio_cache_seconds
                 if args.profile == "attended-cache-receive"
@@ -1142,6 +1271,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bridge-url", default=os.environ.get("WHATSAPP_BRIDGE_URL", DEFAULT_BRIDGE_URL))
     parser.add_argument("--sidecar-url", default=DEFAULT_SIDECAR_URL)
     parser.add_argument("--whatsapp-audio-cache-dir", type=Path, default=None)
+    parser.add_argument(
+        "--attended-watch-output-dir",
+        type=Path,
+        default=None,
+        help=(
+            "optional directory containing start_whatsapp_attended_cache_watch.py "
+            "artifacts to use as persistent attended receive proof"
+        ),
+    )
+    parser.add_argument(
+        "--attended-watch-unit-prefix",
+        default=DEFAULT_ATTENDED_WATCH_UNIT_PREFIX,
+        help="unit/artifact prefix for attended cache watch proof discovery",
+    )
     parser.add_argument("--expected-agent-number", default=os.environ.get("WHATSAPP_AGENT_NUMBER"))
     parser.add_argument("--expected-agent-name", default=os.environ.get("WHATSAPP_AGENT_NAME"))
     parser.add_argument("--text", default=DEFAULT_TEXT)

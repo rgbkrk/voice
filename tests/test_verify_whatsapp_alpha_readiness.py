@@ -39,6 +39,74 @@ def ok_shell(path: Path) -> None:
     )
 
 
+def write_verified_attended_watch(
+    directory: Path,
+    *,
+    unit_prefix: str = "voice-watch",
+    unit_suffix: str = "20260615T010000Z",
+    expected_agent_number: str = "13236478455",
+    expected_agent_name: str = "Quill",
+) -> str:
+    directory.mkdir(parents=True, exist_ok=True)
+    unit = f"{unit_prefix}-{unit_suffix}"
+    payload = {
+        "success": True,
+        "profile": "attended-cache-receive",
+        "readiness_summary": {
+            "status": "local_ready_pending_gates",
+            "attended_fresh_receive_verified": True,
+        },
+        "pending_gates": {
+            "attended_fresh_receive": {
+                "status": "verified",
+                "cached_receive_verified": True,
+                "drains_bridge_messages": False,
+                "evidence": {
+                    "kind": "audio_cache",
+                    "fresh": True,
+                    "fresh_count": 1,
+                    "baseline_count": 0,
+                    "final_count": 1,
+                    "audio": [
+                        {
+                            "name": "aud_watch.ogg",
+                            "codec": "opus",
+                            "stt": {
+                                "frames": 331,
+                                "text_redacted": True,
+                                "text_chars": 104,
+                            },
+                        }
+                    ],
+                },
+            }
+        },
+    }
+    manifest = {
+        "schema": "voice.whatsapp_attended_cache_watch_manifest",
+        "version": 1,
+        "profile": "attended-cache-receive",
+        "drains_bridge_messages": False,
+        "created_at_utc": "2026-06-15T01:00:00Z",
+        "wait_seconds": 21600.0,
+        "expected_agent_number": expected_agent_number,
+        "expected_agent_name": expected_agent_name,
+        "attended_prompt": {
+            "sends_prompt_voice_note": True,
+            "audio_cache_dir": str(directory / "audio_cache"),
+        },
+    }
+    (directory / f"{unit}.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (directory / f"{unit}.manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return unit
+
+
 def write_fake_helpers(
     directory: Path,
     *,
@@ -778,6 +846,58 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
 
         components = {item["name"]: item for item in payload["components"]}
         self.assertNotIn("--stt-audio", components["hermes_voice_config"]["command"])
+
+    def test_cached_receive_profile_uses_verified_attended_watch_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            watch_dir = tmp_path / "watch-artifacts"
+            unit = write_verified_attended_watch(watch_dir)
+            payload = self.run_readiness(
+                tmp_path,
+                "--profile",
+                "cached-receive",
+                "--attended-watch-output-dir",
+                str(watch_dir),
+                "--attended-watch-unit-prefix",
+                "voice-watch",
+                "--expected-agent-number",
+                "13236478455",
+                "--expected-agent-name",
+                "Quill",
+            )
+
+        gate = payload["pending_gates"]["attended_fresh_receive"]
+        self.assertEqual(gate["status"], "verified")
+        self.assertEqual(gate["component"], "attended_watch_artifact")
+        self.assertEqual(gate["watch_unit"], unit)
+        self.assertFalse(gate["requires_operator"])
+        self.assertTrue(gate["cached_receive_verified"])
+        self.assertFalse(gate["drains_bridge_messages"])
+        self.assertEqual(
+            gate["reason"],
+            "verified attended cache watch artifact observed",
+        )
+        evidence = gate["evidence"]
+        self.assertEqual(evidence["kind"], "audio_cache")
+        self.assertEqual(evidence["source"], "attended_watch_artifact")
+        self.assertEqual(evidence["watch_unit"], unit)
+        self.assertEqual(evidence["watch_profile"], "attended-cache-receive")
+        self.assertEqual(evidence["watch_expected_agent_number"], "13236478455")
+        self.assertEqual(evidence["watch_expected_agent_name"], "Quill")
+        self.assertEqual(evidence["audio"][0]["name"], "aud_watch.ogg")
+        summary = payload["readiness_summary"]
+        self.assertTrue(summary["attended_fresh_receive_verified"])
+        self.assertEqual(
+            [action["id"] for action in summary["next_actions"]],
+            ["configure_whatsapp_cloud_calling"],
+        )
+        complete_command = payload["pending_gates"]["whatsapp_cloud_calling"][
+            "setup_handoff"
+        ]["complete_verification_command"]
+        self.assertIn("--attended-watch-output-dir", complete_command)
+        self.assertIn(str(watch_dir.resolve()), complete_command)
+        self.assertIn("--attended-watch-unit-prefix", complete_command)
+        self.assertIn("voice-watch", complete_command)
 
     def test_send_profile_posts_real_voice_note(self):
         with tempfile.TemporaryDirectory() as tmp:

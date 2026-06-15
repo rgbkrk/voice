@@ -147,6 +147,13 @@ redacted transcript length. The draining bridge fallback records audio-event
 count, observed media types, media URL count, and whether `/messages` was
 drained; chat IDs, sender IDs, and media URL paths are reduced to presence or
 count fields.
+To reuse a long-running watcher result in a later alpha report, pass
+`--attended-watch-output-dir` and `--attended-watch-unit-prefix`. The script
+will read matching JSON/manifest artifacts, require a verified
+`attended-cache-receive` run for the expected agent identity, and mark
+`pending_gates.attended_fresh_receive` verified from that saved proof. The
+aggregate stack verifier supplies those flags automatically when attended-watch
+status is enabled.
 
 For the external Meta gates, the JSON report includes safe setup handoffs under
 `pending_gates.whatsapp_cloud.setup_handoff` and
@@ -348,7 +355,10 @@ scripts/start_whatsapp_attended_cache_watch.py --list
 
 The aggregate stack gate runs the same non-draining status check by default and
 prints `whatsapp_attended_watch=checked`, so a release or host-health run also
-shows whether an attended receive window is already active.
+shows whether an attended receive window is already active. When the same run
+also writes an alpha JSON report, verified watch artifacts are fed into alpha
+readiness so the machine-readable next actions only include the remaining
+Cloud/Calling setup.
 
 To stop a stale watch without deleting its JSON/log artifacts:
 

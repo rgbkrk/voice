@@ -480,6 +480,11 @@ whether it is newer than the watch start time. Use `--list` to discover active
 watches and matching artifacts from a later session. Use `--stop
 <unit-or-service>` to stop a stale watch without deleting its JSON/log/manifest
 artifacts.
+When the aggregate stack gate runs with `--whatsapp-alpha-profile` and attended
+watch status is enabled, it passes the watch artifact directory and unit prefix
+into the alpha readiness script. A previously verified non-draining watch can
+therefore satisfy `pending_gates.attended_fresh_receive` in the saved alpha JSON
+without asking the operator to rerun the attended receive window.
 
 To fail unless every alpha gate is complete, include the strict completion flag:
 

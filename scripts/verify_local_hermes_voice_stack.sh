@@ -902,6 +902,12 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
   if [[ -n "$whatsapp_audio_cache_dir" ]]; then
     whatsapp_alpha_args+=(--whatsapp-audio-cache-dir "$whatsapp_audio_cache_dir")
   fi
+  if [[ "$skip_whatsapp_attended_watch_status" != "1" && "$skip_systemd" != "1" ]]; then
+    whatsapp_alpha_args+=(
+      --attended-watch-output-dir "$whatsapp_attended_watch_output_dir"
+      --attended-watch-unit-prefix "$whatsapp_attended_watch_unit_prefix"
+    )
+  fi
   if [[ -n "$whatsapp_alpha_voice_note_chat_id" ]]; then
     whatsapp_alpha_args+=(--voice-note-chat-id "$whatsapp_alpha_voice_note_chat_id")
   fi

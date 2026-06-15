@@ -71,6 +71,8 @@ def make_args(tmp_path: Path, **overrides):
         "require_whatsapp_cloud": False,
         "require_whatsapp_calling": False,
         "check_whatsapp_cloud_api": False,
+        "check_whatsapp_cloud_webhook": False,
+        "whatsapp_cloud_webhook_challenge": "unit-challenge",
         "graph_api_base_url": "https://graph.facebook.com",
     }
     values.update(overrides)
@@ -507,6 +509,84 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
         self.assertEqual(cloud_api["http_status"], 403)
         self.assertEqual(cloud_api["error"]["code"], 100)
         self.assertNotIn("secret-token", json.dumps(result))
+
+    def test_cloud_webhook_challenge_uses_local_url_without_leaking_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(tmp_path, check_whatsapp_cloud_webhook=True)
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text(
+                "\n".join(
+                    [
+                        "WHATSAPP_MODE=bot",
+                        "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                        "WHATSAPP_CLOUD_ACCESS_TOKEN=secret-access-token",
+                        "WHATSAPP_CLOUD_APP_SECRET=secret-app",
+                        "WHATSAPP_CLOUD_VERIFY_TOKEN=secret-verify-token",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            original_fetch = self.script.fetch_webhook_challenge
+            calls = []
+
+            def fake_fetch(**kwargs):
+                calls.append(kwargs)
+                return 200, kwargs["challenge"], None
+
+            self.script.fetch_webhook_challenge = fake_fetch
+            try:
+                result = self.script.verify(args)
+            finally:
+                self.script.fetch_webhook_challenge = original_fetch
+
+        self.assertTrue(result["success"], result["failures"])
+        self.assertEqual(calls[0]["url"], "http://127.0.0.1:8090/whatsapp/webhook")
+        self.assertEqual(calls[0]["verify_token"], "secret-verify-token")
+        self.assertEqual(calls[0]["challenge"], "unit-challenge")
+        challenge = result["checks"]["whatsapp_cloud"]["webhook_challenge"]
+        self.assertTrue(challenge["checked"])
+        self.assertTrue(challenge["ok"])
+        self.assertTrue(challenge["verify_token_present"])
+        self.assertTrue(challenge["challenge_echoed"])
+        self.assertEqual(challenge["local_url"], "http://127.0.0.1:8090/whatsapp/webhook")
+        serialized = json.dumps(result)
+        self.assertNotIn("secret-access-token", serialized)
+        self.assertNotIn("secret-verify-token", serialized)
+
+    def test_cloud_webhook_challenge_fails_without_verify_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(tmp_path, check_whatsapp_cloud_webhook=True)
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text(
+                "\n".join(
+                    [
+                        "WHATSAPP_MODE=bot",
+                        "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                        "WHATSAPP_CLOUD_ACCESS_TOKEN=secret-access-token",
+                        "WHATSAPP_CLOUD_APP_SECRET=secret-app",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.script.verify(args)
+
+        self.assertFalse(result["success"])
+        self.assertIn(
+            "WhatsApp Cloud webhook challenge check failed",
+            "\n".join(result["failures"]),
+        )
+        challenge = result["checks"]["whatsapp_cloud"]["webhook_challenge"]
+        self.assertFalse(challenge["ok"])
+        self.assertEqual(challenge["missing"], ["WHATSAPP_CLOUD_VERIFY_TOKEN"])
+        self.assertNotIn("secret-access-token", json.dumps(result))
 
 
 if __name__ == "__main__":

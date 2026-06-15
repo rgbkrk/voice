@@ -779,6 +779,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                     "--require-whatsapp-calling",
                     "--require-whatsapp-alpha-complete",
                     "--check-whatsapp-cloud-api",
+                    "--check-whatsapp-cloud-webhook",
                     "--skip-hermes-config",
                     "--skip-hermes-gateway",
                     "--skip-cli-mcp",
@@ -856,6 +857,7 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                 "--require-whatsapp-cloud",
                 "--require-whatsapp-calling",
                 "--check-whatsapp-cloud-api",
+                "--check-whatsapp-cloud-webhook",
                 "--require-complete",
             ],
         )

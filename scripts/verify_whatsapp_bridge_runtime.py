@@ -25,6 +25,7 @@ DEFAULT_WHATSAPP_CLOUD_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PORT = 8090
 DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PATH = "/whatsapp/webhook"
 DEFAULT_WHATSAPP_CLOUD_API_VERSION = "v20.0"
+DEFAULT_WHATSAPP_CLOUD_WEBHOOK_CHALLENGE = "voice-cloud-webhook-check"
 WHATSAPP_CLOUD_PHONE_NUMBER_FIELDS = (
     "id",
     "display_phone_number",
@@ -616,6 +617,110 @@ def build_cloud_summary(env_sources: dict[str, dict[str, str]]) -> dict[str, Any
     }
 
 
+def local_webhook_url(webhook: dict[str, Any]) -> str | None:
+    port = webhook.get("port")
+    path = webhook.get("path") or DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PATH
+    if not isinstance(port, int) or not isinstance(path, str) or not path.startswith("/"):
+        return None
+    host = str(webhook.get("host") or DEFAULT_WHATSAPP_CLOUD_WEBHOOK_HOST).strip()
+    if host in ("", "0.0.0.0", "::", "[::]"):
+        host = "127.0.0.1"
+    elif ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}{path}"
+
+
+def fetch_webhook_challenge(
+    *,
+    url: str,
+    verify_token: str,
+    challenge: str,
+    timeout: float,
+) -> tuple[int | None, str | None, dict[str, Any] | None]:
+    query = urlencode(
+        {
+            "hub.mode": "subscribe",
+            "hub.verify_token": verify_token,
+            "hub.challenge": challenge,
+        }
+    )
+    target = f"{url}{'&' if '?' in url else '?'}{query}"
+    request = Request(target, headers={"Accept": "text/plain"})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            status = getattr(response, "status", 200)
+            body = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="replace"), {
+            "message": f"webhook challenge returned HTTP {exc.code}"
+        }
+    except URLError as exc:
+        return None, None, {"message": f"webhook challenge request failed: {exc.reason}"}
+    except OSError as exc:
+        return None, None, {"message": f"webhook challenge request failed: {exc}"}
+    return int(status), body, None
+
+
+def build_cloud_webhook_challenge_check(
+    env_sources: dict[str, dict[str, str]],
+    *,
+    webhook: dict[str, Any],
+    challenge: str,
+    timeout: float,
+) -> dict[str, Any]:
+    verify_token, token_sources = first_env_value(
+        env_sources,
+        "WHATSAPP_CLOUD_VERIFY_TOKEN",
+    )
+    url = local_webhook_url(webhook)
+    check: dict[str, Any] = {
+        "checked": True,
+        "ok": False,
+        "local_url": url,
+        "verify_token_present": verify_token is not None,
+        "verify_token_sources": token_sources,
+        "challenge_present": bool(challenge),
+        "challenge_echoed": False,
+        "missing": [],
+        "invalid": [],
+    }
+    if not verify_token:
+        check["missing"].append("WHATSAPP_CLOUD_VERIFY_TOKEN")
+    if not challenge:
+        check["invalid"].append("WHATSAPP_CLOUD_WEBHOOK_CHALLENGE")
+    if not url:
+        check["invalid"].extend(str(key) for key in webhook.get("invalid") or [])
+        if not check["invalid"]:
+            check["invalid"].append("WHATSAPP_CLOUD_WEBHOOK_PORT")
+    if check["missing"] or check["invalid"]:
+        check["error"] = {
+            "message": (
+                "Cloud webhook challenge requires a local webhook URL, "
+                "verify token, and non-empty challenge"
+            )
+        }
+        return check
+
+    status, body, error = fetch_webhook_challenge(
+        url=str(url),
+        verify_token=str(verify_token),
+        challenge=challenge,
+        timeout=timeout,
+    )
+    check["http_status"] = status
+    if error:
+        check["error"] = error
+        return check
+    check["challenge_echoed"] = body == challenge
+    if not check["challenge_echoed"]:
+        check["error"] = {
+            "message": "webhook challenge did not echo the configured challenge"
+        }
+        return check
+    check["ok"] = True
+    return check
+
+
 def graph_error_summary(body: bytes) -> dict[str, Any]:
     try:
         payload = json.loads(body.decode("utf-8", errors="replace"))
@@ -952,6 +1057,24 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             )
     else:
         cloud["cloud_api"] = {"checked": False}
+    if args.check_whatsapp_cloud_webhook:
+        webhook_challenge = build_cloud_webhook_challenge_check(
+            env_sources,
+            webhook=cloud["webhook"],
+            challenge=args.whatsapp_cloud_webhook_challenge,
+            timeout=args.timeout,
+        )
+        cloud["webhook_challenge"] = webhook_challenge
+        if not webhook_challenge.get("ok"):
+            failures.append(
+                "WhatsApp Cloud webhook challenge check failed: "
+                + str(
+                    (webhook_challenge.get("error") or {}).get("message")
+                    or "unknown error"
+                )
+            )
+    else:
+        cloud["webhook_challenge"] = {"checked": False}
     if args.require_whatsapp_cloud and cloud["cloud_missing"]:
         failures.append(
             "WhatsApp Cloud credentials missing: "
@@ -1027,6 +1150,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--check-whatsapp-cloud-webhook",
+        action="store_true",
+        help=(
+            "send Meta's local webhook subscription challenge shape to the "
+            "configured Cloud webhook and require the challenge echo"
+        ),
+    )
+    parser.add_argument(
+        "--whatsapp-cloud-webhook-challenge",
+        default=os.environ.get(
+            "WHATSAPP_CLOUD_WEBHOOK_CHALLENGE",
+            DEFAULT_WHATSAPP_CLOUD_WEBHOOK_CHALLENGE,
+        ),
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--graph-api-base-url",
         default=os.environ.get("GRAPH_API_BASE_URL", DEFAULT_GRAPH_API_BASE_URL),
         help=argparse.SUPPRESS,
@@ -1043,6 +1182,7 @@ def human_summary(result: dict[str, Any]) -> None:
     bridge_script_hash = checks.get("bridge_script_hash") or {}
     cloud = checks.get("whatsapp_cloud") or {}
     webhook = cloud.get("webhook") or {}
+    webhook_challenge = cloud.get("webhook_challenge") or {}
     cloud_api = cloud.get("cloud_api") or {}
     local_config = checks.get("whatsapp_local_config") or {}
 
@@ -1115,6 +1255,24 @@ def human_summary(result: dict[str, Any]) -> None:
         + " invalid="
         + (",".join(webhook.get("invalid") or []) or "none")
     )
+    if webhook_challenge.get("checked"):
+        challenge_error = webhook_challenge.get("error") or {}
+        print(
+            "whatsapp_cloud_webhook_challenge="
+            + ("ok" if webhook_challenge.get("ok") else "failed")
+            + f" local_url={webhook_challenge.get('local_url') or '<invalid>'}"
+            + f" http_status={webhook_challenge.get('http_status') or '<none>'}"
+            + " verify_token_present="
+            + str(webhook_challenge.get("verify_token_present"))
+            + " challenge_echoed="
+            + str(webhook_challenge.get("challenge_echoed"))
+            + " missing="
+            + (",".join(webhook_challenge.get("missing") or []) or "none")
+            + " invalid="
+            + (",".join(webhook_challenge.get("invalid") or []) or "none")
+            + " error="
+            + str(challenge_error.get("message") or "none")
+        )
     if cloud_api.get("checked"):
         phone = cloud_api.get("phone_number") or {}
         error = cloud_api.get("error") or {}

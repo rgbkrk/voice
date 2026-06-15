@@ -434,6 +434,8 @@ def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
         bridge_cmd.extend(["--expected-agent-name", args.expected_agent_name])
     if args.check_whatsapp_cloud_api:
         bridge_cmd.append("--check-whatsapp-cloud-api")
+    if args.check_whatsapp_cloud_webhook:
+        bridge_cmd.append("--check-whatsapp-cloud-webhook")
     if args.skip_systemd:
         bridge_cmd.append("--skip-systemd")
     components.append(
@@ -821,6 +823,7 @@ def cloud_setup_handoff(
         *base_command,
         "--require-whatsapp-cloud",
         "--check-whatsapp-cloud-api",
+        "--check-whatsapp-cloud-webhook",
     ]
     steps = [] if configured else [
         "Create or select the Meta app, WABA, and Cloud API phone number for Quill.",
@@ -875,6 +878,7 @@ def calling_setup_handoff(
         "--require-whatsapp-cloud",
         "--require-whatsapp-calling",
         "--check-whatsapp-cloud-api",
+        "--check-whatsapp-cloud-webhook",
     ]
     complete_command = [
         *base_command,
@@ -885,6 +889,7 @@ def calling_setup_handoff(
         "--require-whatsapp-cloud",
         "--require-whatsapp-calling",
         "--check-whatsapp-cloud-api",
+        "--check-whatsapp-cloud-webhook",
         "--require-complete",
     ]
     steps = [] if ready else [
@@ -1344,6 +1349,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "when Cloud credentials are configured, call the Meta Graph API "
             "phone-number endpoint without printing credential values"
+        ),
+    )
+    parser.add_argument(
+        "--check-whatsapp-cloud-webhook",
+        action="store_true",
+        help=(
+            "when the Cloud webhook is running, verify the local Meta "
+            "subscription challenge echo without printing credential values"
         ),
     )
     parser.add_argument(

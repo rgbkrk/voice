@@ -75,9 +75,10 @@ WhatsApp-ready Ogg/Opus output, the Baileys bridge identity, the Hermes gateway
 voice-stream service, and the WebRTC sidecar contract. Add
 `--require-whatsapp-cloud` or `--require-whatsapp-calling` only when the host is
 expected to have real Meta Cloud credentials. Once those credentials are on
-disk, add `--check-whatsapp-cloud-api` to make an authenticated Graph API
-phone-number request and confirm the configured `WHATSAPP_CLOUD_PHONE_NUMBER_ID`
-is reachable without printing token or phone-number values.
+disk, add `--check-whatsapp-cloud-api` and
+`--check-whatsapp-cloud-webhook` to make an authenticated Graph API
+phone-number request and confirm the local Cloud webhook echoes Meta's
+subscription challenge without printing token or phone-number values.
 
 The same stack gate can run the categorized alpha report as an explicit opt-in:
 
@@ -122,9 +123,10 @@ voice-note, live-call local sidecar, or external Meta setup. Use
 `--require-whatsapp-calling` when a host is expected to be ready for real Cloud
 Calling; otherwise missing Meta credentials are reported as external setup
 still required, not as a local Baileys voice-note failure. Add
-`--check-whatsapp-cloud-api` when credentials are expected to work and the
-report should prove the configured Cloud phone-number node is reachable. The
-named profiles are `unattended`, `cached-receive`, `send`,
+`--check-whatsapp-cloud-api` and `--check-whatsapp-cloud-webhook` when
+credentials are expected to work and the report should prove the configured
+Cloud phone-number node plus local webhook challenge are reachable. The named
+profiles are `unattended`, `cached-receive`, `send`,
 `attended-cache-receive`, and `attended-send-receive`. Use `cached-receive`
 when the report should also replay a cached inbound WhatsApp voice note through
 `voice stream-transcribe`:
@@ -198,6 +200,7 @@ scripts/verify_whatsapp_alpha_readiness.py \
   --require-whatsapp-cloud \
   --require-whatsapp-calling \
   --check-whatsapp-cloud-api \
+  --check-whatsapp-cloud-webhook \
   --require-complete
 ```
 

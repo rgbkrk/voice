@@ -48,6 +48,7 @@ require_whatsapp_cloud="${REQUIRE_WHATSAPP_CLOUD:-0}"
 require_whatsapp_calling="${REQUIRE_WHATSAPP_CALLING:-0}"
 require_whatsapp_alpha_complete="${REQUIRE_WHATSAPP_ALPHA_COMPLETE:-0}"
 check_whatsapp_cloud_api="${CHECK_WHATSAPP_CLOUD_API:-0}"
+check_whatsapp_cloud_webhook="${CHECK_WHATSAPP_CLOUD_WEBHOOK:-0}"
 overall_status=0
 temp_files=()
 
@@ -117,6 +118,8 @@ Options:
                                fail unless all WhatsApp alpha readiness gates are complete
   --check-whatsapp-cloud-api   call the Meta Graph API phone-number endpoint when Cloud
                                credentials are configured
+  --check-whatsapp-cloud-webhook
+                               verify the local Cloud webhook subscription challenge echo
   --run-whatsapp-inbound-cache-smoke
                                transcribe a bridge-downloaded aud_* file from the audio cache
   --run-telegram-voice-contract
@@ -523,6 +526,10 @@ while [[ $# -gt 0 ]]; do
       check_whatsapp_cloud_api=1
       shift
       ;;
+    --check-whatsapp-cloud-webhook)
+      check_whatsapp_cloud_webhook=1
+      shift
+      ;;
     --run-whatsapp-inbound-cache-smoke)
       run_whatsapp_inbound_cache_smoke=1
       shift
@@ -807,6 +814,9 @@ if [[ "$skip_whatsapp_bridge" != "1" ]]; then
   if [[ "$check_whatsapp_cloud_api" == "1" ]]; then
     whatsapp_bridge_args+=(--check-whatsapp-cloud-api)
   fi
+  if [[ "$check_whatsapp_cloud_webhook" == "1" ]]; then
+    whatsapp_bridge_args+=(--check-whatsapp-cloud-webhook)
+  fi
   run_step "WhatsApp bridge identity and credential readiness" "${whatsapp_bridge_args[@]}"
   whatsapp_bridge_status="checked"
 else
@@ -948,6 +958,9 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
   fi
   if [[ "$check_whatsapp_cloud_api" == "1" ]]; then
     whatsapp_alpha_args+=(--check-whatsapp-cloud-api)
+  fi
+  if [[ "$check_whatsapp_cloud_webhook" == "1" ]]; then
+    whatsapp_alpha_args+=(--check-whatsapp-cloud-webhook)
   fi
   if [[ "$require_whatsapp_alpha_complete" == "1" ]]; then
     whatsapp_alpha_args+=(--require-complete)

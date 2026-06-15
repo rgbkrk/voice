@@ -539,10 +539,13 @@ if watch is not None:
     alpha = watch.get("alpha") or {}
     manifest = watch.get("manifest_summary") or {}
     prompt = manifest.get("attended_prompt") or {}
+    send_mime = str(prompt.get("send_format") or "").replace(" ", "") or None
     print(
         "whatsapp_alpha_json_attended_watch_evidence="
         f"verified unit={watch.get('unit')} "
         f"sends_prompt_voice_note={prompt.get('sends_prompt_voice_note')} "
+        f"send_transport={prompt.get('send_transport')} "
+        f"send_mime={send_mime} "
         f"watch_drains_messages={manifest.get('drains_bridge_messages')} "
         f"fresh_count={alpha.get('fresh_count')} "
         f"latest_audio={audio_cache.get('latest_file')} "

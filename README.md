@@ -527,9 +527,10 @@ printed. The stack verifier echoes compact `whatsapp_alpha_json_*` summary
 lines for every alpha profile, including readiness status, completion state,
 next actions, attended receive status, and Cloud/Calling missing or invalid key
 groups. When a verified attended watch is available, the compact summary also
-reports whether the watch sent the prompt as a voice note and whether it used
-the non-draining audio-cache receive path. A verified attended receive also
-stores compact redacted proof under `pending_gates.attended_fresh_receive.evidence`.
+reports whether the watch sent the prompt as a voice note, the local PTT
+transport and Ogg/Opus MIME it used, and whether it used the non-draining
+audio-cache receive path. A verified attended receive also stores compact
+redacted proof under `pending_gates.attended_fresh_receive.evidence`.
 
 When the WebRTC Python dependencies are installed, add
 `--run-webrtc-loopback-smoke --webrtc-python /tmp/voice-webrtc-venv/bin/python`

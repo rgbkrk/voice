@@ -1476,6 +1476,12 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
                             "attended_fresh_receive_verified": true,
                             "fresh_count": 1
                           }},
+                          "manifest_summary": {{
+                            "drains_bridge_messages": false,
+                            "attended_prompt": {{
+                              "sends_prompt_voice_note": true
+                            }}
+                          }},
                           "audio_cache": {{
                             "latest_file": "aud_new.ogg",
                             "fresh_since_created": true
@@ -1576,8 +1582,9 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
         )
         self.assertIn(
             "whatsapp_alpha_json_attended_watch_evidence=verified "
-            "unit=watch-done fresh_count=1 latest_audio=aud_new.ogg "
-            "latest_audio_fresh=True",
+            "unit=watch-done sends_prompt_voice_note=True "
+            "watch_drains_messages=False fresh_count=1 "
+            "latest_audio=aud_new.ogg latest_audio_fresh=True",
             result.stdout,
         )
         self.assertIn(

@@ -187,11 +187,14 @@ When the top-level stack gate runs an alpha profile, it echoes compact
 `whatsapp_alpha_json_*` summary lines from the alpha JSON report. Those lines
 include the alpha profile, readiness status, completion state, next action IDs,
 attended receive status, and Cloud/Calling missing or invalid key groups. When
-a gate is still pending, the same summary also echoes the copyable attended
-receive command, fallback draining command, Cloud verification command, Calling
-verification command, and complete-alpha command if those commands are present
-in the report. If the alpha profile exits non-zero while writing a valid JSON
-report, such as a `--require-complete` run with pending gates, the stack gate
+a verified attended watch is available, the compact summary also shows whether
+the watch sent its prompt as a voice note and whether it used the non-draining
+audio-cache receive path. When a gate is still pending, the same summary also
+echoes the copyable attended receive command, fallback draining command, Cloud
+verification command, Calling verification command, and complete-alpha command
+if those commands are present in the report. If the alpha profile exits
+non-zero while writing a valid JSON report, such as a `--require-complete` run
+with pending gates, the stack gate
 still prints this summary before returning the alpha failure status. If a
 nonzero alpha report proves local checks and attended receive passed and only
 external Meta setup remains, the final summary marks

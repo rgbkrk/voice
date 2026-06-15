@@ -537,9 +537,13 @@ print(f"whatsapp_alpha_json_next_actions={csv(actions)}")
 if watch is not None:
     audio_cache = watch.get("audio_cache") or {}
     alpha = watch.get("alpha") or {}
+    manifest = watch.get("manifest_summary") or {}
+    prompt = manifest.get("attended_prompt") or {}
     print(
         "whatsapp_alpha_json_attended_watch_evidence="
         f"verified unit={watch.get('unit')} "
+        f"sends_prompt_voice_note={prompt.get('sends_prompt_voice_note')} "
+        f"watch_drains_messages={manifest.get('drains_bridge_messages')} "
         f"fresh_count={alpha.get('fresh_count')} "
         f"latest_audio={audio_cache.get('latest_file')} "
         f"latest_audio_fresh={audio_cache.get('fresh_since_created')}"

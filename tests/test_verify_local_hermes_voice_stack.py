@@ -91,6 +91,8 @@ def write_external_meta_bridge_helper(path: Path, label: str, log_path: Path) ->
                 "expected_agent_number_enforced": true,
                 "expected_agent_name_enforced": true,
                 "expected_agent_number_required": false,
+                "expected_agent_number_source": "env_file",
+                "expected_agent_name_source": "env_file",
                 "baileys_identity": {{
                   "name": "Quill",
                   "number": "13236478455",
@@ -540,8 +542,9 @@ class LocalHermesVoiceStackVerifierTests(unittest.TestCase):
             "env_file=/home/ubuntu/.hermes/.env "
             "bridge_process_session=/home/ubuntu/.hermes/whatsapp/session "
             "expected_number=13236478455 expected_number_enforced=True "
-            "expected_number_required=False expected_name=Quill "
-            "expected_name_enforced=True "
+            "expected_number_required=False expected_number_source=env_file "
+            "expected_name=Quill expected_name_enforced=True "
+            "expected_name_source=env_file "
             "home_channel=20530681934008@lid home_channel_kind=lid "
             "allowed_users=2",
             result.stdout,

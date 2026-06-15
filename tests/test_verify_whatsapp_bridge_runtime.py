@@ -162,6 +162,41 @@ class WhatsAppBridgeRuntimeVerifierTests(unittest.TestCase):
         self.assertFalse(checks["expected_agent_number_enforced"])
         self.assertTrue(checks["expected_agent_number_required"])
 
+    def test_expected_agent_identity_can_come_from_env_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args = make_args(
+                tmp_path,
+                expected_agent_number=None,
+                expected_agent_name=None,
+                require_expected_agent_number=True,
+            )
+            write_baileys_session(args.session_dir)
+            args.env_file.parent.mkdir(parents=True, exist_ok=True)
+            args.env_file.write_text(
+                "\n".join(
+                    [
+                        "WHATSAPP_MODE=bot",
+                        "WHATSAPP_AGENT_NUMBER=13236478455",
+                        "WHATSAPP_AGENT_NAME=Quill",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.script.verify(args)
+
+        self.assertTrue(result["success"], result["failures"])
+        checks = result["checks"]
+        self.assertEqual(checks["expected_agent_number"], "13236478455")
+        self.assertEqual(checks["expected_agent_number_source"], "env_file")
+        self.assertTrue(checks["expected_agent_number_enforced"])
+        self.assertTrue(checks["expected_agent_number_required"])
+        self.assertEqual(checks["expected_agent_name"], "Quill")
+        self.assertEqual(checks["expected_agent_name_source"], "env_file")
+        self.assertTrue(checks["expected_agent_name_enforced"])
+
     def test_bridge_script_hash_matches_health_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

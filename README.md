@@ -521,8 +521,9 @@ The stack bridge summary also prints non-secret Baileys provenance:
 `whatsapp_bridge_json_sources` shows the resolved session directory, Hermes env
 file, bridge process session, expected agent identity, and home channel, while
 `whatsapp_bridge_json_session_artifacts` reports auth/session file counts.
-Set `WHATSAPP_AGENT_NUMBER` or pass `--expected-whatsapp-agent-number` when the
-paired number should be checked against an independent expected value; add
+Set `WHATSAPP_AGENT_NUMBER` in the Hermes env file or pass
+`--expected-whatsapp-agent-number` when the paired number should be checked
+against an independent expected value; add
 `--require-expected-whatsapp-agent-number` to fail if that expected value is
 missing.
 

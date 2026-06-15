@@ -1075,8 +1075,28 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
                     f"{process_env_error}"
                 )
 
-    expected_agent_number = normalize_whatsapp_identifier(args.expected_agent_number)
+    expected_agent_number_source = "cli_or_process_env" if args.expected_agent_number else None
+    raw_expected_agent_number = args.expected_agent_number
+    if not raw_expected_agent_number:
+        raw_expected_agent_number, expected_agent_number_sources = first_env_value(
+            env_sources,
+            "WHATSAPP_AGENT_NUMBER",
+        )
+        expected_agent_number_source = (
+            ",".join(expected_agent_number_sources) if expected_agent_number_sources else None
+        )
+    expected_agent_number = normalize_whatsapp_identifier(raw_expected_agent_number)
+
+    expected_agent_name_source = "cli_or_process_env" if args.expected_agent_name else None
     expected_agent_name = args.expected_agent_name
+    if not expected_agent_name:
+        expected_agent_name, expected_agent_name_sources = first_env_value(
+            env_sources,
+            "WHATSAPP_AGENT_NAME",
+        )
+        expected_agent_name_source = (
+            ",".join(expected_agent_name_sources) if expected_agent_name_sources else None
+        )
     expected_mode = args.expected_mode or env_sources["env_file"].get("WHATSAPP_MODE")
     if args.require_expected_agent_number and not expected_agent_number:
         failures.append(
@@ -1282,6 +1302,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "expected_agent_number_enforced": bool(expected_agent_number),
         "expected_agent_name_enforced": bool(expected_agent_name),
         "expected_agent_number_required": bool(args.require_expected_agent_number),
+        "expected_agent_number_source": expected_agent_number_source,
+        "expected_agent_name_source": expected_agent_name_source,
         "expected_mode": expected_mode,
         "whatsapp_local_config": local_config,
         "baileys_identity": identity,
@@ -1406,8 +1428,10 @@ def human_summary(result: dict[str, Any]) -> None:
         f"number={checks.get('expected_agent_number') or '<none>'} "
         f"number_enforced={checks.get('expected_agent_number_enforced')} "
         f"number_required={checks.get('expected_agent_number_required')} "
+        f"number_source={checks.get('expected_agent_number_source') or '<none>'} "
         f"name={checks.get('expected_agent_name') or '<none>'} "
-        f"name_enforced={checks.get('expected_agent_name_enforced')}"
+        f"name_enforced={checks.get('expected_agent_name_enforced')} "
+        f"name_source={checks.get('expected_agent_name_source') or '<none>'}"
     )
     if process:
         print(

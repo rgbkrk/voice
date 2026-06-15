@@ -219,8 +219,9 @@ listener config. It also prints `whatsapp_bridge_json_sources` with the
 resolved Baileys session directory, Hermes env file, bridge process session,
 expected agent identity, and home channel, plus
 `whatsapp_bridge_json_session_artifacts` with auth/session file counts.
-Set `WHATSAPP_AGENT_NUMBER` or pass `--expected-whatsapp-agent-number` to make
-that identity check independent from the observed Baileys credentials; add
+Set `WHATSAPP_AGENT_NUMBER` in the Hermes env file or pass
+`--expected-whatsapp-agent-number` to make that identity check independent from
+the observed Baileys credentials; add
 `--require-expected-whatsapp-agent-number` when missing expected identity should
 fail the stack gate.
 

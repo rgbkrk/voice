@@ -110,13 +110,17 @@ def write_verified_attended_watch(
 def write_fake_helpers(
     directory: Path,
     *,
+    hermes_config_body: str | None = None,
     cloud_configured: bool = False,
     cloud_invalid: list[str] | None = None,
     bridge_failures: list[str] | None = None,
     voice_note_payload: dict | None = None,
     inbound_cache_payload: dict | None = None,
 ) -> None:
-    ok_shell(directory / "verify_hermes_voice_config.py")
+    if hermes_config_body is None:
+        ok_shell(directory / "verify_hermes_voice_config.py")
+    else:
+        write_executable(directory / "verify_hermes_voice_config.py", hermes_config_body)
     ok_shell(directory / "verify_whatsapp_voice_contract.sh")
     success_payload = {"success": True, "checks": {}, "failures": []}
     json_script(directory / "verify_hermes_gateway_service.py", success_payload)
@@ -241,6 +245,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self,
         tmp_path: Path,
         *args: str,
+        hermes_config_body: str | None = None,
         cloud_configured: bool = False,
         cloud_invalid: list[str] | None = None,
         bridge_failures: list[str] | None = None,
@@ -251,6 +256,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         result = self.run_readiness_process(
             tmp_path,
             *args,
+            hermes_config_body=hermes_config_body,
             cloud_configured=cloud_configured,
             cloud_invalid=cloud_invalid,
             bridge_failures=bridge_failures,
@@ -265,6 +271,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         self,
         tmp_path: Path,
         *args: str,
+        hermes_config_body: str | None = None,
         cloud_configured: bool = False,
         cloud_invalid: list[str] | None = None,
         bridge_failures: list[str] | None = None,
@@ -276,6 +283,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         helpers.mkdir()
         write_fake_helpers(
             helpers,
+            hermes_config_body=hermes_config_body,
             cloud_configured=cloud_configured,
             cloud_invalid=cloud_invalid,
             bridge_failures=bridge_failures,
@@ -550,6 +558,30 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             "--check-whatsapp-cloud-webhook",
             meta_action["complete_verification_command"],
         )
+
+    def test_hermes_config_uses_voice_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_readiness_process(
+                Path(tmp),
+                "--timeout",
+                "1.0",
+                "--voice-timeout",
+                "3.0",
+                hermes_config_body=(
+                    "#!/usr/bin/env bash\n"
+                    "set -euo pipefail\n"
+                    "sleep 1.4\n"
+                    "echo ok\n"
+                ),
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        component = {
+            item["name"]: item for item in payload["components"]
+        }["hermes_voice_config"]
+        self.assertTrue(component["success"])
+        self.assertEqual(component["failures"], [])
 
     def test_invalid_cloud_webhook_config_is_reported_in_alpha_handoff(self):
         invalid = ["WHATSAPP_CLOUD_WEBHOOK_PORT", "WHATSAPP_CLOUD_WEBHOOK_PATH"]

@@ -407,7 +407,7 @@ def build_components(args: argparse.Namespace) -> list[dict[str, Any]]:
             name="hermes_voice_config",
             category="hermes_config",
             command=hermes_config_cmd,
-            timeout=args.timeout,
+            timeout=args.voice_timeout,
         )
     )
 

@@ -112,6 +112,7 @@ def write_fake_helpers(
     *,
     cloud_configured: bool = False,
     cloud_invalid: list[str] | None = None,
+    bridge_failures: list[str] | None = None,
     voice_note_payload: dict | None = None,
     inbound_cache_payload: dict | None = None,
 ) -> None:
@@ -194,7 +195,7 @@ def write_fake_helpers(
     }
     cloud_is_configured = cloud_configured and not cloud_invalid
     bridge_payload = {
-        "success": True,
+        "success": not bridge_failures,
         "checks": {
             "env_file": str(directory.parent / "hermes" / ".env"),
             "env_key_sources": env_key_sources,
@@ -222,7 +223,7 @@ def write_fake_helpers(
                 "webhook": webhook,
             }
         },
-        "failures": [],
+        "failures": bridge_failures or [],
     }
     json_script(directory / "verify_whatsapp_bridge_runtime.py", bridge_payload)
 
@@ -242,6 +243,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         *args: str,
         cloud_configured: bool = False,
         cloud_invalid: list[str] | None = None,
+        bridge_failures: list[str] | None = None,
         skip_voice_note_smoke: bool = True,
         voice_note_payload: dict | None = None,
         inbound_cache_payload: dict | None = None,
@@ -251,6 +253,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             *args,
             cloud_configured=cloud_configured,
             cloud_invalid=cloud_invalid,
+            bridge_failures=bridge_failures,
             skip_voice_note_smoke=skip_voice_note_smoke,
             voice_note_payload=voice_note_payload,
             inbound_cache_payload=inbound_cache_payload,
@@ -264,6 +267,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
         *args: str,
         cloud_configured: bool = False,
         cloud_invalid: list[str] | None = None,
+        bridge_failures: list[str] | None = None,
         skip_voice_note_smoke: bool = True,
         voice_note_payload: dict | None = None,
         inbound_cache_payload: dict | None = None,
@@ -274,6 +278,7 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             helpers,
             cloud_configured=cloud_configured,
             cloud_invalid=cloud_invalid,
+            bridge_failures=bridge_failures,
             voice_note_payload=voice_note_payload,
             inbound_cache_payload=inbound_cache_payload,
         )
@@ -831,6 +836,60 @@ class WhatsAppAlphaReadinessTests(unittest.TestCase):
             component["name"]: component for component in payload["components"]
         }["whatsapp_bridge_runtime"]
         self.assertIn("--check-whatsapp-cloud-health", bridge["command"])
+
+    def test_cloud_probe_failure_is_external_not_local_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_readiness_process(
+                Path(tmp),
+                "--check-whatsapp-cloud-health",
+                bridge_failures=[
+                    "WhatsApp Cloud health check failed: Cloud health check "
+                    "requires a local health URL and phone number ID"
+                ],
+            )
+
+        self.assertEqual(result.returncode, 1)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["success"])
+        self.assertTrue(payload["by_category"]["bridge_pairing"]["success"])
+        bridge = {
+            component["name"]: component for component in payload["components"]
+        }["whatsapp_bridge_runtime"]
+        self.assertFalse(bridge["success"])
+        self.assertTrue(bridge["local_success"])
+        self.assertTrue(bridge["external_meta_only"])
+        summary = payload["readiness_summary"]
+        self.assertTrue(summary["local_checks_passed"])
+        action_ids = [action["id"] for action in summary["next_actions"]]
+        self.assertNotIn("fix_local_runtime", action_ids)
+        self.assertIn("configure_whatsapp_cloud_calling", action_ids)
+        failures = payload["failures"]
+        self.assertEqual(failures[0]["category"], "external_meta_setup")
+        self.assertEqual(failures[0]["name"], "whatsapp_cloud_probe")
+
+    def test_base_bridge_failure_still_counts_as_local_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_readiness_process(
+                Path(tmp),
+                bridge_failures=["bridge health returned HTTP 500"],
+            )
+
+        self.assertEqual(result.returncode, 1)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["by_category"]["bridge_pairing"]["success"])
+        bridge = {
+            component["name"]: component for component in payload["components"]
+        }["whatsapp_bridge_runtime"]
+        self.assertFalse(bridge["success"])
+        self.assertFalse(bridge["local_success"])
+        self.assertNotIn("external_meta_only", bridge)
+        summary = payload["readiness_summary"]
+        self.assertFalse(summary["local_checks_passed"])
+        action_ids = [action["id"] for action in summary["next_actions"]]
+        self.assertIn("fix_local_runtime", action_ids)
+        failures = payload["failures"]
+        self.assertEqual(failures[0]["category"], "bridge_pairing")
+        self.assertEqual(failures[0]["name"], "whatsapp_bridge_runtime")
 
     def test_inbound_cache_smoke_adds_receive_component(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -127,8 +127,10 @@ still required, not as a local Baileys voice-note failure. Add
 `--check-whatsapp-cloud-api`, `--check-whatsapp-cloud-health`, and
 `--check-whatsapp-cloud-webhook` when credentials are expected to work and the
 report should prove the configured Cloud phone-number node, local Cloud adapter
-health, and local webhook challenge are reachable. The named profiles are
-`unattended`, `cached-receive`, `send`,
+health, and local webhook challenge are reachable. Failures from those explicit
+Cloud probes are classified as external Meta setup, so the same report can still
+show the local Baileys bridge and voice runtime as healthy. The named profiles
+are `unattended`, `cached-receive`, `send`,
 `attended-cache-receive`, and `attended-send-receive`. Use `cached-receive`
 when the report should also replay a cached inbound WhatsApp voice note through
 `voice stream-transcribe`:

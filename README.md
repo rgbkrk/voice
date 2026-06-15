@@ -512,7 +512,9 @@ includes `--require-whatsapp-cloud`, `--require-whatsapp-calling`,
 `--check-whatsapp-cloud-webhook`, so after real Cloud credentials are present it
 also makes an authenticated Graph API phone-number request, verifies the local
 Cloud adapter health contract, and verifies the local webhook challenge echo
-without printing token or phone-number values.
+without printing token or phone-number values. Failures from those explicit
+Cloud probes are reported as external Meta setup, not as local Baileys bridge or
+voice runtime failures.
 Use `--whatsapp-alpha-json-output` with any alpha profile when another local
 agent should consume the same structured `readiness_summary.next_actions`
 without rerunning the full stack gate. The stack verifier also echoes compact

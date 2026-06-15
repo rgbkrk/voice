@@ -49,6 +49,15 @@ CALLING_SIDECAR_REQUIRED_KEYS = (
     "WHATSAPP_CLOUD_CALLING_SIDECAR_URL",
     "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND",
 )
+BRIDGE_EXTERNAL_META_FAILURE_PREFIXES = (
+    "WhatsApp Cloud API phone number check failed:",
+    "WhatsApp Cloud health check failed:",
+    "WhatsApp Cloud webhook challenge check failed:",
+    "WhatsApp Cloud credentials missing:",
+    "WhatsApp Cloud config invalid:",
+    "WhatsApp Cloud Calling not ready;",
+    "WhatsApp Cloud Calling config invalid:",
+)
 
 
 def repo_root() -> Path:
@@ -155,6 +164,45 @@ def component(
         "failures": [] if success else output_failures(completed, payload),
         "summary": payload,
     }
+
+
+def component_local_success(item: dict[str, Any]) -> bool:
+    return bool(item.get("local_success", item.get("success")))
+
+
+def bridge_external_meta_failures(component: dict[str, Any]) -> list[str]:
+    if component.get("name") != "whatsapp_bridge_runtime":
+        return []
+    failures = [str(item) for item in component.get("failures") or []]
+    if not failures:
+        return []
+    external = [
+        failure
+        for failure in failures
+        if failure.startswith(BRIDGE_EXTERNAL_META_FAILURE_PREFIXES)
+    ]
+    return external if len(external) == len(failures) else []
+
+
+def classify_bridge_external_meta_failures(
+    components: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    external_failures: list[dict[str, Any]] = []
+    for item in components:
+        item["local_success"] = bool(item.get("success"))
+        external = bridge_external_meta_failures(item)
+        if not external:
+            continue
+        item["external_meta_only"] = True
+        item["local_success"] = True
+        external_failures.append(
+            {
+                "name": "whatsapp_cloud_probe",
+                "category": "external_meta_setup",
+                "failures": external,
+            }
+        )
+    return external_failures
 
 
 def script_path(name: str) -> str:
@@ -1113,15 +1161,18 @@ def build_readiness_summary(
 
 def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
     components = build_components(args)
+    external_probe_failures = classify_bridge_external_meta_failures(components)
     required_failures = [
-        item for item in components if item.get("required") and not item.get("success")
+        item
+        for item in components
+        if item.get("required") and not component_local_success(item)
     ]
     by_category: dict[str, dict[str, Any]] = {}
     for item in components:
         category = item["category"]
         bucket = by_category.setdefault(category, {"success": True, "components": []})
         bucket["components"].append(item["name"])
-        if item.get("required") and not item.get("success"):
+        if item.get("required") and not component_local_success(item):
             bucket["success"] = False
 
     bridge_checks = bridge_runtime_checks(components)
@@ -1146,7 +1197,7 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     external_failures: list[dict[str, Any]] = []
-    success = not required_failures
+    success = not required_failures and not external_probe_failures
     if args.require_whatsapp_calling and not external_meta_setup["calling_ready"]:
         success = False
         calling_detail = ", ".join(calling_missing + calling_invalid)
@@ -1254,6 +1305,7 @@ def build_readiness(args: argparse.Namespace) -> dict[str, Any]:
             }
             for item in required_failures
         ]
+        + external_probe_failures
         + external_failures
         + completion_failures,
     }

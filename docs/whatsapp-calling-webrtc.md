@@ -102,10 +102,11 @@ should poll and drain the bridge `/messages` queue. The stack gate also accepts
 down to the lower-level alpha script. For attended profiles, the default alpha
 voice note asks the recipient to reply with a fresh voice note. Use
 `--whatsapp-alpha-text` when the prompt should be different without changing
-the generic stack smoke text used by the other checks. When
-`--whatsapp-alpha-json-output` is set, the stack gate runs the alpha profile
-with `--json` and saves that structured report for another agent or runbook
-step to consume.
+the generic stack smoke text used by the other checks. The stack gate runs
+alpha profiles with `--json` internally so it can classify nonzero alpha results
+from the structured report. Set `--whatsapp-alpha-json-output` when that report
+should be saved for another agent or runbook step to consume; otherwise the
+temporary JSON report is removed after the compact summary is printed.
 
 Cached receive profiles also pass the newest cached inbound `aud_*` file to
 the Hermes config verifier, so the configured STT command provider is exercised
@@ -182,17 +183,19 @@ information with:
 - `whatsapp_calling_verify_command`
 - `whatsapp_calling_complete_command`
 
-When the top-level stack gate is run with `--whatsapp-alpha-json-output`, it
-saves the alpha report and then echoes compact `whatsapp_alpha_json_*` summary
-lines for the saved artifact. Those lines include the alpha profile, readiness
-status, completion state, next action IDs, attended receive status, and
-Cloud/Calling missing or invalid key groups. When a gate is still pending, the
-same summary also echoes the copyable attended receive command, fallback
-draining command, Cloud verification command, Calling verification command, and
-complete-alpha command if those commands are present in the saved JSON. If the
-alpha profile exits non-zero while writing a valid JSON report, such as a
-`--require-complete` run with pending gates, the stack gate still prints this
-summary before returning the alpha failure status. If a direct bridge Cloud
+When the top-level stack gate runs an alpha profile, it echoes compact
+`whatsapp_alpha_json_*` summary lines from the alpha JSON report. Those lines
+include the alpha profile, readiness status, completion state, next action IDs,
+attended receive status, and Cloud/Calling missing or invalid key groups. When
+a gate is still pending, the same summary also echoes the copyable attended
+receive command, fallback draining command, Cloud verification command, Calling
+verification command, and complete-alpha command if those commands are present
+in the report. If the alpha profile exits non-zero while writing a valid JSON
+report, such as a `--require-complete` run with pending gates, the stack gate
+still prints this summary before returning the alpha failure status. If a
+nonzero alpha report proves local checks and attended receive passed and only
+external Meta setup remains, the final summary marks
+`whatsapp_alpha=<profile>:external_meta_setup_pending`. If a direct bridge Cloud
 probe fails first, the stack gate reports `failure_category=external_meta_setup`,
 continues into the requested alpha profile, and marks
 `whatsapp_bridge=external_meta_setup_pending` in the final summary. The compact

@@ -450,8 +450,12 @@ import sys
 
 path = sys.argv[1]
 watch_path = sys.argv[2] if len(sys.argv) > 2 else ""
-with open(path, "r", encoding="utf-8") as handle:
-    payload = json.load(handle)
+try:
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, json.JSONDecodeError) as exc:
+    print(f"whatsapp_alpha_json_summary=unreadable error={exc}")
+    raise SystemExit(0)
 
 
 def csv(values):
@@ -1205,34 +1209,40 @@ if [[ -n "$whatsapp_alpha_profile" ]]; then
   if [[ "$require_whatsapp_alpha_complete" == "1" ]]; then
     whatsapp_alpha_args+=(--require-complete)
   fi
+  whatsapp_alpha_json_path="$whatsapp_alpha_json_output"
+  if [[ -z "$whatsapp_alpha_json_path" ]]; then
+    whatsapp_alpha_json_path="$(mktemp "${TMPDIR:-/tmp}/voice-whatsapp-alpha.XXXXXX.json")"
+    temp_files+=("$whatsapp_alpha_json_path")
+  fi
   if [[ -n "$whatsapp_alpha_json_output" ]]; then
-    output_dir="$(dirname -- "$whatsapp_alpha_json_output")"
+    output_dir="$(dirname -- "$whatsapp_alpha_json_path")"
     if [[ "$output_dir" != "." ]]; then
       mkdir -p "$output_dir"
     fi
-    whatsapp_alpha_args+=(--json)
-    echo
-    echo "==> WhatsApp alpha readiness profile ($whatsapp_alpha_profile)"
-    set +e
-    "${whatsapp_alpha_args[@]}" >"$whatsapp_alpha_json_output"
-    whatsapp_alpha_exit=$?
-    set -e
-    echo "whatsapp_alpha_json=$whatsapp_alpha_json_output"
-    print_whatsapp_alpha_json_summary "$whatsapp_alpha_json_output" "$whatsapp_attended_watch_json"
-    if [[ "$whatsapp_alpha_exit" != "0" ]]; then
-      if whatsapp_alpha_json_external_meta_only "$whatsapp_alpha_json_output"; then
-        echo "error: WhatsApp alpha readiness profile external Meta setup pending with exit $whatsapp_alpha_exit" >&2
-        whatsapp_alpha_status="$whatsapp_alpha_profile:external_meta_setup_pending"
-      else
-        echo "error: WhatsApp alpha readiness profile failed with exit $whatsapp_alpha_exit" >&2
-        whatsapp_alpha_status="$whatsapp_alpha_profile:failed"
-      fi
-      overall_status="$whatsapp_alpha_exit"
-    else
-      whatsapp_alpha_status="$whatsapp_alpha_profile"
-    fi
+  fi
+  whatsapp_alpha_args+=(--json)
+  echo
+  echo "==> WhatsApp alpha readiness profile ($whatsapp_alpha_profile)"
+  set +e
+  "${whatsapp_alpha_args[@]}" >"$whatsapp_alpha_json_path"
+  whatsapp_alpha_exit=$?
+  set -e
+  if [[ -n "$whatsapp_alpha_json_output" ]]; then
+    echo "whatsapp_alpha_json=$whatsapp_alpha_json_path"
   else
-    run_step "WhatsApp alpha readiness profile ($whatsapp_alpha_profile)" "${whatsapp_alpha_args[@]}"
+    echo "whatsapp_alpha_json=<temporary; pass --whatsapp-alpha-json-output to retain>"
+  fi
+  print_whatsapp_alpha_json_summary "$whatsapp_alpha_json_path" "$whatsapp_attended_watch_json"
+  if [[ "$whatsapp_alpha_exit" != "0" ]]; then
+    if whatsapp_alpha_json_external_meta_only "$whatsapp_alpha_json_path"; then
+      echo "error: WhatsApp alpha readiness profile external Meta setup pending with exit $whatsapp_alpha_exit" >&2
+      whatsapp_alpha_status="$whatsapp_alpha_profile:external_meta_setup_pending"
+    else
+      echo "error: WhatsApp alpha readiness profile failed with exit $whatsapp_alpha_exit" >&2
+      whatsapp_alpha_status="$whatsapp_alpha_profile:failed"
+    fi
+    overall_status="$whatsapp_alpha_exit"
+  else
     whatsapp_alpha_status="$whatsapp_alpha_profile"
   fi
 else

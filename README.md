@@ -515,13 +515,16 @@ Cloud adapter health contract, and verifies the local webhook challenge echo
 without printing token or phone-number values. Failures from those explicit
 Cloud probes are reported as external Meta setup, not as local Baileys bridge or
 voice runtime failures.
-Use `--whatsapp-alpha-json-output` with any alpha profile when another local
-agent should consume the same structured `readiness_summary.next_actions`
-without rerunning the full stack gate. The stack verifier also echoes compact
-`whatsapp_alpha_json_*` summary lines after saving the artifact, including
-readiness status, completion state, next actions, attended receive status, and
-Cloud/Calling missing or invalid key groups. A verified attended receive also
-stores compact redacted proof under
+The stack verifier runs alpha profiles through JSON internally so nonzero alpha
+results can still be classified as local runtime, attended receive, or external
+Meta setup. Use `--whatsapp-alpha-json-output` with any alpha profile when
+another local agent should consume the same structured
+`readiness_summary.next_actions` without rerunning the full stack gate; without
+that flag the temporary JSON report is removed after the compact summary is
+printed. The stack verifier echoes compact `whatsapp_alpha_json_*` summary
+lines for every alpha profile, including readiness status, completion state,
+next actions, attended receive status, and Cloud/Calling missing or invalid key
+groups. A verified attended receive also stores compact redacted proof under
 `pending_gates.attended_fresh_receive.evidence`.
 
 When the WebRTC Python dependencies are installed, add

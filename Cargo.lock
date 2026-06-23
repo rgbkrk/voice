@@ -7112,6 +7112,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "voice-eval"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "voice-g2p",
+ "voice-stt",
+ "voice-tts",
+]
+
+[[package]]
 name = "voice-g2p"
 version = "0.2.2"
 dependencies = [

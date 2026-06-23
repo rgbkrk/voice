@@ -1,0 +1,16 @@
+[package]
+name = "voice-eval"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+description = "Local TTS intelligibility evaluation harness for voice"
+license = "MIT"
+repository = "https://github.com/rgbkrk/voice"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+voice-g2p = { version = "0.2.2", path = "../voice-g2p" }
+voice-stt = { version = "0.2.0", path = "../voice-stt" }
+voice-tts = { version = "0.3.0", path = "../voice-tts" }

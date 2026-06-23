@@ -54,8 +54,20 @@ pub struct TekkenAudioMetadata {
     pub sampling_rate: u32,
     pub frame_rate: f64,
     pub audio_encoding_config: TekkenAudioEncodingConfig,
-    pub chunk_length_s: f64,
+    #[serde(default)]
+    pub chunk_length_s: Option<f64>,
+    #[serde(default)]
     pub voice_num_audio_tokens: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub transcription_delay_ms: Option<usize>,
+    #[serde(default)]
+    pub streaming_look_ahead_ms: Option<f64>,
+    #[serde(default)]
+    pub streaming_look_back_ms: Option<f64>,
+    #[serde(default)]
+    pub streaming_n_left_pad_tokens: Option<usize>,
+    #[serde(default)]
+    pub transcription_format: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -158,9 +170,9 @@ impl VoxtralTokenizerMetadata {
                 self.config.default_num_special_tokens
             )));
         }
-        if self.audio.sampling_rate != SAMPLE_RATE {
+        if self.audio.sampling_rate != SAMPLE_RATE && self.audio.sampling_rate != 16_000 {
             return Err(VoxtralError::InvalidTokenizer(format!(
-                "expected {SAMPLE_RATE} Hz audio tokenizer metadata, got {}",
+                "expected {SAMPLE_RATE} Hz TTS or 16000 Hz realtime audio tokenizer metadata, got {}",
                 self.audio.sampling_rate
             )));
         }

@@ -1,0 +1,744 @@
+use std::path::{Path, PathBuf};
+
+use hf_hub::api::sync::Api;
+use serde::Deserialize;
+
+use crate::{Result, VoxtralError, VoxtralSource, VoxtralTokenizerMetadata, VoxtralWeightMetadata};
+
+pub const REALTIME_DEFAULT_REPO: &str = "mistralai/Voxtral-Mini-4B-Realtime-2602";
+pub const REALTIME_CONFIG_FILE: &str = "params.json";
+pub const REALTIME_HF_CONFIG_FILE: &str = "config.json";
+pub const REALTIME_PROCESSOR_CONFIG_FILE: &str = "processor_config.json";
+pub const REALTIME_TOKENIZER_FILE: &str = "tekken.json";
+pub const REALTIME_WEIGHTS_FILE: &str = "consolidated.safetensors";
+pub const REALTIME_SAMPLE_RATE: u32 = 16_000;
+pub const REALTIME_NUM_MEL_BINS: usize = 128;
+pub const REALTIME_TRANSCRIPTION_FORMAT: &str = "streaming";
+pub const REALTIME_EXPECTED_TENSOR_COUNT_UNKNOWN: usize = 0;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoxtralRealtimeConfig {
+    pub dim: usize,
+    pub n_layers: usize,
+    pub head_dim: usize,
+    pub hidden_dim: usize,
+    pub n_heads: usize,
+    pub n_kv_heads: usize,
+    pub use_biases: bool,
+    pub causal: bool,
+    pub rope_theta: f64,
+    pub norm_eps: f64,
+    pub vocab_size: usize,
+    pub model_parallel: usize,
+    pub tied_embeddings: bool,
+    pub sliding_window: usize,
+    pub model_max_length: usize,
+    pub multimodal: VoxtralRealtimeMultimodalConfig,
+    #[serde(default)]
+    pub ada_rms_norm_t_cond: bool,
+    #[serde(default)]
+    pub ada_rms_norm_t_cond_dim: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoxtralRealtimeMultimodalConfig {
+    pub whisper_model_args: VoxtralRealtimeWhisperModelConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoxtralRealtimeWhisperModelConfig {
+    pub encoder_args: VoxtralRealtimeAudioEncoderConfig,
+    pub downsample_args: VoxtralRealtimeDownsampleConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoxtralRealtimeAudioEncoderConfig {
+    pub audio_encoding_args: VoxtralRealtimeAudioEncodingConfig,
+    pub dim: usize,
+    pub n_layers: usize,
+    pub head_dim: usize,
+    pub hidden_dim: usize,
+    pub n_heads: usize,
+    pub vocab_size: usize,
+    pub n_kv_heads: usize,
+    pub use_biases: bool,
+    pub use_cache: bool,
+    pub rope_theta: f64,
+    pub causal: bool,
+    pub norm_eps: f64,
+    pub pos_embed: String,
+    pub max_source_positions: Option<usize>,
+    pub ffn_type: String,
+    pub norm_type: String,
+    pub sliding_window: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoxtralRealtimeAudioEncodingConfig {
+    pub sampling_rate: u32,
+    pub frame_rate: f64,
+    pub num_mel_bins: usize,
+    pub hop_length: usize,
+    pub window_size: usize,
+    pub chunk_length_s: Option<f64>,
+    pub global_log_mel_max: f64,
+    pub transcription_format: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoxtralRealtimeDownsampleConfig {
+    pub downsample_factor: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoxtralRealtimeTransformersConfig {
+    pub architectures: Vec<String>,
+    pub audio_config: VoxtralRealtimeTransformersAudioConfig,
+    pub audio_length_per_tok: usize,
+    pub default_num_delay_tokens: usize,
+    pub downsample_factor: usize,
+    pub dtype: String,
+    pub hidden_size: usize,
+    pub model_type: String,
+    pub text_config: VoxtralRealtimeTransformersTextConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoxtralRealtimeTransformersAudioConfig {
+    pub hidden_size: usize,
+    pub num_hidden_layers: usize,
+    pub head_dim: usize,
+    pub intermediate_size: usize,
+    pub num_attention_heads: usize,
+    pub num_key_value_heads: usize,
+    pub num_mel_bins: usize,
+    pub rms_norm_eps: f64,
+    pub sliding_window: usize,
+    pub vocab_size: usize,
+    pub model_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoxtralRealtimeTransformersTextConfig {
+    pub bos_token_id: usize,
+    pub eos_token_id: usize,
+    pub head_dim: usize,
+    pub hidden_size: usize,
+    pub intermediate_size: usize,
+    pub max_position_embeddings: usize,
+    pub model_type: String,
+    pub num_attention_heads: usize,
+    pub num_hidden_layers: usize,
+    pub num_key_value_heads: usize,
+    pub rms_norm_eps: f64,
+    pub sliding_window: usize,
+    pub tie_word_embeddings: bool,
+    pub use_cache: bool,
+    pub vocab_size: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoxtralRealtimeAssetPaths {
+    pub params_json: PathBuf,
+    pub hf_config_json: Option<PathBuf>,
+    pub processor_config_json: Option<PathBuf>,
+    pub tokenizer_json: Option<PathBuf>,
+    pub weights: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VoxtralRealtimeAssetResolver {
+    source: VoxtralSource,
+}
+
+#[derive(Debug, Clone)]
+pub struct VoxtralRealtimeModel {
+    config: VoxtralRealtimeConfig,
+    transformers_config: Option<VoxtralRealtimeTransformersConfig>,
+    assets: VoxtralRealtimeAssetPaths,
+    tokenizer: Option<VoxtralTokenizerMetadata>,
+    weights: Option<VoxtralWeightMetadata>,
+}
+
+impl VoxtralRealtimeConfig {
+    pub fn from_json_str(json: &str) -> Result<Self> {
+        let config: Self = serde_json::from_str(json)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        let json = std::fs::read_to_string(path)?;
+        Self::from_json_str(&json)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.dim == 0 || self.n_layers == 0 || self.vocab_size == 0 {
+            return Err(VoxtralError::InvalidConfig(
+                "realtime text backbone dimensions must be non-zero".into(),
+            ));
+        }
+        if !self.causal {
+            return Err(VoxtralError::InvalidConfig(
+                "realtime text backbone must be causal".into(),
+            ));
+        }
+
+        let whisper = &self.multimodal.whisper_model_args;
+        let encoder = &whisper.encoder_args;
+        let encoding = &encoder.audio_encoding_args;
+        if encoding.sampling_rate != REALTIME_SAMPLE_RATE {
+            return Err(VoxtralError::InvalidConfig(format!(
+                "expected realtime audio sample rate {REALTIME_SAMPLE_RATE}, got {}",
+                encoding.sampling_rate
+            )));
+        }
+        if encoding.num_mel_bins != REALTIME_NUM_MEL_BINS {
+            return Err(VoxtralError::InvalidConfig(format!(
+                "expected {REALTIME_NUM_MEL_BINS} mel bins, got {}",
+                encoding.num_mel_bins
+            )));
+        }
+        if encoding.transcription_format != REALTIME_TRANSCRIPTION_FORMAT {
+            return Err(VoxtralError::InvalidConfig(format!(
+                "expected transcription_format {REALTIME_TRANSCRIPTION_FORMAT:?}, got {:?}",
+                encoding.transcription_format
+            )));
+        }
+        if !encoder.causal || encoder.use_cache {
+            return Err(VoxtralError::InvalidConfig(
+                "realtime audio encoder must be causal and cache-free".into(),
+            ));
+        }
+        if whisper.downsample_args.downsample_factor == 0 {
+            return Err(VoxtralError::InvalidConfig(
+                "downsample_factor must be greater than zero".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn model_type(&self) -> &'static str {
+        "voxtral_realtime"
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.multimodal
+            .whisper_model_args
+            .encoder_args
+            .audio_encoding_args
+            .sampling_rate
+    }
+
+    pub fn frame_rate(&self) -> f64 {
+        self.multimodal
+            .whisper_model_args
+            .encoder_args
+            .audio_encoding_args
+            .frame_rate
+    }
+
+    pub fn num_mel_bins(&self) -> usize {
+        self.multimodal
+            .whisper_model_args
+            .encoder_args
+            .audio_encoding_args
+            .num_mel_bins
+    }
+
+    pub fn downsample_factor(&self) -> usize {
+        self.multimodal
+            .whisper_model_args
+            .downsample_args
+            .downsample_factor
+    }
+}
+
+impl VoxtralRealtimeTransformersConfig {
+    pub fn from_json_str(json: &str) -> Result<Self> {
+        let config: Self = serde_json::from_str(json)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        let json = std::fs::read_to_string(path)?;
+        Self::from_json_str(&json)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.model_type != "voxtral_realtime" {
+            return Err(VoxtralError::InvalidConfig(format!(
+                "expected model_type voxtral_realtime, got {}",
+                self.model_type
+            )));
+        }
+        if !self
+            .architectures
+            .iter()
+            .any(|name| name == "VoxtralRealtimeForConditionalGeneration")
+        {
+            return Err(VoxtralError::InvalidConfig(
+                "missing VoxtralRealtimeForConditionalGeneration architecture".into(),
+            ));
+        }
+        if self.audio_config.model_type != "voxtral_realtime_encoder"
+            || self.text_config.model_type != "voxtral_realtime_text"
+        {
+            return Err(VoxtralError::InvalidConfig(
+                "unexpected realtime audio/text config model_type".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_against_params(&self, params: &VoxtralRealtimeConfig) -> Result<()> {
+        let encoder = &params.multimodal.whisper_model_args.encoder_args;
+        if self.hidden_size != params.dim
+            || self.text_config.hidden_size != params.dim
+            || self.text_config.num_hidden_layers != params.n_layers
+            || self.text_config.vocab_size != params.vocab_size
+            || self.audio_config.hidden_size != encoder.dim
+            || self.audio_config.num_hidden_layers != encoder.n_layers
+            || self.audio_config.num_mel_bins != params.num_mel_bins()
+            || self.downsample_factor != params.downsample_factor()
+        {
+            return Err(VoxtralError::InvalidConfig(
+                "realtime config.json does not match params.json".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for VoxtralRealtimeAssetResolver {
+    fn default() -> Self {
+        Self::new(VoxtralSource::Hub(REALTIME_DEFAULT_REPO.to_string()))
+    }
+}
+
+impl VoxtralRealtimeAssetResolver {
+    pub fn new(source: VoxtralSource) -> Self {
+        Self { source }
+    }
+
+    pub fn source(&self) -> &VoxtralSource {
+        &self.source
+    }
+
+    pub fn resolve_metadata(&self) -> Result<VoxtralRealtimeAssetPaths> {
+        match &self.source {
+            VoxtralSource::Local(dir) => self.resolve_local(dir, false),
+            VoxtralSource::Hub(repo_id) => self.resolve_hub(repo_id, false),
+        }
+    }
+
+    pub fn resolve_all(&self) -> Result<VoxtralRealtimeAssetPaths> {
+        match &self.source {
+            VoxtralSource::Local(dir) => self.resolve_local(dir, true),
+            VoxtralSource::Hub(repo_id) => self.resolve_hub(repo_id, true),
+        }
+    }
+
+    fn resolve_local(
+        &self,
+        dir: &Path,
+        include_weights: bool,
+    ) -> Result<VoxtralRealtimeAssetPaths> {
+        let params_json = require_file(dir.join(REALTIME_CONFIG_FILE), REALTIME_CONFIG_FILE)?;
+        let hf_config_json = optional_file(dir.join(REALTIME_HF_CONFIG_FILE));
+        let processor_config_json = optional_file(dir.join(REALTIME_PROCESSOR_CONFIG_FILE));
+        let tokenizer_json = optional_file(dir.join(REALTIME_TOKENIZER_FILE));
+        let weights = if include_weights {
+            Some(require_file(
+                dir.join(REALTIME_WEIGHTS_FILE),
+                REALTIME_WEIGHTS_FILE,
+            )?)
+        } else {
+            optional_file(dir.join(REALTIME_WEIGHTS_FILE))
+        };
+
+        Ok(VoxtralRealtimeAssetPaths {
+            params_json,
+            hf_config_json,
+            processor_config_json,
+            tokenizer_json,
+            weights,
+        })
+    }
+
+    fn resolve_hub(
+        &self,
+        repo_id: &str,
+        include_weights: bool,
+    ) -> Result<VoxtralRealtimeAssetPaths> {
+        let api = Api::new().map_err(|e| VoxtralError::Hub(e.to_string()))?;
+        let repo = api.model(repo_id.to_string());
+        let params_json = repo
+            .get(REALTIME_CONFIG_FILE)
+            .map_err(|e| VoxtralError::Hub(e.to_string()))?;
+        let hf_config_json = repo.get(REALTIME_HF_CONFIG_FILE).ok();
+        let processor_config_json = repo.get(REALTIME_PROCESSOR_CONFIG_FILE).ok();
+        let tokenizer_json = repo.get(REALTIME_TOKENIZER_FILE).ok();
+        let weights = if include_weights {
+            Some(
+                repo.get(REALTIME_WEIGHTS_FILE)
+                    .map_err(|e| VoxtralError::Hub(e.to_string()))?,
+            )
+        } else {
+            None
+        };
+
+        Ok(VoxtralRealtimeAssetPaths {
+            params_json,
+            hf_config_json,
+            processor_config_json,
+            tokenizer_json,
+            weights,
+        })
+    }
+}
+
+impl VoxtralRealtimeModel {
+    pub fn load_metadata(path_or_repo: &str) -> Result<Self> {
+        let resolver =
+            VoxtralRealtimeAssetResolver::new(VoxtralSource::from_path_or_repo(path_or_repo));
+        Self::load_metadata_from_resolver(&resolver)
+    }
+
+    pub fn load_metadata_from_dir(dir: impl AsRef<Path>) -> Result<Self> {
+        let resolver =
+            VoxtralRealtimeAssetResolver::new(VoxtralSource::Local(dir.as_ref().to_path_buf()));
+        Self::load_metadata_from_resolver(&resolver)
+    }
+
+    pub fn load_metadata_from_resolver(resolver: &VoxtralRealtimeAssetResolver) -> Result<Self> {
+        Self::load_from_assets(resolver.resolve_metadata()?, false)
+    }
+
+    pub fn load(path_or_repo: &str) -> Result<Self> {
+        let resolver =
+            VoxtralRealtimeAssetResolver::new(VoxtralSource::from_path_or_repo(path_or_repo));
+        Self::load_from_resolver(&resolver)
+    }
+
+    pub fn load_from_dir(dir: impl AsRef<Path>) -> Result<Self> {
+        let resolver =
+            VoxtralRealtimeAssetResolver::new(VoxtralSource::Local(dir.as_ref().to_path_buf()));
+        Self::load_from_resolver(&resolver)
+    }
+
+    pub fn load_from_resolver(resolver: &VoxtralRealtimeAssetResolver) -> Result<Self> {
+        Self::load_from_assets(resolver.resolve_all()?, true)
+    }
+
+    pub fn config(&self) -> &VoxtralRealtimeConfig {
+        &self.config
+    }
+
+    pub fn transformers_config(&self) -> Option<&VoxtralRealtimeTransformersConfig> {
+        self.transformers_config.as_ref()
+    }
+
+    pub fn assets(&self) -> &VoxtralRealtimeAssetPaths {
+        &self.assets
+    }
+
+    pub fn tokenizer(&self) -> Option<&VoxtralTokenizerMetadata> {
+        self.tokenizer.as_ref()
+    }
+
+    pub fn weights(&self) -> Option<&VoxtralWeightMetadata> {
+        self.weights.as_ref()
+    }
+
+    pub fn checkpoint_summary(&self) -> Option<crate::VoxtralCheckpointSummary> {
+        self.weights.as_ref().map(|weights| {
+            weights.summary_with_expected_tensor_count(REALTIME_EXPECTED_TENSOR_COUNT_UNKNOWN)
+        })
+    }
+
+    fn load_from_assets(assets: VoxtralRealtimeAssetPaths, require_weights: bool) -> Result<Self> {
+        let config = VoxtralRealtimeConfig::from_path(&assets.params_json)?;
+        let transformers_config = assets
+            .hf_config_json
+            .as_ref()
+            .map(VoxtralRealtimeTransformersConfig::from_path)
+            .transpose()?;
+        if let Some(transformers_config) = &transformers_config {
+            transformers_config.validate_against_params(&config)?;
+        }
+        let tokenizer = assets
+            .tokenizer_json
+            .as_ref()
+            .map(VoxtralTokenizerMetadata::from_path)
+            .transpose()?;
+        if let Some(tokenizer) = &tokenizer {
+            validate_tokenizer_metadata(tokenizer, &config)?;
+        }
+        let weights = if let Some(weights) = &assets.weights {
+            Some(VoxtralWeightMetadata::from_safetensors_file(weights)?)
+        } else if require_weights {
+            return Err(VoxtralError::InvalidCheckpoint(format!(
+                "missing {REALTIME_WEIGHTS_FILE}"
+            )));
+        } else {
+            None
+        };
+
+        Ok(Self {
+            config,
+            transformers_config,
+            assets,
+            tokenizer,
+            weights,
+        })
+    }
+}
+
+fn validate_tokenizer_metadata(
+    tokenizer: &VoxtralTokenizerMetadata,
+    config: &VoxtralRealtimeConfig,
+) -> Result<()> {
+    let encoding = &config
+        .multimodal
+        .whisper_model_args
+        .encoder_args
+        .audio_encoding_args;
+    if tokenizer.config.default_vocab_size != config.vocab_size {
+        return Err(VoxtralError::InvalidTokenizer(format!(
+            "tokenizer default_vocab_size={} but params vocab_size={}",
+            tokenizer.config.default_vocab_size, config.vocab_size
+        )));
+    }
+    if tokenizer.audio.sampling_rate != encoding.sampling_rate {
+        return Err(VoxtralError::InvalidTokenizer(format!(
+            "tokenizer sampling_rate={} but params sampling_rate={}",
+            tokenizer.audio.sampling_rate, encoding.sampling_rate
+        )));
+    }
+    if tokenizer.audio.audio_encoding_config.num_mel_bins != encoding.num_mel_bins
+        || tokenizer.audio.audio_encoding_config.hop_length != encoding.hop_length
+        || tokenizer.audio.audio_encoding_config.window_size != encoding.window_size
+    {
+        return Err(VoxtralError::InvalidTokenizer(
+            "tokenizer audio encoding config does not match realtime params".into(),
+        ));
+    }
+    expect_special_token(tokenizer, "<s>", 1)?;
+    expect_special_token(tokenizer, "</s>", 2)?;
+    expect_special_token(tokenizer, "[AUDIO]", 24)?;
+    expect_special_token(tokenizer, "[BEGIN_AUDIO]", 25)?;
+    expect_special_token(tokenizer, "[STREAMING_PAD]", 32)?;
+    expect_special_token(tokenizer, "[STREAMING_WORD]", 33)?;
+    expect_special_token(tokenizer, "[REPEAT_AUDIO_TEXT]", 34)?;
+    Ok(())
+}
+
+fn expect_special_token(
+    tokenizer: &VoxtralTokenizerMetadata,
+    token: &str,
+    expected_id: usize,
+) -> Result<()> {
+    match tokenizer.special_token_id(token) {
+        Some(id) if id == expected_id => Ok(()),
+        Some(id) => Err(VoxtralError::InvalidTokenizer(format!(
+            "special token {token} has id {id}, expected {expected_id}"
+        ))),
+        None => Err(VoxtralError::InvalidTokenizer(format!(
+            "missing special token {token}"
+        ))),
+    }
+}
+
+fn require_file(path: PathBuf, label: &str) -> Result<PathBuf> {
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(VoxtralError::InvalidConfig(format!(
+            "missing required {label} at {}",
+            path.display()
+        )))
+    }
+}
+
+fn optional_file(path: PathBuf) -> Option<PathBuf> {
+    path.is_file().then_some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    const REALTIME_PARAMS_JSON: &str = r#"{
+      "dim": 3072,
+      "n_layers": 26,
+      "head_dim": 128,
+      "hidden_dim": 9216,
+      "n_heads": 32,
+      "n_kv_heads": 8,
+      "use_biases": false,
+      "causal": true,
+      "rope_theta": 1000000.0,
+      "norm_eps": 0.00001,
+      "vocab_size": 131072,
+      "model_parallel": 1,
+      "tied_embeddings": true,
+      "sliding_window": 8192,
+      "model_max_length": 131072,
+      "multimodal": {
+        "whisper_model_args": {
+          "encoder_args": {
+            "audio_encoding_args": {
+              "sampling_rate": 16000,
+              "frame_rate": 12.5,
+              "num_mel_bins": 128,
+              "hop_length": 160,
+              "window_size": 400,
+              "chunk_length_s": null,
+              "global_log_mel_max": 1.5,
+              "transcription_format": "streaming"
+            },
+            "dim": 1280,
+            "n_layers": 32,
+            "head_dim": 64,
+            "hidden_dim": 5120,
+            "n_heads": 32,
+            "vocab_size": 131072,
+            "n_kv_heads": 32,
+            "use_biases": true,
+            "use_cache": false,
+            "rope_theta": 1000000.0,
+            "causal": true,
+            "norm_eps": 0.00001,
+            "pos_embed": "rope",
+            "max_source_positions": null,
+            "ffn_type": "swiglu",
+            "norm_type": "rms_norm",
+            "sliding_window": 750
+          },
+          "downsample_args": {
+            "downsample_factor": 4
+          }
+        }
+      },
+      "ada_rms_norm_t_cond": true,
+      "ada_rms_norm_t_cond_dim": 32
+    }"#;
+
+    const REALTIME_HF_CONFIG_JSON: &str = r#"{
+      "architectures": ["VoxtralRealtimeForConditionalGeneration"],
+      "audio_config": {
+        "head_dim": 64,
+        "hidden_size": 1280,
+        "intermediate_size": 5120,
+        "model_type": "voxtral_realtime_encoder",
+        "num_attention_heads": 32,
+        "num_hidden_layers": 32,
+        "num_key_value_heads": 32,
+        "num_mel_bins": 128,
+        "rms_norm_eps": 0.00001,
+        "sliding_window": 750,
+        "vocab_size": 131072
+      },
+      "audio_length_per_tok": 8,
+      "default_num_delay_tokens": 6,
+      "downsample_factor": 4,
+      "dtype": "bfloat16",
+      "hidden_size": 3072,
+      "model_type": "voxtral_realtime",
+      "text_config": {
+        "bos_token_id": 1,
+        "eos_token_id": 2,
+        "head_dim": 128,
+        "hidden_size": 3072,
+        "intermediate_size": 9216,
+        "max_position_embeddings": 131072,
+        "model_type": "voxtral_realtime_text",
+        "num_attention_heads": 32,
+        "num_hidden_layers": 26,
+        "num_key_value_heads": 8,
+        "rms_norm_eps": 0.00001,
+        "sliding_window": 8192,
+        "tie_word_embeddings": true,
+        "use_cache": true,
+        "vocab_size": 131072
+      }
+    }"#;
+
+    #[test]
+    fn parses_realtime_params_shape() {
+        let config = VoxtralRealtimeConfig::from_json_str(REALTIME_PARAMS_JSON).unwrap();
+
+        assert_eq!(config.model_type(), "voxtral_realtime");
+        assert_eq!(config.dim, 3072);
+        assert_eq!(config.sample_rate(), 16_000);
+        assert_eq!(config.num_mel_bins(), 128);
+        assert_eq!(config.frame_rate(), 12.5);
+        assert_eq!(config.downsample_factor(), 4);
+        assert_eq!(
+            config
+                .multimodal
+                .whisper_model_args
+                .encoder_args
+                .sliding_window,
+            750
+        );
+    }
+
+    #[test]
+    fn parses_realtime_transformers_config_shape() {
+        let params = VoxtralRealtimeConfig::from_json_str(REALTIME_PARAMS_JSON).unwrap();
+        let config =
+            VoxtralRealtimeTransformersConfig::from_json_str(REALTIME_HF_CONFIG_JSON).unwrap();
+
+        config.validate_against_params(&params).unwrap();
+        assert_eq!(config.audio_length_per_tok, 8);
+        assert_eq!(config.default_num_delay_tokens, 6);
+        assert_eq!(config.dtype, "bfloat16");
+    }
+
+    #[test]
+    fn local_realtime_metadata_resolution_does_not_require_weights() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "voice-voxtral-realtime-assets-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(REALTIME_CONFIG_FILE), REALTIME_PARAMS_JSON).unwrap();
+        std::fs::write(dir.join(REALTIME_HF_CONFIG_FILE), REALTIME_HF_CONFIG_JSON).unwrap();
+
+        let model = VoxtralRealtimeModel::load_metadata_from_dir(&dir).unwrap();
+
+        assert_eq!(model.config().model_type(), "voxtral_realtime");
+        assert!(model.transformers_config().is_some());
+        assert!(model.weights().is_none());
+        assert!(VoxtralRealtimeModel::load_from_dir(&dir).is_err());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn loads_local_realtime_metadata_when_env_is_set() {
+        let Ok(dir) = std::env::var("VOXTRAL_REALTIME_LOCAL_DIR") else {
+            return;
+        };
+
+        let model = VoxtralRealtimeModel::load_metadata_from_dir(dir).unwrap();
+        let tokenizer = model.tokenizer().unwrap();
+
+        assert_eq!(model.config().sample_rate(), 16_000);
+        assert_eq!(model.config().num_mel_bins(), 128);
+        assert_eq!(model.config().downsample_factor(), 4);
+        assert_eq!(tokenizer.special_token_id("[STREAMING_PAD]"), Some(32));
+        assert_eq!(tokenizer.special_token_id("[STREAMING_WORD]"), Some(33));
+        assert_eq!(tokenizer.special_token_id("[REPEAT_AUDIO_TEXT]"), Some(34));
+        assert_eq!(tokenizer.audio.transcription_delay_ms, Some(480));
+    }
+}

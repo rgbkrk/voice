@@ -154,9 +154,16 @@ impl VoxtralWeightMetadata {
     }
 
     pub fn summary(&self) -> VoxtralCheckpointSummary {
+        self.summary_with_expected_tensor_count(VOXTRAL_TTS_CHECKPOINT_TENSORS)
+    }
+
+    pub fn summary_with_expected_tensor_count(
+        &self,
+        expected_tensor_count: usize,
+    ) -> VoxtralCheckpointSummary {
         VoxtralCheckpointSummary {
             tensor_count: self.tensor_count(),
-            expected_tensor_count: VOXTRAL_TTS_CHECKPOINT_TENSORS,
+            expected_tensor_count,
             component_counts: self.component_counts(),
             file_len: self.file_len,
             header_len: self.header_len,

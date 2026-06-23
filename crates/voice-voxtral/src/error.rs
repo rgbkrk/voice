@@ -9,8 +9,17 @@ pub enum VoxtralError {
     #[error("Hub error: {0}")]
     Hub(String),
 
+    #[error("Candle error: {0}")]
+    Candle(String),
+
     #[error("Invalid Voxtral config: {0}")]
     InvalidConfig(String),
+
+    #[error("Invalid Voxtral checkpoint: {0}")]
+    InvalidCheckpoint(String),
+
+    #[error("Invalid Voxtral tokenizer: {0}")]
+    InvalidTokenizer(String),
 
     #[error("Native Voxtral inference is not implemented yet: {0}")]
     Unsupported(String),

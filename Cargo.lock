@@ -7218,6 +7218,8 @@ dependencies = [
 name = "voice-voxtral"
 version = "0.1.0"
 dependencies = [
+ "candle-core",
+ "candle-nn",
  "hf-hub",
  "serde",
  "serde_json",

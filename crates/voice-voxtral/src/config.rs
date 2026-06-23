@@ -204,13 +204,13 @@ impl VoxtralConfig {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
     use crate::VOXTRAL_PRESET_VOICES;
 
-    const PARAMS_JSON: &str = r#"{
+    pub(crate) const PARAMS_JSON: &str = r#"{
       "dim": 3072,
       "n_layers": 26,
       "head_dim": 128,

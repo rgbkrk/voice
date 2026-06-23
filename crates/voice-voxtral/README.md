@@ -5,8 +5,11 @@ Foundation crate for adding Mistral Voxtral TTS support to `voice`.
 This first slice is intentionally small:
 
 - parse the official `params.json` shape used by `mistralai/Voxtral-4B-TTS-2603`
+- validate `tekken.json` tokenizer/audio metadata against the model config
 - expose the 20 preset voice IDs from the model config
 - resolve local or HuggingFace metadata files without downloading the 8 GB weights by default
+- require the 20 official voice prompt files when resolving the full inference asset set
+- validate the official safetensors checkpoint layout and open it through Candle mmap loading
 - define the native model boundary that a future Candle implementation will fill in
 
 Native inference is not implemented yet. The reference implementation is a two-stage vLLM-Omni pipeline:

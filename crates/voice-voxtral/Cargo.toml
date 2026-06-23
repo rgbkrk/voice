@@ -9,7 +9,13 @@ repository = "https://github.com/rgbkrk/voice"
 readme = "README.md"
 
 [dependencies]
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 hf-hub = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { workspace = true, features = ["metal"] }
+candle-nn = { workspace = true, features = ["metal"] }

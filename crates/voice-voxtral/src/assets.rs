@@ -1,13 +1,15 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use hf_hub::api::sync::Api;
 
-use crate::{Result, VoxtralConfig, VoxtralError};
+use crate::{Result, VoxtralConfig, VoxtralError, VOXTRAL_PRESET_VOICES};
 
 pub const DEFAULT_REPO: &str = "mistralai/Voxtral-4B-TTS-2603";
 pub const CONFIG_FILE: &str = "params.json";
 pub const TOKENIZER_FILE: &str = "tekken.json";
 pub const WEIGHTS_FILE: &str = "consolidated.safetensors";
+pub const VOICE_EMBEDDING_DIR: &str = "voice_embedding";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoxtralSource {
@@ -36,6 +38,7 @@ pub struct VoxtralAssetPaths {
     pub tokenizer_json: Option<PathBuf>,
     pub weights: Option<PathBuf>,
     pub voice_embedding_dir: Option<PathBuf>,
+    pub voice_embeddings: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -102,14 +105,25 @@ impl VoxtralAssetResolver {
         } else {
             optional_file(dir.join(WEIGHTS_FILE))
         };
-        let voice_embedding_dir = dir.join("voice_embedding");
+        let voice_embedding_dir = dir.join(VOICE_EMBEDDING_DIR);
         let voice_embedding_dir = voice_embedding_dir.is_dir().then_some(voice_embedding_dir);
+        let voice_embeddings = if include_weights {
+            let dir = voice_embedding_dir.as_ref().ok_or_else(|| {
+                VoxtralError::InvalidConfig(format!(
+                    "missing required {VOICE_EMBEDDING_DIR} directory"
+                ))
+            })?;
+            resolve_local_voice_embeddings(dir)?
+        } else {
+            BTreeMap::new()
+        };
 
         Ok(VoxtralAssetPaths {
             params_json,
             tokenizer_json,
             weights,
             voice_embedding_dir,
+            voice_embeddings,
         })
     }
 
@@ -129,14 +143,41 @@ impl VoxtralAssetResolver {
         } else {
             None
         };
+        let voice_embeddings = if include_weights {
+            let mut embeddings = BTreeMap::new();
+            for voice in VOXTRAL_PRESET_VOICES {
+                let filename = format!("{VOICE_EMBEDDING_DIR}/{}.pt", voice.id);
+                let path = repo
+                    .get(&filename)
+                    .map_err(|e| VoxtralError::Hub(e.to_string()))?;
+                embeddings.insert(voice.id.to_string(), path);
+            }
+            embeddings
+        } else {
+            BTreeMap::new()
+        };
+        let voice_embedding_dir = voice_embeddings
+            .values()
+            .next()
+            .and_then(|path| path.parent().map(Path::to_path_buf));
 
         Ok(VoxtralAssetPaths {
             params_json,
             tokenizer_json,
             weights,
-            voice_embedding_dir: None,
+            voice_embedding_dir,
+            voice_embeddings,
         })
     }
+}
+
+fn resolve_local_voice_embeddings(dir: &Path) -> Result<BTreeMap<String, PathBuf>> {
+    let mut embeddings = BTreeMap::new();
+    for voice in VOXTRAL_PRESET_VOICES {
+        let path = require_file(dir.join(format!("{}.pt", voice.id)), voice.id)?;
+        embeddings.insert(voice.id.to_string(), path);
+    }
+    Ok(embeddings)
 }
 
 fn require_file(path: PathBuf, label: &str) -> Result<PathBuf> {
@@ -188,6 +229,7 @@ mod tests {
         assert_eq!(assets.params_json, dir.join(CONFIG_FILE));
         assert_eq!(assets.tokenizer_json, Some(dir.join(TOKENIZER_FILE)));
         assert_eq!(assets.weights, None);
+        assert!(assets.voice_embeddings.is_empty());
         assert!(resolver.resolve_all().is_err());
 
         std::fs::remove_dir_all(dir).unwrap();

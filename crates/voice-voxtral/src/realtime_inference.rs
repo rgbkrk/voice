@@ -68,6 +68,43 @@ pub struct VoxtralRealtimeAudioFeedForward {
     pub w3: Linear,
 }
 
+pub struct VoxtralRealtimeTextDecoder {
+    pub layers: Vec<VoxtralRealtimeTextDecoderBlock>,
+    pub norm: RmsNorm,
+    pub rope_theta: f64,
+    pub sliding_window: usize,
+}
+
+pub struct VoxtralRealtimeTextDecoderBlock {
+    pub attention: VoxtralRealtimeTextAttention,
+    pub feed_forward: VoxtralRealtimeTextFeedForward,
+    pub attention_norm: RmsNorm,
+    pub ffn_norm: RmsNorm,
+    pub ada_norm: VoxtralRealtimeTextAdaRmsNorm,
+}
+
+pub struct VoxtralRealtimeTextAttention {
+    pub wq: Linear,
+    pub wk: Linear,
+    pub wv: Linear,
+    pub wo: Linear,
+    pub n_heads: usize,
+    pub n_kv_heads: usize,
+    pub head_dim: usize,
+}
+
+pub struct VoxtralRealtimeTextFeedForward {
+    pub w1: Linear,
+    pub w2: Linear,
+    pub w3: Linear,
+}
+
+pub struct VoxtralRealtimeTextAdaRmsNorm {
+    pub down: Linear,
+    pub up: Linear,
+    pub hidden_dim: usize,
+}
+
 impl VoxtralRealtimeInferenceModules {
     pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
         let token_embeddings = VoxtralRealtimeTokenEmbeddings::load(config, vb.clone())?;
@@ -415,6 +452,247 @@ impl VoxtralRealtimeAudioProjector {
     }
 }
 
+impl VoxtralRealtimeTextDecoder {
+    pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
+        let mut layers = Vec::with_capacity(config.n_layers);
+        for layer_idx in 0..config.n_layers {
+            layers.push(VoxtralRealtimeTextDecoderBlock::load(
+                config,
+                vb.pp(format!("layers.{layer_idx}")),
+            )?);
+        }
+        let norm = rms_norm(config.dim, config.norm_eps, vb.pp("norm"))?;
+
+        Ok(Self {
+            layers,
+            norm,
+            rope_theta: config.rope_theta,
+            sliding_window: config.sliding_window,
+        })
+    }
+
+    pub fn forward(
+        &self,
+        hidden_states: &Tensor,
+        start_pos: usize,
+        delay_tokens: usize,
+    ) -> Result<Tensor> {
+        let mut hidden_states = hidden_states.clone();
+        let t_cond = time_embedding_value(
+            delay_tokens as f32,
+            hidden_states.dim(candle_core::D::Minus1)?,
+            hidden_states.dtype(),
+            hidden_states.device(),
+        )?;
+        for layer in &self.layers {
+            hidden_states = layer.forward(
+                &hidden_states,
+                &t_cond,
+                start_pos,
+                self.rope_theta,
+                self.sliding_window,
+            )?;
+        }
+        self.norm.forward(&hidden_states)
+    }
+
+    pub fn logits(
+        &self,
+        hidden_states: &Tensor,
+        token_embeddings: &VoxtralRealtimeTokenEmbeddings,
+    ) -> Result<Tensor> {
+        let dims = hidden_states.dims();
+        let hidden_dim = *dims
+            .last()
+            .expect("hidden_states rank is always at least one");
+        let batch: usize = dims[..dims.len() - 1].iter().product();
+        let logits = hidden_states
+            .reshape((batch, hidden_dim))?
+            .matmul(&token_embeddings.tok_embeddings.embeddings().t()?)?;
+        let vocab = token_embeddings.tok_embeddings.embeddings().dim(0)?;
+        let mut output_shape = dims.to_vec();
+        *output_shape
+            .last_mut()
+            .expect("hidden_states rank is always at least one") = vocab;
+        logits.reshape(output_shape)
+    }
+}
+
+impl VoxtralRealtimeTextDecoderBlock {
+    pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
+        let attention = VoxtralRealtimeTextAttention::load(config, vb.pp("attention"))?;
+        let feed_forward = VoxtralRealtimeTextFeedForward::load(config, vb.pp("feed_forward"))?;
+        let attention_norm = rms_norm(config.dim, config.norm_eps, vb.pp("attention_norm"))?;
+        let ffn_norm = rms_norm(config.dim, config.norm_eps, vb.pp("ffn_norm"))?;
+        let ada_norm = VoxtralRealtimeTextAdaRmsNorm::load(config, vb.pp("ada_rms_norm_t_cond"))?;
+
+        Ok(Self {
+            attention,
+            feed_forward,
+            attention_norm,
+            ffn_norm,
+            ada_norm,
+        })
+    }
+
+    pub fn forward(
+        &self,
+        hidden_states: &Tensor,
+        t_cond: &Tensor,
+        start_pos: usize,
+        rope_theta: f64,
+        sliding_window: usize,
+    ) -> Result<Tensor> {
+        let residual = hidden_states.clone();
+        let attention_input = self.attention_norm.forward(hidden_states)?;
+        let attention_output =
+            self.attention
+                .forward(&attention_input, start_pos, rope_theta, sliding_window)?;
+        let hidden_states = (attention_output + residual)?;
+
+        let residual = hidden_states.clone();
+        let ffn_input = self.ffn_norm.forward(&hidden_states)?;
+        let ffn_input = self.ada_norm.apply(&ffn_input, t_cond)?;
+        let ffn_output = self.feed_forward.forward(&ffn_input)?;
+        ffn_output + residual
+    }
+}
+
+impl VoxtralRealtimeTextAttention {
+    pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
+        let q_dim = config.n_heads * config.head_dim;
+        let kv_dim = config.n_kv_heads * config.head_dim;
+        let wq = linear_no_bias(config.dim, q_dim, vb.pp("wq"))?;
+        let wk = linear_no_bias(config.dim, kv_dim, vb.pp("wk"))?;
+        let wv = linear_no_bias(config.dim, kv_dim, vb.pp("wv"))?;
+        let wo = linear_no_bias(q_dim, config.dim, vb.pp("wo"))?;
+
+        Ok(Self {
+            wq,
+            wk,
+            wv,
+            wo,
+            n_heads: config.n_heads,
+            n_kv_heads: config.n_kv_heads,
+            head_dim: config.head_dim,
+        })
+    }
+
+    pub fn forward(
+        &self,
+        hidden_states: &Tensor,
+        start_pos: usize,
+        rope_theta: f64,
+        sliding_window: usize,
+    ) -> Result<Tensor> {
+        let (batch, seq_len, _dim) = hidden_states.dims3()?;
+        let repeat = self.n_heads / self.n_kv_heads;
+        let query = self
+            .wq
+            .forward(hidden_states)?
+            .reshape((batch, seq_len, self.n_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let key = self
+            .wk
+            .forward(hidden_states)?
+            .reshape((batch, seq_len, self.n_kv_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let value = self.wv.forward(hidden_states)?.reshape((
+            batch,
+            seq_len,
+            self.n_kv_heads,
+            self.head_dim,
+        ))?;
+
+        let (cos, sin) = rope_frequencies(
+            seq_len,
+            self.head_dim,
+            start_pos,
+            rope_theta,
+            query.dtype(),
+            query.device(),
+        )?;
+        let query = candle_nn::rotary_emb::rope_i(&query, &cos, &sin)?;
+        let key = candle_nn::rotary_emb::rope_i(&key, &cos, &sin)?;
+        let key = repeat_kv_heads(&key, repeat)?;
+        let value = repeat_kv(&value, repeat)?.transpose(1, 2)?.contiguous()?;
+
+        let scale = 1.0f64 / (self.head_dim as f64).sqrt();
+        let scores = (query
+            .matmul(&key.transpose(candle_core::D::Minus2, candle_core::D::Minus1)?)?
+            * scale)?;
+        let mask = sliding_causal_mask(
+            seq_len,
+            start_pos,
+            sliding_window,
+            scores.dtype(),
+            scores.device(),
+        )?;
+        let scores = scores.broadcast_add(&mask)?;
+        let weights = candle_nn::ops::softmax_last_dim(&scores)?;
+        let output = weights.matmul(&value)?.transpose(1, 2)?.reshape((
+            batch,
+            seq_len,
+            self.n_heads * self.head_dim,
+        ))?;
+
+        self.wo.forward(&output)
+    }
+}
+
+impl VoxtralRealtimeTextFeedForward {
+    pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
+        let w1 = linear_no_bias(config.dim, config.hidden_dim, vb.pp("w1"))?;
+        let w2 = linear_no_bias(config.hidden_dim, config.dim, vb.pp("w2"))?;
+        let w3 = linear_no_bias(config.dim, config.hidden_dim, vb.pp("w3"))?;
+        Ok(Self { w1, w2, w3 })
+    }
+
+    pub fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let gate = self.w1.forward(hidden_states)?;
+        let gate = Activation::Silu.forward(&gate)?;
+        let up = self.w3.forward(hidden_states)?;
+        let hidden_states = gate.broadcast_mul(&up)?;
+        self.w2.forward(&hidden_states)
+    }
+}
+
+impl VoxtralRealtimeTextAdaRmsNorm {
+    pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
+        let hidden_dim = config.ada_rms_norm_t_cond_dim.unwrap_or(32);
+        let down = linear_no_bias(config.dim, hidden_dim, vb.pp("0"))?;
+        let up = linear_no_bias(hidden_dim, config.dim, vb.pp("2"))?;
+        Ok(Self {
+            down,
+            up,
+            hidden_dim,
+        })
+    }
+
+    pub fn scale(&self, t_cond: &Tensor) -> Result<Tensor> {
+        let t_cond = match t_cond.dims() {
+            [_dim] => t_cond.reshape((1, t_cond.dim(0)?))?,
+            [1, _dim] => t_cond.clone(),
+            _ => candle_core::bail!(
+                "expected t_cond shape [dim] or [1, dim], got {:?}",
+                t_cond.dims()
+            ),
+        };
+        let hidden = self.down.forward(&t_cond)?;
+        let hidden = Activation::Gelu.forward(&hidden)?;
+        self.up.forward(&hidden)?.squeeze(0)
+    }
+
+    pub fn apply(&self, hidden_states: &Tensor, t_cond: &Tensor) -> Result<Tensor> {
+        let scale = self.scale(t_cond)?;
+        let dim = scale.dim(0)?;
+        let one_plus_scale = (scale + 1.0)?;
+        hidden_states.broadcast_mul(&one_plus_scale.reshape((1, 1, dim))?)
+    }
+}
+
 fn zero_causal_conv1d(conv: &Conv1d, xs: &Tensor) -> Result<Tensor> {
     let (_, _, length) = xs.dims3()?;
     let config = conv.config();
@@ -509,6 +787,28 @@ fn rope_frequencies(
     let cos = Tensor::from_vec(cos, (seq_len, half_dim), device)?.to_dtype(dtype)?;
     let sin = Tensor::from_vec(sin, (seq_len, half_dim), device)?.to_dtype(dtype)?;
     Ok((cos, sin))
+}
+
+fn time_embedding_value(
+    value: f32,
+    dim: usize,
+    dtype: candle_core::DType,
+    device: &Device,
+) -> Result<Tensor> {
+    let half_dim = dim / 2;
+    let log_theta = f32::ln(10_000.0);
+    let mut values = Vec::with_capacity(dim);
+    for idx in 0..half_dim {
+        let inv_freq = f32::exp(-log_theta * idx as f32 / half_dim as f32);
+        let emb = value * inv_freq;
+        values.push(emb.cos());
+    }
+    for idx in 0..half_dim {
+        let inv_freq = f32::exp(-log_theta * idx as f32 / half_dim as f32);
+        let emb = value * inv_freq;
+        values.push(emb.sin());
+    }
+    Tensor::from_vec(values, (dim,), device)?.to_dtype(dtype)
 }
 
 fn sliding_causal_mask(
@@ -694,6 +994,40 @@ mod tests {
     }
 
     #[test]
+    fn runs_tiny_realtime_text_decoder_and_logits() {
+        let config = tiny_realtime_config();
+        let modules = VoxtralRealtimeInferenceModules::load(
+            &config,
+            VarBuilder::zeros(DType::F32, &Device::Cpu),
+        )
+        .unwrap();
+        let decoder =
+            VoxtralRealtimeTextDecoder::load(&config, VarBuilder::zeros(DType::F32, &Device::Cpu))
+                .unwrap();
+        let embeddings = modules
+            .token_embeddings
+            .forward(
+                &[
+                    crate::REALTIME_BOS_TOKEN_ID,
+                    crate::REALTIME_STREAMING_PAD_TOKEN_ID,
+                    crate::REALTIME_STREAMING_PAD_TOKEN_ID,
+                ],
+                &Device::Cpu,
+            )
+            .unwrap();
+
+        let hidden = decoder.forward(&embeddings, 0, 6).unwrap();
+        let logits = decoder.logits(&hidden, &modules.token_embeddings).unwrap();
+
+        assert_eq!(decoder.layers.len(), 1);
+        assert_eq!(decoder.layers[0].attention.wq.weight().dims(), &[8, 8]);
+        assert_eq!(decoder.layers[0].attention.wk.weight().dims(), &[4, 8]);
+        assert_eq!(decoder.layers[0].ada_norm.down.weight().dims(), &[32, 8]);
+        assert_eq!(hidden.dims(), &[1, 3, 8]);
+        assert_eq!(logits.dims(), &[1, 3, 64]);
+    }
+
+    #[test]
     fn loads_local_realtime_inference_modules_when_env_is_set() {
         let Ok(dir) = std::env::var("VOXTRAL_REALTIME_LOCAL_DIR") else {
             return;
@@ -815,6 +1149,44 @@ mod tests {
             audio_modules.projector.linear_1.weight().dims(),
             &[3072, 5120]
         );
+    }
+
+    #[test]
+    fn loads_local_realtime_text_decoder_when_env_is_set() {
+        let Ok(dir) = std::env::var("VOXTRAL_REALTIME_LOCAL_DIR") else {
+            return;
+        };
+        if std::env::var("VOXTRAL_REALTIME_LOAD_FULL").as_deref() != Ok("1") {
+            return;
+        }
+
+        let model = crate::VoxtralRealtimeModel::load_from_dir(dir).unwrap();
+        let decoder = model.load_text_decoder(DType::BF16, &Device::Cpu).unwrap();
+
+        assert_eq!(decoder.layers.len(), 26);
+        assert_eq!(
+            decoder.layers[0].attention.wq.weight().dims(),
+            &[4096, 3072]
+        );
+        assert_eq!(
+            decoder.layers[0].attention.wk.weight().dims(),
+            &[1024, 3072]
+        );
+        assert_eq!(
+            decoder.layers[0].attention.wv.weight().dims(),
+            &[1024, 3072]
+        );
+        assert_eq!(
+            decoder.layers[0].attention.wo.weight().dims(),
+            &[3072, 4096]
+        );
+        assert_eq!(decoder.layers[0].ada_norm.down.weight().dims(), &[32, 3072]);
+        assert_eq!(decoder.layers[0].ada_norm.up.weight().dims(), &[3072, 32]);
+        assert_eq!(
+            decoder.layers[25].feed_forward.w2.weight().dims(),
+            &[3072, 9216]
+        );
+        assert_eq!(decoder.norm.weight().dims(), &[3072]);
     }
 
     #[test]

@@ -7,8 +7,8 @@ use serde::Deserialize;
 
 use crate::{
     Result, VoxtralCheckpointSummary, VoxtralError, VoxtralRealtimeAudioModules,
-    VoxtralRealtimeAudioTransformer, VoxtralRealtimeInferenceModules, VoxtralSource,
-    VoxtralTokenizerMetadata, VoxtralWeightMetadata,
+    VoxtralRealtimeAudioTransformer, VoxtralRealtimeInferenceModules, VoxtralRealtimeTextDecoder,
+    VoxtralSource, VoxtralTokenizerMetadata, VoxtralWeightMetadata,
 };
 
 pub const REALTIME_DEFAULT_REPO: &str = "mistralai/Voxtral-Mini-4B-Realtime-2602";
@@ -540,6 +540,16 @@ impl VoxtralRealtimeModel {
     ) -> Result<VoxtralRealtimeAudioModules> {
         let vb = self.var_builder(dtype, device)?;
         VoxtralRealtimeAudioModules::load(&self.config, vb)
+            .map_err(|e| VoxtralError::Candle(e.to_string()))
+    }
+
+    pub fn load_text_decoder(
+        &self,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<VoxtralRealtimeTextDecoder> {
+        let vb = self.var_builder(dtype, device)?;
+        VoxtralRealtimeTextDecoder::load(&self.config, vb)
             .map_err(|e| VoxtralError::Candle(e.to_string()))
     }
 

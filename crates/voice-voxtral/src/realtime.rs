@@ -31,7 +31,6 @@ const REALTIME_TEXT_ADA_NORM_DIM: usize = 32;
 const REALTIME_ENCODER_PREFIX: &str = "mm_streams_embeddings.embedding_module.whisper_encoder";
 const REALTIME_STREAMS_PREFIX: &str = "mm_streams_embeddings.embedding_module";
 const SAFETENSORS_BF16: &str = "BF16";
-const SAFETENSORS_F32: &str = "F32";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct VoxtralRealtimeConfig {
@@ -719,7 +718,7 @@ pub fn expected_realtime_tensors(
     let mut tensors = Vec::with_capacity(REALTIME_EXPECTED_TENSOR_COUNT);
     add_realtime_audio_tensors(config, &mut tensors);
     add_realtime_text_tensors(config, &mut tensors);
-    expected_f32(&mut tensors, "norm.weight", [config.dim]);
+    expected_bf16(&mut tensors, "norm.weight", [config.dim]);
     tensors
 }
 
@@ -734,22 +733,22 @@ fn add_realtime_audio_tensors(
     let hidden = encoder.hidden_dim;
     let adapter_input_dim = encoder.dim * config.downsample_factor();
 
-    expected_f32(
+    expected_bf16(
         tensors,
         format!("{REALTIME_ENCODER_PREFIX}.conv_layers.0.conv.weight"),
         [dim, encoding.num_mel_bins, 3],
     );
-    expected_f32(
+    expected_bf16(
         tensors,
         format!("{REALTIME_ENCODER_PREFIX}.conv_layers.0.conv.bias"),
         [dim],
     );
-    expected_f32(
+    expected_bf16(
         tensors,
         format!("{REALTIME_ENCODER_PREFIX}.conv_layers.1.conv.weight"),
         [dim, dim, 3],
     );
-    expected_f32(
+    expected_bf16(
         tensors,
         format!("{REALTIME_ENCODER_PREFIX}.conv_layers.1.conv.bias"),
         [dim],
@@ -762,7 +761,7 @@ fn add_realtime_audio_tensors(
             format!("{prefix}.attention.wq.weight"),
             [qkv_dim, dim],
         );
-        expected_f32(tensors, format!("{prefix}.attention.wq.bias"), [qkv_dim]);
+        expected_bf16(tensors, format!("{prefix}.attention.wq.bias"), [qkv_dim]);
         expected_bf16(
             tensors,
             format!("{prefix}.attention.wk.weight"),
@@ -773,15 +772,15 @@ fn add_realtime_audio_tensors(
             format!("{prefix}.attention.wv.weight"),
             [qkv_dim, dim],
         );
-        expected_f32(tensors, format!("{prefix}.attention.wv.bias"), [qkv_dim]);
+        expected_bf16(tensors, format!("{prefix}.attention.wv.bias"), [qkv_dim]);
         expected_bf16(
             tensors,
             format!("{prefix}.attention.wo.weight"),
             [dim, qkv_dim],
         );
-        expected_f32(tensors, format!("{prefix}.attention.wo.bias"), [dim]);
-        expected_f32(tensors, format!("{prefix}.attention_norm.weight"), [dim]);
-        expected_f32(tensors, format!("{prefix}.ffn_norm.weight"), [dim]);
+        expected_bf16(tensors, format!("{prefix}.attention.wo.bias"), [dim]);
+        expected_bf16(tensors, format!("{prefix}.attention_norm.weight"), [dim]);
+        expected_bf16(tensors, format!("{prefix}.ffn_norm.weight"), [dim]);
         expected_bf16(
             tensors,
             format!("{prefix}.feed_forward.w1.weight"),
@@ -792,7 +791,7 @@ fn add_realtime_audio_tensors(
             format!("{prefix}.feed_forward.w2.weight"),
             [dim, hidden],
         );
-        expected_f32(tensors, format!("{prefix}.feed_forward.w2.bias"), [dim]);
+        expected_bf16(tensors, format!("{prefix}.feed_forward.w2.bias"), [dim]);
         expected_bf16(
             tensors,
             format!("{prefix}.feed_forward.w3.weight"),
@@ -800,7 +799,7 @@ fn add_realtime_audio_tensors(
         );
     }
 
-    expected_f32(
+    expected_bf16(
         tensors,
         format!("{REALTIME_ENCODER_PREFIX}.transformer.norm.weight"),
         [dim],
@@ -833,12 +832,12 @@ fn add_realtime_text_tensors(
 
     for layer in 0..config.n_layers {
         let prefix = format!("layers.{layer}");
-        expected_f32(
+        expected_bf16(
             tensors,
             format!("{prefix}.ada_rms_norm_t_cond.0.weight"),
             [REALTIME_TEXT_ADA_NORM_DIM, dim],
         );
-        expected_f32(
+        expected_bf16(
             tensors,
             format!("{prefix}.ada_rms_norm_t_cond.2.weight"),
             [dim, REALTIME_TEXT_ADA_NORM_DIM],
@@ -863,8 +862,8 @@ fn add_realtime_text_tensors(
             format!("{prefix}.attention.wo.weight"),
             [dim, q_dim],
         );
-        expected_f32(tensors, format!("{prefix}.attention_norm.weight"), [dim]);
-        expected_f32(tensors, format!("{prefix}.ffn_norm.weight"), [dim]);
+        expected_bf16(tensors, format!("{prefix}.attention_norm.weight"), [dim]);
+        expected_bf16(tensors, format!("{prefix}.ffn_norm.weight"), [dim]);
         expected_bf16(
             tensors,
             format!("{prefix}.feed_forward.w1.weight"),
@@ -889,14 +888,6 @@ fn expected_bf16<const N: usize>(
     shape: [usize; N],
 ) {
     expected(tensors, name, SAFETENSORS_BF16, shape);
-}
-
-fn expected_f32<const N: usize>(
-    tensors: &mut Vec<VoxtralRealtimeExpectedTensor>,
-    name: impl Into<String>,
-    shape: [usize; N],
-) {
-    expected(tensors, name, SAFETENSORS_F32, shape);
 }
 
 fn expected<const N: usize>(
@@ -1129,7 +1120,7 @@ mod tests {
         }));
         assert!(tensors.iter().any(|tensor| {
             tensor.name == "mm_streams_embeddings.embedding_module.whisper_encoder.conv_layers.0.conv.weight"
-                && tensor.dtype == SAFETENSORS_F32
+                && tensor.dtype == SAFETENSORS_BF16
                 && tensor.shape == [1280, 128, 3]
         }));
         assert!(tensors.iter().any(|tensor| {
@@ -1140,7 +1131,7 @@ mod tests {
         }));
         assert!(tensors.iter().any(|tensor| {
             tensor.name == "layers.0.ada_rms_norm_t_cond.0.weight"
-                && tensor.dtype == SAFETENSORS_F32
+                && tensor.dtype == SAFETENSORS_BF16
                 && tensor.shape == [32, 3072]
         }));
         assert!(tensors.iter().any(|tensor| {
@@ -1150,7 +1141,10 @@ mod tests {
         }));
         assert!(tensors
             .iter()
-            .any(|tensor| tensor.name == "norm.weight" && tensor.dtype == SAFETENSORS_F32));
+            .any(|tensor| tensor.name == "norm.weight" && tensor.dtype == SAFETENSORS_BF16));
+        assert!(tensors
+            .iter()
+            .all(|tensor| tensor.dtype == SAFETENSORS_BF16));
     }
 
     #[test]

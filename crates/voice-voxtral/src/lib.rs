@@ -9,6 +9,7 @@ mod assets;
 mod codec;
 mod config;
 mod error;
+mod generation;
 mod model;
 mod prompt;
 mod streaming;
@@ -31,6 +32,7 @@ pub use config::{
     MultimodalConfig, VoxtralConfig,
 };
 pub use error::{Result, VoxtralError};
+pub use generation::{VoxtralGeneratedAudio, VoxtralGenerationOptions};
 pub use model::VoxtralModel;
 pub use prompt::{
     build_prompt_embeddings, build_prompt_token_ids, VoxtralPrompt,

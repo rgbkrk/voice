@@ -7121,6 +7121,7 @@ dependencies = [
  "voice-g2p",
  "voice-stt",
  "voice-tts",
+ "voice-voxtral",
 ]
 
 [[package]]

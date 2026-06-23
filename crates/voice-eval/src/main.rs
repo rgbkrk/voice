@@ -4,6 +4,7 @@ use clap::Parser;
 use serde::Serialize;
 
 const DEFAULT_TTS_MODEL: &str = "prince-canuma/Kokoro-82M";
+const DEFAULT_TTS_BACKEND: &str = "kokoro";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -23,7 +24,11 @@ struct Args {
     #[arg(long = "expected-text")]
     expected_text: Option<String>,
 
-    /// Kokoro voice name.
+    /// TTS backend to synthesize with.
+    #[arg(long = "tts-backend", default_value = DEFAULT_TTS_BACKEND)]
+    tts_backend: String,
+
+    /// TTS voice name.
     #[arg(short, long, default_value = "af_heart")]
     voice: String,
 
@@ -42,6 +47,18 @@ struct Args {
     /// Use Kokoro stochastic synthesis instead of deterministic synthesis.
     #[arg(long)]
     stochastic: bool,
+
+    /// Maximum autoregressive frames for Voxtral synthesis.
+    #[arg(long = "max-frames", default_value_t = 256)]
+    max_frames: usize,
+
+    /// Deterministic seed for Voxtral flow noise.
+    #[arg(long, default_value_t = 0x5658_5452_414c)]
+    seed: u64,
+
+    /// Flow matching steps per Voxtral audio frame.
+    #[arg(long = "flow-steps", default_value_t = 7)]
+    flow_steps: usize,
 
     /// Write the generated TTS audio to this WAV path.
     #[arg(long = "output-wav")]
@@ -85,14 +102,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(input_wav) = &args.input_wav {
             let audio = voice_stt::load_audio_file(input_wav)?;
             (audio.samples, audio.sample_rate, Vec::new(), "input-wav")
-        } else {
+        } else if args.tts_backend == "voxtral" {
+            let (samples, sample_rate) = synthesize_voxtral(&args)?;
+            (samples, sample_rate, Vec::new(), "voxtral-native")
+        } else if args.tts_backend == "kokoro" {
             let phoneme_chunks = voice_g2p::text_to_phoneme_chunks(&args.text)?;
-            let synthesis_mode = if args.stochastic {
+            let mode = if args.stochastic {
                 voice_tts::SynthesisMode::Stochastic
             } else {
                 voice_tts::SynthesisMode::Deterministic
             };
-            let (samples, sample_rate) = synthesize(&args, &phoneme_chunks, synthesis_mode)?;
+            let (samples, sample_rate) = synthesize_kokoro(&args, &phoneme_chunks, mode)?;
             (
                 samples,
                 sample_rate,
@@ -103,6 +123,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "deterministic"
                 },
             )
+        } else {
+            return Err(format!(
+                "unsupported --tts-backend {:?}; expected kokoro or voxtral",
+                args.tts_backend
+            )
+            .into());
         };
 
     if args.input_wav.is_some() && args.output_wav.is_some() {
@@ -152,7 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn synthesize(
+fn synthesize_kokoro(
     args: &Args,
     phoneme_chunks: &[String],
     synthesis_mode: voice_tts::SynthesisMode,
@@ -177,6 +203,21 @@ fn synthesize(
     }
 
     Ok((samples, sample_rate))
+}
+
+fn synthesize_voxtral(args: &Args) -> Result<(Vec<f32>, u32), Box<dyn std::error::Error>> {
+    let model = voice_voxtral::VoxtralModel::load(&args.tts_model)?;
+    let audio = model.generate_audio_default(
+        &args.text,
+        &args.voice,
+        voice_voxtral::VoxtralGenerationOptions {
+            max_frames: args.max_frames,
+            seed: args.seed,
+            flow_steps: args.flow_steps,
+            ..Default::default()
+        },
+    )?;
+    Ok((audio.samples, audio.sample_rate))
 }
 
 fn print_text_report(report: &EvalReport) {

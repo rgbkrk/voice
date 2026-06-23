@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
 
+use candle_core::{DType, Device};
+use candle_nn::VarBuilder;
 use hf_hub::api::sync::Api;
 use serde::Deserialize;
 
 use crate::{
-    Result, VoxtralCheckpointSummary, VoxtralError, VoxtralSource, VoxtralTokenizerMetadata,
-    VoxtralWeightMetadata,
+    Result, VoxtralCheckpointSummary, VoxtralError, VoxtralRealtimeInferenceModules, VoxtralSource,
+    VoxtralTokenizerMetadata, VoxtralWeightMetadata,
 };
 
 pub const REALTIME_DEFAULT_REPO: &str = "mistralai/Voxtral-Mini-4B-Realtime-2602";
@@ -28,8 +30,9 @@ pub const REALTIME_REPEAT_AUDIO_TEXT_TOKEN_ID: usize = 34;
 pub const REALTIME_DEFAULT_LEFT_PAD_TOKENS: usize = 32;
 pub const REALTIME_DEFAULT_OFFLINE_BUFFER_TOKENS: usize = 10;
 const REALTIME_TEXT_ADA_NORM_DIM: usize = 32;
-const REALTIME_ENCODER_PREFIX: &str = "mm_streams_embeddings.embedding_module.whisper_encoder";
-const REALTIME_STREAMS_PREFIX: &str = "mm_streams_embeddings.embedding_module";
+pub(crate) const REALTIME_ENCODER_PREFIX: &str =
+    "mm_streams_embeddings.embedding_module.whisper_encoder";
+pub(crate) const REALTIME_STREAMS_PREFIX: &str = "mm_streams_embeddings.embedding_module";
 const SAFETENSORS_BF16: &str = "BF16";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -499,6 +502,24 @@ impl VoxtralRealtimeModel {
         self.weights.as_ref().map(|weights| {
             weights.summary_with_expected_tensor_count(REALTIME_EXPECTED_TENSOR_COUNT)
         })
+    }
+
+    pub fn var_builder(&self, dtype: DType, device: &Device) -> Result<VarBuilder<'static>> {
+        let weights = self.assets.weights.as_ref().ok_or_else(|| {
+            VoxtralError::InvalidCheckpoint("missing realtime consolidated.safetensors".into())
+        })?;
+        unsafe { VarBuilder::from_mmaped_safetensors(&[weights], dtype, device) }
+            .map_err(|e| VoxtralError::Candle(e.to_string()))
+    }
+
+    pub fn load_inference_modules(
+        &self,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<VoxtralRealtimeInferenceModules> {
+        let vb = self.var_builder(dtype, device)?;
+        VoxtralRealtimeInferenceModules::load(&self.config, vb)
+            .map_err(|e| VoxtralError::Candle(e.to_string()))
     }
 
     fn load_from_assets(assets: VoxtralRealtimeAssetPaths, require_weights: bool) -> Result<Self> {

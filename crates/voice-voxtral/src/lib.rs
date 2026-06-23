@@ -14,6 +14,7 @@ mod model;
 mod prompt;
 mod realtime;
 mod realtime_audio;
+mod realtime_inference;
 mod streaming;
 mod tokenizer;
 mod transformer;
@@ -62,6 +63,10 @@ pub use realtime::{
 pub use realtime_audio::{
     realtime_log_mel_spectrogram, realtime_log_mel_spectrogram_with_center, realtime_mel_filters,
     VoxtralRealtimeMelFilters, VoxtralRealtimeMelSpectrogram, REALTIME_MIN_MEL_VALUE,
+};
+pub use realtime_inference::{
+    VoxtralRealtimeAudioProjector, VoxtralRealtimeAudioStem, VoxtralRealtimeInferenceModules,
+    VoxtralRealtimeTokenEmbeddings,
 };
 pub use streaming::{
     plan_codec_chunk, VoxtralCodecChunk, VoxtralStreamingConfig, DEFAULT_CODEC_CHUNK_FRAMES,

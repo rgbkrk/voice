@@ -4,8 +4,8 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 
 use crate::{
-    Result, VoxtralAssetPaths, VoxtralAssetResolver, VoxtralConfig, VoxtralError, VoxtralSource,
-    VoxtralTokenizerMetadata, VoxtralWeightMetadata,
+    Result, VoxtralAssetPaths, VoxtralAssetResolver, VoxtralConfig, VoxtralError,
+    VoxtralInferenceModules, VoxtralSource, VoxtralTokenizerMetadata, VoxtralWeightMetadata,
 };
 
 /// Boundary for a future native Candle implementation of Voxtral TTS.
@@ -105,6 +105,21 @@ impl VoxtralModel {
             .map_err(|e| VoxtralError::Candle(e.to_string()))
     }
 
+    /// Instantiate the native Candle module skeleton from the checkpoint.
+    ///
+    /// This loads the multimodal embeddings, language backbone, and acoustic
+    /// transformer tensors. The autoregressive generation loop and audio
+    /// tokenizer/vocoder decoder are still separate follow-up work.
+    pub fn load_inference_modules(
+        &self,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<VoxtralInferenceModules> {
+        let vb = self.var_builder(dtype, device)?;
+        VoxtralInferenceModules::load(&self.config, vb)
+            .map_err(|e| VoxtralError::Candle(e.to_string()))
+    }
+
     pub fn generate(&mut self, _text: &str, _voice: &str) -> Result<Vec<f32>> {
         Err(VoxtralError::Unsupported(
             "the config/asset layer exists, but the native audio-generation and audio-tokenizer stages have not been ported".to_string(),
@@ -159,5 +174,35 @@ mod tests {
 
         let norm = model.load_norm_weight(DType::F32, &Device::Cpu).unwrap();
         assert_eq!(norm.dims(), &[model.config().dim]);
+    }
+
+    #[test]
+    fn loads_local_inference_modules_when_env_is_set() {
+        let Ok(dir) = std::env::var("VOXTRAL_LOCAL_DIR") else {
+            return;
+        };
+        if std::env::var("VOXTRAL_LOAD_FULL").as_deref() != Ok("1") {
+            return;
+        }
+
+        let model = VoxtralModel::load_from_dir(dir).unwrap();
+        let modules = model
+            .load_inference_modules(DType::BF16, &Device::Cpu)
+            .unwrap();
+
+        assert_eq!(modules.language.layers.len(), model.config().n_layers);
+        assert_eq!(
+            modules.acoustic.layers.len(),
+            model
+                .config()
+                .multimodal
+                .audio_model_args
+                .acoustic_transformer_args
+                .n_layers
+        );
+        assert_eq!(
+            modules.embeddings.tok_embeddings.embeddings().dims(),
+            &[model.config().vocab_size, model.config().dim]
+        );
     }
 }

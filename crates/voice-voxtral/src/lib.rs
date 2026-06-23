@@ -10,6 +10,7 @@ mod config;
 mod error;
 mod model;
 mod tokenizer;
+mod transformer;
 mod voices;
 mod weights;
 
@@ -26,6 +27,10 @@ pub use model::VoxtralModel;
 pub use tokenizer::{
     TekkenAudioEncodingConfig, TekkenAudioMetadata, TekkenConfig, TekkenSpecialToken,
     TekkenVocabToken, VoxtralTokenizerMetadata,
+};
+pub use transformer::{
+    VoxtralAcousticTransformer, VoxtralAttention, VoxtralFeedForward, VoxtralInferenceModules,
+    VoxtralLanguageBackbone, VoxtralMultimodalEmbeddings, VoxtralTransformerBlock,
 };
 pub use voices::{get_preset_voice, PresetVoice, VOXTRAL_PRESET_VOICES};
 pub use weights::{

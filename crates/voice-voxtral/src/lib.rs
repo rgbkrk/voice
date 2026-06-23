@@ -9,6 +9,7 @@ mod assets;
 mod config;
 mod error;
 mod model;
+mod streaming;
 mod tokenizer;
 mod transformer;
 mod voices;
@@ -24,6 +25,10 @@ pub use config::{
 };
 pub use error::{Result, VoxtralError};
 pub use model::VoxtralModel;
+pub use streaming::{
+    plan_codec_chunk, VoxtralCodecChunk, VoxtralStreamingConfig, DEFAULT_CODEC_CHUNK_FRAMES,
+    DEFAULT_CODEC_CHUNK_FRAMES_AT_BEGIN, DEFAULT_CODEC_LEFT_CONTEXT_FRAMES,
+};
 pub use tokenizer::{
     TekkenAudioEncodingConfig, TekkenAudioMetadata, TekkenConfig, TekkenSpecialToken,
     TekkenVocabToken, VoxtralTokenizerMetadata,

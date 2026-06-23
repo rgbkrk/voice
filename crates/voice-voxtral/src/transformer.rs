@@ -1,4 +1,4 @@
-use candle_core::{DType, Module, Result, Tensor, D};
+use candle_core::{DType, Device, Module, Result, Tensor, D};
 use candle_nn::{
     embedding, linear_no_bias, rms_norm, Activation, Embedding, Linear, RmsNorm, VarBuilder,
 };
@@ -94,6 +94,39 @@ impl VoxtralMultimodalEmbeddings {
             audio_vocab_size,
         })
     }
+
+    pub fn token_embeddings(&self, token_ids: &[usize], device: &Device) -> Result<Tensor> {
+        let token_ids = token_ids.iter().map(|id| *id as u32).collect::<Vec<_>>();
+        let input_ids = Tensor::new(token_ids.as_slice(), device)?.reshape((1, token_ids.len()))?;
+        self.tok_embeddings.forward(&input_ids)
+    }
+
+    pub fn audio_codes_embedding(&self, config: &VoxtralConfig, codes: &Tensor) -> Result<Tensor> {
+        let (batch, codebooks) = codes.dims2()?;
+        if codebooks != config.num_codebooks() {
+            candle_core::bail!(
+                "audio code frame has {codebooks} codebooks, expected {}",
+                config.num_codebooks()
+            );
+        }
+
+        let offsets = audio_codebook_offsets(config);
+        let codes = codes.to_vec2::<u32>()?;
+        let mut global_ids = Vec::with_capacity(batch * codebooks);
+        for row in codes {
+            for (codebook, code) in row.into_iter().enumerate() {
+                global_ids.push(offsets[codebook] as u32 + code);
+            }
+        }
+
+        let global_ids = Tensor::new(
+            global_ids.as_slice(),
+            self.audio_codebook_embeddings.embeddings().device(),
+        )?
+        .reshape((batch, codebooks))?;
+        let embeddings = self.audio_codebook_embeddings.forward(&global_ids)?;
+        embeddings.sum(1)
+    }
 }
 
 impl VoxtralLanguageBackbone {
@@ -113,6 +146,19 @@ impl VoxtralLanguageBackbone {
         let norm = rms_norm(config.dim, config.norm_eps, vb.pp("norm"))?;
 
         Ok(Self { layers, norm })
+    }
+
+    pub fn forward_causal(
+        &self,
+        hidden_states: &Tensor,
+        start_pos: usize,
+        rope_theta: f64,
+    ) -> Result<Tensor> {
+        let mut hidden_states = hidden_states.clone();
+        for layer in &self.layers {
+            hidden_states = layer.forward_causal(&hidden_states, start_pos, rope_theta)?;
+        }
+        self.norm.forward(&hidden_states)
     }
 }
 
@@ -387,6 +433,25 @@ impl VoxtralTransformerBlock {
         let ffn_output = self.feed_forward.forward(&ffn_input)?;
         ffn_output + residual
     }
+
+    pub fn forward_causal(
+        &self,
+        hidden_states: &Tensor,
+        start_pos: usize,
+        rope_theta: f64,
+    ) -> Result<Tensor> {
+        let residual = hidden_states.clone();
+        let attention_input = self.attention_norm.forward(hidden_states)?;
+        let attention_output =
+            self.attention
+                .forward_causal(&attention_input, start_pos, rope_theta)?;
+        let hidden_states = (attention_output + residual)?;
+
+        let residual = hidden_states.clone();
+        let ffn_input = self.ffn_norm.forward(&hidden_states)?;
+        let ffn_output = self.feed_forward.forward(&ffn_input)?;
+        ffn_output + residual
+    }
 }
 
 impl VoxtralAttention {
@@ -452,6 +517,61 @@ impl VoxtralAttention {
 
         self.wo.forward_compat(&output)
     }
+
+    pub fn forward_causal(
+        &self,
+        hidden_states: &Tensor,
+        start_pos: usize,
+        rope_theta: f64,
+    ) -> Result<Tensor> {
+        let (batch, seq_len, _dim) = hidden_states.dims3()?;
+        let repeat = self.n_heads / self.n_kv_heads;
+
+        let query = self
+            .wq
+            .forward_compat(hidden_states)?
+            .reshape((batch, seq_len, self.n_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let key = self
+            .wk
+            .forward_compat(hidden_states)?
+            .reshape((batch, seq_len, self.n_kv_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let value = self.wv.forward_compat(hidden_states)?.reshape((
+            batch,
+            seq_len,
+            self.n_kv_heads,
+            self.head_dim,
+        ))?;
+
+        let (cos, sin) = rope_frequencies(
+            seq_len,
+            self.head_dim,
+            start_pos,
+            rope_theta,
+            query.dtype(),
+            query.device(),
+        )?;
+        let query = candle_nn::rotary_emb::rope_i(&query, &cos, &sin)?;
+        let key = candle_nn::rotary_emb::rope_i(&key, &cos, &sin)?;
+        let key = repeat_kv_heads(&key, repeat)?;
+        let value = repeat_kv(&value, repeat)?.transpose(1, 2)?.contiguous()?;
+
+        let scale = 1.0f64 / (self.head_dim as f64).sqrt();
+        let scores = (query.matmul(&key.transpose(D::Minus2, D::Minus1)?)? * scale)?;
+        let mask = causal_mask(seq_len, scores.dtype(), scores.device())?;
+        let scores = scores.broadcast_add(&mask)?;
+        let weights = candle_nn::ops::softmax_last_dim(&scores)?;
+        let output = weights.matmul(&value)?.transpose(1, 2)?.reshape((
+            batch,
+            seq_len,
+            self.n_heads * self.head_dim,
+        ))?;
+
+        self.wo.forward_compat(&output)
+    }
 }
 
 impl VoxtralFeedForward {
@@ -508,6 +628,18 @@ fn audio_codebook_vocab_size(config: &VoxtralConfig) -> usize {
     )
 }
 
+fn audio_codebook_offsets(config: &VoxtralConfig) -> Vec<usize> {
+    let audio_model = &config.multimodal.audio_model_args;
+    let semantic_size = audio_model.semantic_codebook_size + AUDIO_SPECIAL_TOKEN_COUNT;
+    let acoustic_size = audio_model.acoustic_codebook_size + AUDIO_SPECIAL_TOKEN_COUNT;
+    let mut offsets = Vec::with_capacity(config.num_codebooks());
+    offsets.push(0);
+    for idx in 1..config.num_codebooks() {
+        offsets.push(semantic_size + (idx - 1) * acoustic_size);
+    }
+    offsets
+}
+
 fn semantic_codebook_output_size(config: &VoxtralConfig) -> usize {
     let audio_model = &config.multimodal.audio_model_args;
     round_up_to_multiple(audio_model.semantic_codebook_size + 2, 128)
@@ -531,6 +663,57 @@ fn repeat_kv(hidden_states: &Tensor, repeat: usize) -> Result<Tensor> {
         }
     }
     Tensor::cat(&repeated, 2)
+}
+
+fn repeat_kv_heads(hidden_states: &Tensor, repeat: usize) -> Result<Tensor> {
+    if repeat == 1 {
+        return Ok(hidden_states.clone());
+    }
+
+    let (batch, n_kv_heads, seq_len, head_dim) = hidden_states.dims4()?;
+    let expanded = hidden_states
+        .unsqueeze(2)?
+        .expand((batch, n_kv_heads, repeat, seq_len, head_dim))?;
+    expanded.reshape((batch, n_kv_heads * repeat, seq_len, head_dim))
+}
+
+fn rope_frequencies(
+    seq_len: usize,
+    head_dim: usize,
+    start_pos: usize,
+    theta: f64,
+    dtype: DType,
+    device: &Device,
+) -> Result<(Tensor, Tensor)> {
+    let half_dim = head_dim / 2;
+    let mut cos = Vec::with_capacity(seq_len * half_dim);
+    let mut sin = Vec::with_capacity(seq_len * half_dim);
+    for pos in start_pos..start_pos + seq_len {
+        for idx in 0..half_dim {
+            let freq = 1.0 / theta.powf((2 * idx) as f64 / head_dim as f64);
+            let angle = pos as f64 * freq;
+            cos.push(angle.cos() as f32);
+            sin.push(angle.sin() as f32);
+        }
+    }
+
+    let cos = Tensor::from_vec(cos, (seq_len, half_dim), device)?.to_dtype(dtype)?;
+    let sin = Tensor::from_vec(sin, (seq_len, half_dim), device)?.to_dtype(dtype)?;
+    Ok((cos, sin))
+}
+
+fn causal_mask(seq_len: usize, dtype: DType, device: &Device) -> Result<Tensor> {
+    let mut values = Vec::with_capacity(seq_len * seq_len);
+    for query_pos in 0..seq_len {
+        for key_pos in 0..seq_len {
+            if key_pos <= query_pos {
+                values.push(0.0);
+            } else {
+                values.push(f32::NEG_INFINITY);
+            }
+        }
+    }
+    Tensor::from_vec(values, (1, 1, seq_len, seq_len), device)?.to_dtype(dtype)
 }
 
 fn time_embedding(timestep: &Tensor, dim: usize) -> Result<Tensor> {
@@ -586,7 +769,7 @@ pub(crate) mod tests {
               "n_kv_heads": 1,
               "rope_theta": 1000000.0,
               "norm_eps": 1e-05,
-              "vocab_size": 32,
+              "vocab_size": 64,
               "max_seq_len": 128,
               "model_type": "voxtral_tts",
               "multimodal": {
@@ -689,6 +872,45 @@ pub(crate) mod tests {
             modules.acoustic.semantic_codebook_output.weight().dims(),
             &[128, 8]
         );
+    }
+
+    #[test]
+    fn runs_tiny_language_causal_forward_path() {
+        let config = tiny_config();
+        let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
+        let modules = VoxtralInferenceModules::load(&config, vb).unwrap();
+        let device = Device::Cpu;
+
+        let token_embeddings = modules
+            .embeddings
+            .token_embeddings(&[1, 2, 3], &device)
+            .unwrap();
+        let hidden = modules
+            .language
+            .forward_causal(&token_embeddings, 0, config.rope_theta)
+            .unwrap();
+
+        assert_eq!(token_embeddings.dims(), &[1, 3, 8]);
+        assert_eq!(hidden.dims(), &[1, 3, 8]);
+    }
+
+    #[test]
+    fn embeds_tiny_audio_codes_for_next_language_step() {
+        let config = tiny_config();
+        let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
+        let modules = VoxtralInferenceModules::load(&config, vb).unwrap();
+        let device = Device::Cpu;
+
+        let codes = Tensor::new(&[2u32, 2, 3], &device)
+            .unwrap()
+            .reshape((1, config.num_codebooks()))
+            .unwrap();
+        let audio_embedding = modules
+            .embeddings
+            .audio_codes_embedding(&config, &codes)
+            .unwrap();
+
+        assert_eq!(audio_embedding.dims(), &[1, 8]);
     }
 
     #[test]

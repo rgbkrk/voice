@@ -7232,6 +7232,7 @@ version = "0.1.0"
 dependencies = [
  "candle-core",
  "candle-nn",
+ "fancy-regex",
  "hf-hub",
  "serde",
  "serde_json",

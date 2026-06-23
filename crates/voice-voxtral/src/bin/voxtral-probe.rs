@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 use candle_core::{DType, Device, Module, Tensor};
 use candle_nn::{linear_no_bias, VarBuilder};
-use voice_voxtral::{VoxtralModel, WeightComponent};
+use voice_voxtral::{
+    build_prompt_embeddings, build_prompt_token_ids, load_voice_embedding, VoxtralModel,
+    WeightComponent,
+};
 
 #[derive(Debug)]
 struct Args {
@@ -15,6 +18,9 @@ struct Args {
     linear_smoke: bool,
     load_modules: bool,
     acoustic_forward: bool,
+    language_forward: bool,
+    text: String,
+    voice: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,7 +144,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    if args.load_modules || args.acoustic_forward {
+    if args.load_modules || args.acoustic_forward || args.language_forward {
         let modules = model.load_inference_modules(args.dtype, &device)?;
         println!(
             "probe.load_modules.language_layers={}",
@@ -200,6 +206,104 @@ fn main() -> Result<(), Box<dyn Error>> {
             "probe.load_modules.codec.output_proj={:?}",
             modules.codec.output_proj.weight().dims()
         );
+
+        if args.language_forward {
+            let tokenizer = model
+                .tokenizer()
+                .ok_or("model did not include tekken.json")?;
+            let encoder = tokenizer.encoder()?;
+            let text_token_ids = encoder.encode(&args.text)?;
+            let assets = model
+                .assets()
+                .ok_or("model did not include resolved assets")?;
+            let voice_path = assets
+                .voice_embeddings
+                .get(&args.voice)
+                .ok_or_else(|| format!("voice embedding {:?} was not resolved", args.voice))?;
+            let voice_embeddings = load_voice_embedding(voice_path, args.dtype, &device)?;
+            let voice_frames = voice_embeddings.dim(0)?;
+            if let Some(expected_voice_frames) = tokenizer.voice_audio_tokens(&args.voice) {
+                if expected_voice_frames != voice_frames {
+                    return Err(format!(
+                        "voice {:?} has {voice_frames} rows but tekken metadata expects {expected_voice_frames}",
+                        args.voice
+                    )
+                    .into());
+                }
+            }
+            let prompt = build_prompt_token_ids(config, tokenizer, voice_frames, &text_token_ids)?;
+            let prompt_embeddings =
+                build_prompt_embeddings(&modules.embeddings, &prompt, &voice_embeddings, &device)?;
+            let audio_token_id = usize::try_from(config.multimodal.audio_model_args.audio_token_id)
+                .map_err(|_| "audio_token_id must be non-negative")?;
+            let audio_embedding = modules
+                .embeddings
+                .token_embeddings(&[audio_token_id], &device)?;
+            let decode_embeddings = Tensor::cat(&[prompt_embeddings, audio_embedding], 1)?;
+            let hidden =
+                modules
+                    .language
+                    .forward_causal(&decode_embeddings, 0, config.rope_theta)?;
+            let last_hidden = hidden
+                .narrow(1, decode_embeddings.dim(1)? - 1, 1)?
+                .reshape((1, config.dim))?;
+
+            println!("probe.language_forward.voice={}", args.voice);
+            println!("probe.language_forward.text={:?}", args.text);
+            println!(
+                "probe.language_forward.text_token_count={}",
+                text_token_ids.len()
+            );
+            println!("probe.language_forward.voice_frames={voice_frames}");
+            println!(
+                "probe.language_forward.prompt_token_count={}",
+                prompt.input_ids.len()
+            );
+            println!(
+                "probe.language_forward.decode_input_dims={:?}",
+                decode_embeddings.dims()
+            );
+            println!("probe.language_forward.hidden_dims={:?}", hidden.dims());
+            println!(
+                "probe.language_forward.last_hidden_dims={:?}",
+                last_hidden.dims()
+            );
+            println!(
+                "probe.language_forward.last_hidden_dtype={:?}",
+                last_hidden.dtype()
+            );
+
+            let initial_noise = Tensor::zeros(
+                (1, config.multimodal.audio_model_args.n_acoustic_codebook),
+                args.dtype,
+                &device,
+            )?;
+            let frame_codes = modules.acoustic.predict_frame_codes_from_noise(
+                config,
+                &last_hidden,
+                &initial_noise,
+                &[0.0, 1.0],
+                1.2,
+            )?;
+            println!(
+                "probe.language_forward.frame_code_dims={:?}",
+                frame_codes.dims()
+            );
+            println!(
+                "probe.language_forward.frame_code_dtype={:?}",
+                frame_codes.dtype()
+            );
+            let codec_codes = frame_codes.reshape((1, config.num_codebooks(), 1))?;
+            let waveform = modules.codec.decode_codes_to_waveform(&codec_codes)?;
+            println!(
+                "probe.language_forward.codec_waveform_dims={:?}",
+                waveform.dims()
+            );
+            println!(
+                "probe.language_forward.codec_waveform_dtype={:?}",
+                waveform.dtype()
+            );
+        }
 
         if args.acoustic_forward {
             let audio_model = &config.multimodal.audio_model_args;
@@ -288,6 +392,9 @@ impl Args {
         let mut linear_smoke = false;
         let mut load_modules = false;
         let mut acoustic_forward = false;
+        let mut language_forward = false;
+        let mut text = "Voxtral support is running from native Rust.".to_string();
+        let mut voice = "casual_male".to_string();
 
         let mut raw = env::args().skip(1);
         while let Some(arg) = raw.next() {
@@ -310,6 +417,16 @@ impl Args {
                     acoustic_forward = true;
                     load_modules = true;
                 }
+                "--language-forward" => {
+                    language_forward = true;
+                    load_modules = true;
+                }
+                "--text" => {
+                    text = raw.next().ok_or("--text requires a value")?;
+                }
+                "--voice" => {
+                    voice = raw.next().ok_or("--voice requires a value")?;
+                }
                 "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
@@ -330,6 +447,9 @@ impl Args {
             linear_smoke,
             load_modules,
             acoustic_forward,
+            language_forward,
+            text,
+            voice,
         })
     }
 }
@@ -372,6 +492,6 @@ fn parse_dtype(raw: &str) -> Result<DType, Box<dyn Error>> {
 
 fn print_help() {
     println!(
-        "Usage: voxtral-probe --model-dir PATH [--device cpu|metal] [--dtype f32|f16|bf16] [--load-norm] [--linear-smoke] [--load-modules] [--acoustic-forward]"
+        "Usage: voxtral-probe --model-dir PATH [--device cpu|metal] [--dtype f32|f16|bf16] [--load-norm] [--linear-smoke] [--load-modules] [--acoustic-forward] [--language-forward] [--voice VOICE] [--text TEXT]"
     );
 }

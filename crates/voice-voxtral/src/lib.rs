@@ -10,9 +10,11 @@ mod codec;
 mod config;
 mod error;
 mod model;
+mod prompt;
 mod streaming;
 mod tokenizer;
 mod transformer;
+mod voice_embedding;
 mod voices;
 mod weights;
 
@@ -30,17 +32,24 @@ pub use config::{
 };
 pub use error::{Result, VoxtralError};
 pub use model::VoxtralModel;
+pub use prompt::{
+    build_prompt_embeddings, build_prompt_token_ids, VoxtralPrompt,
+    VOXTRAL_NEXT_AUDIO_TEXT_TOKEN_ID, VOXTRAL_REPEAT_AUDIO_TEXT_TOKEN_ID,
+};
 pub use streaming::{
     plan_codec_chunk, VoxtralCodecChunk, VoxtralStreamingConfig, DEFAULT_CODEC_CHUNK_FRAMES,
     DEFAULT_CODEC_CHUNK_FRAMES_AT_BEGIN, DEFAULT_CODEC_LEFT_CONTEXT_FRAMES,
 };
 pub use tokenizer::{
     TekkenAudioEncodingConfig, TekkenAudioMetadata, TekkenConfig, TekkenSpecialToken,
-    TekkenVocabToken, VoxtralTokenizerMetadata,
+    TekkenVocabToken, VoxtralTekkenEncoder, VoxtralTokenizerMetadata,
 };
 pub use transformer::{
     VoxtralAcousticTransformer, VoxtralAttention, VoxtralFeedForward, VoxtralInferenceModules,
     VoxtralLanguageBackbone, VoxtralMultimodalEmbeddings, VoxtralTransformerBlock,
+};
+pub use voice_embedding::{
+    load_voice_embedding, load_voice_embedding_with_hidden_dim, VOXTRAL_VOICE_EMBEDDING_HIDDEN_DIM,
 };
 pub use voices::{get_preset_voice, PresetVoice, VOXTRAL_PRESET_VOICES};
 pub use weights::{

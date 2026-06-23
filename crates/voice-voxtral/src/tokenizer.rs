@@ -1,10 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 
+use fancy_regex::Regex;
 use serde::Deserialize;
 
-use crate::{Result, VoxtralConfig, VoxtralError, SAMPLE_RATE, VOXTRAL_PRESET_VOICES};
+use crate::{
+    Result, VoxtralConfig, VoxtralError, SAMPLE_RATE, VOXTRAL_NEXT_AUDIO_TEXT_TOKEN_ID,
+    VOXTRAL_PRESET_VOICES, VOXTRAL_REPEAT_AUDIO_TEXT_TOKEN_ID,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct VoxtralTokenizerMetadata {
@@ -12,6 +16,14 @@ pub struct VoxtralTokenizerMetadata {
     pub special_tokens: Vec<TekkenSpecialToken>,
     pub vocab: Vec<TekkenVocabToken>,
     pub audio: TekkenAudioMetadata,
+}
+
+#[derive(Debug, Clone)]
+pub struct VoxtralTekkenEncoder {
+    mergeable_ranks: HashMap<Vec<u8>, usize>,
+    pattern: Regex,
+    token_id_offset: usize,
+    default_vocab_size: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,6 +88,10 @@ impl VoxtralTokenizerMetadata {
         self.audio.voice_num_audio_tokens.get(voice).copied()
     }
 
+    pub fn encoder(&self) -> Result<VoxtralTekkenEncoder> {
+        VoxtralTekkenEncoder::from_metadata(self)
+    }
+
     pub fn validate_for_config(&self, config: &VoxtralConfig) -> Result<()> {
         if self.config.default_vocab_size != config.vocab_size {
             return Err(VoxtralError::InvalidTokenizer(format!(
@@ -106,6 +122,8 @@ impl VoxtralTokenizerMetadata {
         self.expect_special_token("[AUDIO]", audio_model.audio_token_id as usize)?;
         self.expect_special_token("[BEGIN_AUDIO]", audio_model.begin_audio_token_id as usize)?;
         self.expect_special_token("[OUTPUT_AUDIO]", 26)?;
+        self.expect_special_token("[REPEAT_AUDIO_TEXT]", VOXTRAL_REPEAT_AUDIO_TEXT_TOKEN_ID)?;
+        self.expect_special_token("[NEXT_AUDIO_TEXT]", VOXTRAL_NEXT_AUDIO_TEXT_TOKEN_ID)?;
 
         for voice in VOXTRAL_PRESET_VOICES {
             if config.voice_id(voice.id).is_none() {
@@ -188,19 +206,179 @@ impl VoxtralTokenizerMetadata {
     }
 }
 
+impl VoxtralTekkenEncoder {
+    pub fn from_metadata(metadata: &VoxtralTokenizerMetadata) -> Result<Self> {
+        let usable_vocab = metadata
+            .config
+            .default_vocab_size
+            .checked_sub(metadata.config.default_num_special_tokens)
+            .ok_or_else(|| {
+                VoxtralError::InvalidTokenizer(format!(
+                    "default_vocab_size {} is smaller than default_num_special_tokens {}",
+                    metadata.config.default_vocab_size, metadata.config.default_num_special_tokens
+                ))
+            })?;
+        let mut mergeable_ranks = HashMap::with_capacity(usable_vocab.min(metadata.vocab.len()));
+        for token in &metadata.vocab {
+            if token.rank >= usable_vocab {
+                continue;
+            }
+            mergeable_ranks.insert(decode_base64(&token.token_bytes)?, token.rank);
+        }
+        let pattern = Regex::new(&metadata.config.pattern).map_err(|e| {
+            VoxtralError::InvalidTokenizer(format!("invalid Tekken regex pattern: {e}"))
+        })?;
+
+        Ok(Self {
+            mergeable_ranks,
+            pattern,
+            token_id_offset: metadata.config.default_num_special_tokens,
+            default_vocab_size: metadata.config.default_vocab_size,
+        })
+    }
+
+    pub fn encode(&self, text: &str) -> Result<Vec<usize>> {
+        let mut token_ids = Vec::new();
+        let mut cursor = 0;
+        for piece in self.pattern.find_iter(text) {
+            let piece = piece.map_err(|e| {
+                VoxtralError::InvalidTokenizer(format!("Tekken regex matching failed: {e}"))
+            })?;
+            if piece.start() != cursor {
+                return Err(VoxtralError::InvalidTokenizer(format!(
+                    "Tekken regex did not cover input bytes {}..{}",
+                    cursor,
+                    piece.start()
+                )));
+            }
+            let piece_tokens = self.encode_piece(piece.as_str().as_bytes())?;
+            token_ids.extend(
+                piece_tokens
+                    .into_iter()
+                    .map(|rank| self.token_id_offset + rank),
+            );
+            cursor = piece.end();
+        }
+        if cursor != text.len() {
+            return Err(VoxtralError::InvalidTokenizer(format!(
+                "Tekken regex did not cover trailing input bytes {cursor}..{}",
+                text.len()
+            )));
+        }
+
+        Ok(token_ids)
+    }
+
+    fn encode_piece(&self, bytes: &[u8]) -> Result<Vec<usize>> {
+        if bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        if let Some(rank) = self.mergeable_ranks.get(bytes) {
+            return Ok(vec![*rank]);
+        }
+
+        let mut parts = (0..bytes.len()).map(|idx| idx..idx + 1).collect::<Vec<_>>();
+
+        loop {
+            let mut best = None;
+            for idx in 0..parts.len().saturating_sub(1) {
+                let candidate = parts[idx].start..parts[idx + 1].end;
+                if let Some(rank) = self.mergeable_ranks.get(&bytes[candidate]) {
+                    if best
+                        .map(|(_best_idx, best_rank)| *rank < best_rank)
+                        .unwrap_or(true)
+                    {
+                        best = Some((idx, *rank));
+                    }
+                }
+            }
+
+            let Some((idx, _rank)) = best else {
+                break;
+            };
+            parts[idx].end = parts[idx + 1].end;
+            parts.remove(idx + 1);
+        }
+
+        let mut ranks = Vec::with_capacity(parts.len());
+        for part in parts {
+            let rank = self
+                .mergeable_ranks
+                .get(&bytes[part.clone()])
+                .ok_or_else(|| {
+                    VoxtralError::InvalidTokenizer(format!(
+                        "no Tekken token for byte span {:?}",
+                        &bytes[part]
+                    ))
+                })?;
+            if self.token_id_offset + *rank >= self.default_vocab_size {
+                return Err(VoxtralError::InvalidTokenizer(format!(
+                    "Tekken rank {rank} produces token id {} outside default vocab size {}",
+                    self.token_id_offset + *rank,
+                    self.default_vocab_size
+                )));
+            }
+            ranks.push(*rank);
+        }
+
+        Ok(ranks)
+    }
+}
+
+fn decode_base64(input: &str) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut value = 0u32;
+    let mut bits = 0u32;
+
+    for byte in input.bytes() {
+        let Some(decoded) = base64_value(byte) else {
+            if byte == b'=' {
+                break;
+            }
+            return Err(VoxtralError::InvalidTokenizer(format!(
+                "invalid base64 byte 0x{byte:02x}"
+            )));
+        };
+
+        value = (value << 6) | decoded as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((value >> bits) & 0xff) as u8);
+        }
+    }
+
+    Ok(out)
+}
+
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const PARAMS_JSON: &str = crate::config::tests::PARAMS_JSON;
 
-    fn tokenizer_json() -> String {
-        let vocab = (0..6)
-            .map(|rank| {
-                format!(r#"{{"rank":{rank},"token_bytes":"AA==","token_str":"token-{rank}"}}"#)
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+    pub(crate) fn tokenizer_json() -> String {
+        let vocab = [
+            r#"{"rank":0,"token_bytes":"YQ==","token_str":"a"}"#,
+            r#"{"rank":1,"token_bytes":"Yg==","token_str":"b"}"#,
+            r#"{"rank":2,"token_bytes":"Yw==","token_str":"c"}"#,
+            r#"{"rank":3,"token_bytes":"YmM=","token_str":"bc"}"#,
+            r#"{"rank":4,"token_bytes":"YWI=","token_str":"ab"}"#,
+            r#"{"rank":5,"token_bytes":"IA==","token_str":" "}"#,
+            r#"{"rank":6,"token_bytes":"IQ==","token_str":"!"}"#,
+        ]
+        .join(",");
         let mut special_tokens = vec![
             r#"{"rank":0,"token_str":"<unk>","is_control":true}"#.to_string(),
             r#"{"rank":1,"token_str":"<s>","is_control":true}"#.to_string(),
@@ -218,14 +396,23 @@ mod tests {
             .push(r#"{"rank":26,"token_str":"[OUTPUT_AUDIO]","is_control":true}"#.to_string());
         special_tokens
             .push(r#"{"rank":27,"token_str":"<SPECIAL_27>","is_control":true}"#.to_string());
+        for rank in 28..35 {
+            special_tokens.push(format!(
+                r#"{{"rank":{rank},"token_str":"<SPECIAL_{rank}>","is_control":true}}"#
+            ));
+        }
+        special_tokens
+            .push(r#"{"rank":35,"token_str":"[REPEAT_AUDIO_TEXT]","is_control":true}"#.to_string());
+        special_tokens
+            .push(r#"{"rank":36,"token_str":"[NEXT_AUDIO_TEXT]","is_control":true}"#.to_string());
 
         format!(
             r#"{{
               "config": {{
-                "pattern": "\\s+",
-                "num_vocab_tokens": 6,
+                "pattern": "[^\\s]+|\\s+",
+                "num_vocab_tokens": 7,
                 "default_vocab_size": 131072,
-                "default_num_special_tokens": 28,
+                "default_num_special_tokens": 37,
                 "version": "v7"
               }},
               "special_tokens": [{}],
@@ -291,6 +478,22 @@ mod tests {
     }
 
     #[test]
+    fn encodes_text_with_rank_priority_bpe() {
+        let tokenizer = VoxtralTokenizerMetadata::from_json_str(&tokenizer_json()).unwrap();
+        let encoder = tokenizer.encoder().unwrap();
+
+        assert_eq!(encoder.encode("abc").unwrap(), vec![37, 40]);
+    }
+
+    #[test]
+    fn encodes_regex_chunks_and_single_byte_tokens() {
+        let tokenizer = VoxtralTokenizerMetadata::from_json_str(&tokenizer_json()).unwrap();
+        let encoder = tokenizer.encoder().unwrap();
+
+        assert_eq!(encoder.encode("ab a!").unwrap(), vec![41, 42, 37, 43]);
+    }
+
+    #[test]
     fn validates_local_tekken_when_env_is_set() {
         let Ok(dir) = std::env::var("VOXTRAL_LOCAL_DIR") else {
             return;
@@ -307,6 +510,17 @@ mod tests {
         assert_eq!(tokenizer.special_token_id("[AUDIO]"), Some(24));
         assert_eq!(tokenizer.special_token_id("[BEGIN_AUDIO]"), Some(25));
         assert_eq!(tokenizer.special_token_id("[OUTPUT_AUDIO]"), Some(26));
+        assert_eq!(tokenizer.special_token_id("[REPEAT_AUDIO_TEXT]"), Some(35));
+        assert_eq!(tokenizer.special_token_id("[NEXT_AUDIO_TEXT]"), Some(36));
         assert_eq!(tokenizer.voice_audio_tokens("casual_male"), Some(147));
+
+        let encoder = tokenizer.encoder().unwrap();
+        let token_ids = encoder
+            .encode("Voxtral support is running from native Rust on this Mac.")
+            .unwrap();
+        assert!(!token_ids.is_empty());
+        assert!(token_ids
+            .iter()
+            .all(|token_id| *token_id < tokenizer.config.default_vocab_size));
     }
 }

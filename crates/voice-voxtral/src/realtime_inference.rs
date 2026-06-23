@@ -13,6 +13,12 @@ pub struct VoxtralRealtimeInferenceModules {
     pub audio_projector: VoxtralRealtimeAudioProjector,
 }
 
+pub struct VoxtralRealtimeAudioModules {
+    pub stem: VoxtralRealtimeAudioStem,
+    pub transformer: VoxtralRealtimeAudioTransformer,
+    pub projector: VoxtralRealtimeAudioProjector,
+}
+
 pub struct VoxtralRealtimeTokenEmbeddings {
     pub tok_embeddings: Embedding,
 }
@@ -73,6 +79,26 @@ impl VoxtralRealtimeInferenceModules {
             audio_stem,
             audio_projector,
         })
+    }
+}
+
+impl VoxtralRealtimeAudioModules {
+    pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
+        let stem = VoxtralRealtimeAudioStem::load(config, vb.clone())?;
+        let transformer = VoxtralRealtimeAudioTransformer::load(config, vb.clone())?;
+        let projector = VoxtralRealtimeAudioProjector::load(config, vb)?;
+
+        Ok(Self {
+            stem,
+            transformer,
+            projector,
+        })
+    }
+
+    pub fn forward(&self, input_features: &Tensor, start_pos: usize) -> Result<Tensor> {
+        let hidden = self.stem.forward_features(input_features)?;
+        let hidden = self.transformer.forward(&hidden, start_pos)?;
+        self.projector.forward(&hidden)
     }
 }
 
@@ -632,6 +658,19 @@ mod tests {
     }
 
     #[test]
+    fn runs_tiny_realtime_audio_modules() {
+        let config = tiny_realtime_config();
+        let audio_modules =
+            VoxtralRealtimeAudioModules::load(&config, VarBuilder::zeros(DType::F32, &Device::Cpu))
+                .unwrap();
+        let input_features = Tensor::zeros((1, 4, 8), DType::F32, &Device::Cpu).unwrap();
+
+        let audio_embeds = audio_modules.forward(&input_features, 0).unwrap();
+
+        assert_eq!(audio_embeds.dims(), &[1, 2, 8]);
+    }
+
+    #[test]
     fn embeds_tiny_realtime_tokens() {
         let config = tiny_realtime_config();
         let modules = VoxtralRealtimeInferenceModules::load(
@@ -756,5 +795,50 @@ mod tests {
             &[1280, 5120]
         );
         assert_eq!(transformer.norm.weight().dims(), &[1280]);
+    }
+
+    #[test]
+    fn loads_local_realtime_audio_modules_when_env_is_set() {
+        let Ok(dir) = std::env::var("VOXTRAL_REALTIME_LOCAL_DIR") else {
+            return;
+        };
+        if std::env::var("VOXTRAL_REALTIME_LOAD_FULL").as_deref() != Ok("1") {
+            return;
+        }
+
+        let model = crate::VoxtralRealtimeModel::load_from_dir(dir).unwrap();
+        let audio_modules = model.load_audio_modules(DType::BF16, &Device::Cpu).unwrap();
+
+        assert_eq!(audio_modules.transformer.layers.len(), 32);
+        assert_eq!(audio_modules.stem.conv1.weight().dims(), &[1280, 128, 3]);
+        assert_eq!(
+            audio_modules.projector.linear_1.weight().dims(),
+            &[3072, 5120]
+        );
+    }
+
+    #[test]
+    fn runs_local_realtime_audio_modules_forward_when_env_is_set() {
+        let Ok(dir) = std::env::var("VOXTRAL_REALTIME_LOCAL_DIR") else {
+            return;
+        };
+        if std::env::var("VOXTRAL_REALTIME_RUN_AUDIO_FORWARD").as_deref() != Ok("1") {
+            return;
+        }
+
+        let model = crate::VoxtralRealtimeModel::load_from_dir(dir).unwrap();
+        let audio_modules = model.load_audio_modules(DType::F32, &Device::Cpu).unwrap();
+        let samples = vec![0.0f32; 1280];
+        let mel = crate::realtime_log_mel_spectrogram(model.config(), &samples).unwrap();
+        let input_features = Tensor::from_vec(
+            mel.to_channel_major(),
+            (1, mel.mel_bins, mel.frames),
+            &Device::Cpu,
+        )
+        .unwrap();
+
+        let audio_embeds = audio_modules.forward(&input_features, 0).unwrap();
+
+        assert_eq!(audio_embeds.dims(), &[1, 1, 3072]);
     }
 }

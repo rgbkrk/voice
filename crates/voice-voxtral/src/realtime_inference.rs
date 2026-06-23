@@ -5,7 +5,7 @@ use candle_nn::{
 };
 
 use crate::realtime::{REALTIME_ENCODER_PREFIX, REALTIME_STREAMS_PREFIX};
-use crate::VoxtralRealtimeConfig;
+use crate::{VoxtralRealtimeConfig, VoxtralTekkenDecoder};
 
 pub struct VoxtralRealtimeInferenceModules {
     pub token_embeddings: VoxtralRealtimeTokenEmbeddings,
@@ -105,12 +105,48 @@ pub struct VoxtralRealtimeTextAdaRmsNorm {
     pub hidden_dim: usize,
 }
 
+pub struct VoxtralRealtimeTranscriber {
+    pub config: VoxtralRealtimeConfig,
+    pub token_embeddings: VoxtralRealtimeTokenEmbeddings,
+    pub audio_modules: VoxtralRealtimeAudioModules,
+    pub text_decoder: VoxtralRealtimeTextDecoder,
+    pub token_decoder: VoxtralTekkenDecoder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoxtralRealtimeTranscriptionOptions {
+    pub delay_tokens: usize,
+    pub max_new_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoxtralRealtimeTranscription {
+    pub text: String,
+    pub tokens: Vec<usize>,
+    pub reached_eos: bool,
+    pub prompt_len: usize,
+    pub audio_tokens: usize,
+    pub sample_rate: u32,
+    pub input_samples: Option<usize>,
+    pub padded_samples: Option<usize>,
+    pub mel_frames: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoxtralRealtimeTextGeneration {
     pub generated_tokens: Vec<usize>,
     pub reached_eos: bool,
     pub prompt_len: usize,
     pub audio_tokens: usize,
+}
+
+impl Default for VoxtralRealtimeTranscriptionOptions {
+    fn default() -> Self {
+        Self {
+            delay_tokens: 6,
+            max_new_tokens: usize::MAX,
+        }
+    }
 }
 
 impl VoxtralRealtimeInferenceModules {
@@ -124,6 +160,91 @@ impl VoxtralRealtimeInferenceModules {
             audio_stem,
             audio_projector,
         })
+    }
+}
+
+impl VoxtralRealtimeTranscriber {
+    pub fn new(
+        config: VoxtralRealtimeConfig,
+        token_embeddings: VoxtralRealtimeTokenEmbeddings,
+        audio_modules: VoxtralRealtimeAudioModules,
+        text_decoder: VoxtralRealtimeTextDecoder,
+        token_decoder: VoxtralTekkenDecoder,
+    ) -> Self {
+        Self {
+            config,
+            token_embeddings,
+            audio_modules,
+            text_decoder,
+            token_decoder,
+        }
+    }
+
+    pub fn transcribe_16khz(
+        &self,
+        samples: &[f32],
+        options: VoxtralRealtimeTranscriptionOptions,
+    ) -> Result<VoxtralRealtimeTranscription> {
+        if samples.is_empty() {
+            candle_core::bail!("realtime transcription requires at least one audio sample");
+        }
+
+        let plan =
+            crate::plan_realtime_audio_padding(&self.config, samples.len(), options.delay_tokens)
+                .map_err(candle_core::Error::msg)?;
+        let padded = crate::pad_realtime_audio(samples, &plan);
+        let mel = crate::realtime_log_mel_spectrogram(&self.config, &padded)
+            .map_err(candle_core::Error::msg)?;
+        let input_features = Tensor::from_vec(
+            mel.to_channel_major(),
+            (1, mel.mel_bins, mel.frames),
+            self.token_embeddings.tok_embeddings.embeddings().device(),
+        )?
+        .to_dtype(self.token_embeddings.tok_embeddings.embeddings().dtype())?;
+        let audio_embeddings = self.audio_modules.forward(&input_features, 0)?;
+        let mut transcription = self.transcribe_audio_embeddings(&audio_embeddings, options)?;
+        transcription.input_samples = Some(plan.input_samples);
+        transcription.padded_samples = Some(plan.padded_samples);
+        transcription.mel_frames = Some(mel.frames);
+        Ok(transcription)
+    }
+
+    pub fn transcribe_audio_embeddings(
+        &self,
+        audio_embeddings: &Tensor,
+        options: VoxtralRealtimeTranscriptionOptions,
+    ) -> Result<VoxtralRealtimeTranscription> {
+        let generation = self.text_decoder.greedy_decode_streaming_audio_embeddings(
+            &self.token_embeddings,
+            audio_embeddings,
+            options.delay_tokens,
+            options.max_new_tokens,
+        )?;
+        Ok(self.transcription_from_generation(generation))
+    }
+
+    fn transcription_from_generation(
+        &self,
+        generation: VoxtralRealtimeTextGeneration,
+    ) -> VoxtralRealtimeTranscription {
+        let text_tokens = generation
+            .generated_tokens
+            .iter()
+            .copied()
+            .filter(|token| *token != crate::REALTIME_EOS_TOKEN_ID)
+            .collect::<Vec<_>>();
+        let text = self.token_decoder.decode(&text_tokens).trim().to_string();
+        VoxtralRealtimeTranscription {
+            text,
+            tokens: generation.generated_tokens,
+            reached_eos: generation.reached_eos,
+            prompt_len: generation.prompt_len,
+            audio_tokens: generation.audio_tokens,
+            sample_rate: crate::REALTIME_SAMPLE_RATE,
+            input_samples: None,
+            padded_samples: None,
+            mel_frames: None,
+        }
     }
 }
 
@@ -574,9 +695,13 @@ impl VoxtralRealtimeTextDecoder {
             let audio_prefix = audio_embeddings.narrow(1, 0, seq_len)?;
             let inputs_embeds = (audio_prefix + text_embeddings)?;
             let hidden = self.forward(&inputs_embeds, 0, delay_tokens)?;
-            let logits = self.logits(&hidden, token_embeddings)?;
-            let vocab = logits.dim(2)?;
-            let last_logits = logits.narrow(1, seq_len - 1, 1)?.reshape((vocab,))?;
+            let hidden_dim = hidden.dim(2)?;
+            let last_hidden = hidden
+                .narrow(1, seq_len - 1, 1)?
+                .reshape((batch, hidden_dim))?;
+            let logits = self.logits(&last_hidden, token_embeddings)?;
+            let vocab = logits.dim(1)?;
+            let last_logits = logits.reshape((vocab,))?;
             let token_id = last_logits.argmax(0)?.to_scalar::<u32>()? as usize;
             generated_tokens.push(token_id);
             if token_id == crate::REALTIME_EOS_TOKEN_ID {
@@ -1141,6 +1266,98 @@ mod tests {
             .generated_tokens
             .iter()
             .all(|token| *token < config.vocab_size));
+    }
+
+    #[test]
+    fn runs_tiny_realtime_transcriber_from_audio_embeddings() {
+        let config = tiny_realtime_config();
+        let modules = VoxtralRealtimeInferenceModules::load(
+            &config,
+            VarBuilder::zeros(DType::F32, &Device::Cpu),
+        )
+        .unwrap();
+        let audio_modules =
+            VoxtralRealtimeAudioModules::load(&config, VarBuilder::zeros(DType::F32, &Device::Cpu))
+                .unwrap();
+        let decoder =
+            VoxtralRealtimeTextDecoder::load(&config, VarBuilder::zeros(DType::F32, &Device::Cpu))
+                .unwrap();
+        let tokenizer = crate::VoxtralTokenizerMetadata::from_json_str(
+            &crate::tokenizer::tests::tokenizer_json(),
+        )
+        .unwrap();
+        let transcriber = VoxtralRealtimeTranscriber::new(
+            config.clone(),
+            modules.token_embeddings,
+            audio_modules,
+            decoder,
+            tokenizer.decoder().unwrap(),
+        );
+        let audio_embeddings = Tensor::zeros((1, 36, 8), DType::F32, &Device::Cpu).unwrap();
+
+        let transcription = transcriber
+            .transcribe_audio_embeddings(
+                &audio_embeddings,
+                VoxtralRealtimeTranscriptionOptions {
+                    delay_tokens: 1,
+                    max_new_tokens: 2,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(transcription.prompt_len, 34);
+        assert_eq!(transcription.audio_tokens, 36);
+        assert_eq!(transcription.sample_rate, crate::REALTIME_SAMPLE_RATE);
+        assert!(transcription.tokens.len() <= 2);
+        assert!(transcription
+            .tokens
+            .iter()
+            .all(|token| *token < config.vocab_size));
+    }
+
+    #[test]
+    fn runs_tiny_realtime_transcriber_from_16khz_samples() {
+        let config = tiny_realtime_config();
+        let modules = VoxtralRealtimeInferenceModules::load(
+            &config,
+            VarBuilder::zeros(DType::F32, &Device::Cpu),
+        )
+        .unwrap();
+        let audio_modules =
+            VoxtralRealtimeAudioModules::load(&config, VarBuilder::zeros(DType::F32, &Device::Cpu))
+                .unwrap();
+        let decoder =
+            VoxtralRealtimeTextDecoder::load(&config, VarBuilder::zeros(DType::F32, &Device::Cpu))
+                .unwrap();
+        let tokenizer = crate::VoxtralTokenizerMetadata::from_json_str(
+            &crate::tokenizer::tests::tokenizer_json(),
+        )
+        .unwrap();
+        let transcriber = VoxtralRealtimeTranscriber::new(
+            config,
+            modules.token_embeddings,
+            audio_modules,
+            decoder,
+            tokenizer.decoder().unwrap(),
+        );
+        let samples = vec![0.0f32; 1280];
+
+        let transcription = transcriber
+            .transcribe_16khz(
+                &samples,
+                VoxtralRealtimeTranscriptionOptions {
+                    delay_tokens: 1,
+                    max_new_tokens: 1,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(transcription.prompt_len, 34);
+        assert_eq!(transcription.input_samples, Some(1280));
+        assert_eq!(transcription.padded_samples, Some(57_600));
+        assert_eq!(transcription.mel_frames, Some(360));
+        assert!(transcription.audio_tokens >= transcription.prompt_len);
+        assert_eq!(transcription.sample_rate, crate::REALTIME_SAMPLE_RATE);
     }
 
     #[test]

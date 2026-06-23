@@ -58,6 +58,105 @@ pub struct WhisperModel {
     decoder: voice_whisper::WhisperDecoder,
 }
 
+/// Supported speech-to-text backend families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SttBackend {
+    Whisper,
+    Voxtral,
+}
+
+/// Backend-neutral STT model.
+///
+/// Existing callers can continue using `WhisperModel` directly via
+/// `load_model`; this enum is for opt-in backend selection.
+pub enum SttModel {
+    Whisper(WhisperModel),
+    Voxtral(VoxtralRealtimeSttModel),
+}
+
+/// Loaded Voxtral Realtime STT model ready for transcription.
+pub struct VoxtralRealtimeSttModel {
+    transcriber: voice_voxtral::VoxtralRealtimeTranscriber,
+    options: voice_voxtral::VoxtralRealtimeTranscriptionOptions,
+}
+
+impl SttBackend {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "whisper" => Ok(Self::Whisper),
+            "voxtral" => Ok(Self::Voxtral),
+            other => Err(SttError::Model(format!(
+                "unsupported STT backend {other:?}; expected whisper or voxtral"
+            ))),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Whisper => "whisper",
+            Self::Voxtral => "voxtral",
+        }
+    }
+}
+
+impl SttModel {
+    pub fn backend(&self) -> SttBackend {
+        match self {
+            Self::Whisper(_) => SttBackend::Whisper,
+            Self::Voxtral(_) => SttBackend::Voxtral,
+        }
+    }
+
+    pub fn transcribe_audio(
+        &mut self,
+        samples: &[f32],
+        sample_rate: u32,
+    ) -> Result<TranscribeResult> {
+        match self {
+            Self::Whisper(model) => transcribe_audio(model, samples, sample_rate),
+            Self::Voxtral(model) => model.transcribe_audio(samples, sample_rate),
+        }
+    }
+
+    pub fn set_max_new_tokens(&mut self, max_new_tokens: usize) {
+        if let Self::Voxtral(model) = self {
+            model.set_max_new_tokens(max_new_tokens);
+        }
+    }
+}
+
+impl VoxtralRealtimeSttModel {
+    pub fn set_max_new_tokens(&mut self, max_new_tokens: usize) {
+        self.options.max_new_tokens = max_new_tokens;
+    }
+
+    pub fn transcribe_audio(&self, samples: &[f32], sample_rate: u32) -> Result<TranscribeResult> {
+        let samples = if sample_rate != voice_voxtral::REALTIME_SAMPLE_RATE {
+            resample(samples, sample_rate, voice_voxtral::REALTIME_SAMPLE_RATE)
+        } else {
+            samples.to_vec()
+        };
+        let result = self
+            .transcriber
+            .transcribe_16khz(&samples, self.options)
+            .map_err(|e| SttError::Model(e.to_string()))?;
+        let tokens = result
+            .tokens
+            .into_iter()
+            .map(|token| {
+                u32::try_from(token)
+                    .map_err(|_| SttError::Model(format!("Voxtral token id {token} exceeds u32")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(TranscribeResult {
+            text: result.text,
+            tokens,
+            sample_rate: voice_voxtral::REALTIME_SAMPLE_RATE,
+        })
+    }
+}
+
 /// Return the default inference device for STT.
 ///
 /// On macOS this preserves the existing Apple Silicon Metal path. All other
@@ -159,6 +258,60 @@ pub fn load_model_on_device(path_or_repo: &str, device: Device) -> Result<Whispe
     .map_err(|e| SttError::Model(e.to_string()))?;
 
     Ok(WhisperModel { decoder })
+}
+
+pub fn default_model_for_backend(backend: SttBackend) -> &'static str {
+    match backend {
+        SttBackend::Whisper => builtin::DEFAULT_MODEL_REPO,
+        SttBackend::Voxtral => voice_voxtral::REALTIME_DEFAULT_REPO,
+    }
+}
+
+pub fn load_backend_model(backend: SttBackend, path_or_repo: &str) -> Result<SttModel> {
+    let device = default_stt_device()?;
+    load_backend_model_on_device(backend, path_or_repo, device)
+}
+
+pub fn load_backend_model_on_device(
+    backend: SttBackend,
+    path_or_repo: &str,
+    device: Device,
+) -> Result<SttModel> {
+    match backend {
+        SttBackend::Whisper => load_model_on_device(path_or_repo, device).map(SttModel::Whisper),
+        SttBackend::Voxtral => {
+            load_voxtral_realtime_model_on_device(path_or_repo, device).map(SttModel::Voxtral)
+        }
+    }
+}
+
+fn load_voxtral_realtime_model_on_device(
+    path_or_repo: &str,
+    device: Device,
+) -> Result<VoxtralRealtimeSttModel> {
+    let model = voice_voxtral::VoxtralRealtimeModel::load(path_or_repo)
+        .map_err(|e| SttError::Model(e.to_string()))?;
+    let delay_tokens = model
+        .default_delay_tokens()
+        .map_err(|e| SttError::Model(e.to_string()))?;
+    let dtype = default_voxtral_dtype(&device);
+    let transcriber = model
+        .load_transcriber(dtype, &device)
+        .map_err(|e| SttError::Model(e.to_string()))?;
+    Ok(VoxtralRealtimeSttModel {
+        transcriber,
+        options: voice_voxtral::VoxtralRealtimeTranscriptionOptions {
+            delay_tokens,
+            max_new_tokens: usize::MAX,
+        },
+    })
+}
+
+fn default_voxtral_dtype(device: &Device) -> DType {
+    match device {
+        Device::Cpu => DType::F32,
+        _ => DType::F16,
+    }
 }
 
 /// Load the tokenizer from a model directory or HuggingFace repo.
@@ -493,6 +646,27 @@ mod tests {
         assert!(
             matches!(device, Device::Cpu),
             "non-macOS STT should default to CPU"
+        );
+    }
+
+    #[test]
+    fn parses_stt_backends() {
+        assert_eq!(SttBackend::parse("whisper").unwrap(), SttBackend::Whisper);
+        assert_eq!(SttBackend::parse("voxtral").unwrap(), SttBackend::Voxtral);
+        assert!(SttBackend::parse("kokoro").is_err());
+        assert_eq!(SttBackend::Whisper.as_str(), "whisper");
+        assert_eq!(SttBackend::Voxtral.as_str(), "voxtral");
+    }
+
+    #[test]
+    fn resolves_default_model_for_backend() {
+        assert_eq!(
+            default_model_for_backend(SttBackend::Whisper),
+            builtin::DEFAULT_MODEL_REPO
+        );
+        assert_eq!(
+            default_model_for_backend(SttBackend::Voxtral),
+            voice_voxtral::REALTIME_DEFAULT_REPO
         );
     }
 

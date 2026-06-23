@@ -9,6 +9,7 @@ repository = "https://github.com/rgbkrk/voice"
 
 [dependencies]
 voice-whisper = { path = "../voice-whisper" }
+voice-voxtral = { path = "../voice-voxtral" }
 candle-core = { workspace = true }
 candle-nn = { workspace = true }
 candle-transformers = { workspace = true }

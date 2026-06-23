@@ -5,6 +5,7 @@ use serde::Serialize;
 
 const DEFAULT_TTS_MODEL: &str = "prince-canuma/Kokoro-82M";
 const DEFAULT_TTS_BACKEND: &str = "kokoro";
+const DEFAULT_STT_BACKEND: &str = "whisper";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -36,9 +37,17 @@ struct Args {
     #[arg(long = "tts-model", default_value = DEFAULT_TTS_MODEL)]
     tts_model: String,
 
-    /// Whisper or distil-whisper model repo or local directory.
-    #[arg(long = "stt-model", default_value = voice_stt::builtin::DEFAULT_MODEL_REPO)]
-    stt_model: String,
+    /// STT backend to transcribe with.
+    #[arg(long = "stt-backend", default_value = DEFAULT_STT_BACKEND)]
+    stt_backend: String,
+
+    /// STT model repo or local directory.
+    #[arg(long = "stt-model")]
+    stt_model: Option<String>,
+
+    /// Maximum generated tokens for Voxtral STT probes.
+    #[arg(long = "stt-max-tokens")]
+    stt_max_tokens: Option<usize>,
 
     /// Speech speed factor.
     #[arg(short, long, default_value_t = 1.0)]
@@ -74,6 +83,7 @@ struct EvalReport {
     text: String,
     voice: String,
     tts_model: String,
+    stt_backend: String,
     stt_model: String,
     synthesis_mode: &'static str,
     sample_rate: u32,
@@ -87,6 +97,7 @@ struct EvalReport {
     word_error_count: usize,
     word_error_rate: Option<f32>,
     stt_token_count: usize,
+    stt_sample_rate: u32,
     input_wav: Option<PathBuf>,
     output_wav: Option<PathBuf>,
 }
@@ -139,8 +150,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         voice_tts::save_wav(&samples, path, sample_rate)?;
     }
 
-    let mut stt_model = voice_stt::load_model(&args.stt_model)?;
-    let transcription = voice_stt::transcribe_audio(&mut stt_model, &samples, sample_rate)?;
+    let stt_backend = voice_stt::SttBackend::parse(&args.stt_backend)?;
+    let stt_model_path = args
+        .stt_model
+        .clone()
+        .unwrap_or_else(|| voice_stt::default_model_for_backend(stt_backend).to_string());
+    let mut stt_model = voice_stt::load_backend_model(stt_backend, &stt_model_path)?;
+    if let Some(max_new_tokens) = args.stt_max_tokens {
+        stt_model.set_max_new_tokens(max_new_tokens);
+    }
+    let transcription = stt_model.transcribe_audio(&samples, sample_rate)?;
     let wer = word_error_rate(&reference_text, &transcription.text);
     let duration_seconds = if sample_rate == 0 {
         0.0
@@ -152,7 +171,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         text: reference_text,
         voice: args.voice,
         tts_model: args.tts_model,
-        stt_model: args.stt_model,
+        stt_backend: stt_backend.as_str().to_string(),
+        stt_model: stt_model_path,
         synthesis_mode,
         sample_rate,
         sample_count: samples.len(),
@@ -165,6 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         word_error_count: wer.distance,
         word_error_rate: wer.rate,
         stt_token_count: transcription.tokens.len(),
+        stt_sample_rate: transcription.sample_rate,
         input_wav: args.input_wav,
         output_wav: args.output_wav,
     };
@@ -237,6 +258,10 @@ fn print_text_report(report: &EvalReport) {
     println!(
         "audio: {:.2}s, {} Hz, {} samples",
         report.duration_seconds, report.sample_rate, report.sample_count
+    );
+    println!(
+        "stt: {} ({} Hz) using {}",
+        report.stt_backend, report.stt_sample_rate, report.stt_model
     );
     if let Some(path) = &report.output_wav {
         println!("wav: {}", path.display());
@@ -326,5 +351,28 @@ mod tests {
         let wer = word_error_rate("the quick brown fox", "the quick blue fox");
         assert_eq!(wer.distance, 1);
         assert_eq!(wer.rate, Some(0.25));
+    }
+
+    #[test]
+    fn parses_voxtral_stt_backend_args() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--input-wav",
+            "/tmp/known.wav",
+            "--expected-text",
+            "known words",
+            "--stt-backend",
+            "voxtral",
+            "--stt-model",
+            "/tmp/voxtral-realtime",
+            "--stt-max-tokens",
+            "4",
+        ])
+        .unwrap();
+
+        assert_eq!(args.stt_backend, "voxtral");
+        assert_eq!(args.stt_model.as_deref(), Some("/tmp/voxtral-realtime"));
+        assert_eq!(args.stt_max_tokens, Some(4));
+        assert_eq!(args.input_wav, Some(PathBuf::from("/tmp/known.wav")));
     }
 }

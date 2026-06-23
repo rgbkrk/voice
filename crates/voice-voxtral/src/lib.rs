@@ -70,7 +70,8 @@ pub use realtime_inference::{
     VoxtralRealtimeAudioTransformerBlock, VoxtralRealtimeInferenceModules,
     VoxtralRealtimeTextAdaRmsNorm, VoxtralRealtimeTextAttention, VoxtralRealtimeTextDecoder,
     VoxtralRealtimeTextDecoderBlock, VoxtralRealtimeTextFeedForward, VoxtralRealtimeTextGeneration,
-    VoxtralRealtimeTokenEmbeddings,
+    VoxtralRealtimeTokenEmbeddings, VoxtralRealtimeTranscriber, VoxtralRealtimeTranscription,
+    VoxtralRealtimeTranscriptionOptions,
 };
 pub use streaming::{
     plan_codec_chunk, VoxtralCodecChunk, VoxtralStreamingConfig, DEFAULT_CODEC_CHUNK_FRAMES,

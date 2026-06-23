@@ -8,7 +8,8 @@ use serde::Deserialize;
 use crate::{
     Result, VoxtralCheckpointSummary, VoxtralError, VoxtralRealtimeAudioModules,
     VoxtralRealtimeAudioTransformer, VoxtralRealtimeInferenceModules, VoxtralRealtimeTextDecoder,
-    VoxtralSource, VoxtralTokenizerMetadata, VoxtralWeightMetadata,
+    VoxtralRealtimeTokenEmbeddings, VoxtralRealtimeTranscriber, VoxtralSource,
+    VoxtralTokenizerMetadata, VoxtralWeightMetadata,
 };
 
 pub const REALTIME_DEFAULT_REPO: &str = "mistralai/Voxtral-Mini-4B-Realtime-2602";
@@ -551,6 +552,45 @@ impl VoxtralRealtimeModel {
         let vb = self.var_builder(dtype, device)?;
         VoxtralRealtimeTextDecoder::load(&self.config, vb)
             .map_err(|e| VoxtralError::Candle(e.to_string()))
+    }
+
+    pub fn load_transcriber(
+        &self,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<VoxtralRealtimeTranscriber> {
+        let tokenizer = self.tokenizer.as_ref().ok_or_else(|| {
+            VoxtralError::InvalidTokenizer("missing realtime tekken tokenizer".into())
+        })?;
+        let token_decoder = tokenizer.decoder()?;
+        let vb = self.var_builder(dtype, device)?;
+        let token_embeddings = VoxtralRealtimeTokenEmbeddings::load(&self.config, vb.clone())
+            .map_err(|e| VoxtralError::Candle(e.to_string()))?;
+        let audio_modules = VoxtralRealtimeAudioModules::load(&self.config, vb.clone())
+            .map_err(|e| VoxtralError::Candle(e.to_string()))?;
+        let text_decoder = VoxtralRealtimeTextDecoder::load(&self.config, vb)
+            .map_err(|e| VoxtralError::Candle(e.to_string()))?;
+        Ok(VoxtralRealtimeTranscriber::new(
+            self.config.clone(),
+            token_embeddings,
+            audio_modules,
+            text_decoder,
+            token_decoder,
+        ))
+    }
+
+    pub fn default_delay_tokens(&self) -> Result<usize> {
+        if let Some(config) = &self.transformers_config {
+            Ok(config.default_num_delay_tokens)
+        } else if let Some(tokenizer) = &self.tokenizer {
+            if let Some(delay_ms) = tokenizer.audio.transcription_delay_ms {
+                realtime_num_delay_tokens(&self.config, delay_ms)
+            } else {
+                Ok(6)
+            }
+        } else {
+            Ok(6)
+        }
     }
 
     fn load_from_assets(assets: VoxtralRealtimeAssetPaths, require_weights: bool) -> Result<Self> {

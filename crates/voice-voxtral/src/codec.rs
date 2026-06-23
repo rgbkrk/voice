@@ -1,4 +1,4 @@
-use candle_core::{DType, Module, Result, Tensor};
+use candle_core::{DType, Module, Result, Tensor, D};
 use candle_nn::{self as nn, linear_no_bias, rms_norm, Linear, RmsNorm, VarBuilder};
 
 use crate::{AudioTokenizerConfig, VoxtralConfig, VoxtralFeedForward};
@@ -157,6 +157,24 @@ impl VoxtralAudioTokenizer {
         self.codebook.decode(codes)
     }
 
+    pub fn decode_codes_to_waveform(&self, codes: &Tensor) -> Result<Tensor> {
+        let mut hidden = self.decode_code_embeddings(codes)?;
+        hidden = self.forward_input_projection(&hidden)?;
+        for stage_idx in 0..self.stages.len() {
+            hidden = self.forward_stage_transformers(stage_idx, &hidden)?;
+            if let Some(upsampled) = self.forward_stage_upsample(stage_idx, &hidden)? {
+                hidden = upsampled;
+            }
+        }
+
+        let patches = causal_conv1d(&self.output_proj, &hidden)?;
+        let (batch, patch_size, frames) = patches.dims3()?;
+        patches
+            .transpose(1, 2)?
+            .contiguous()?
+            .reshape((batch, 1, frames * patch_size))
+    }
+
     /// Run the first decoder projection: `[B, 292, T] -> [B, 1024, T]`.
     pub fn forward_input_projection(&self, latents: &Tensor) -> Result<Tensor> {
         causal_conv1d(&self.input_conv, latents)
@@ -175,6 +193,17 @@ impl VoxtralAudioTokenizer {
             .as_ref()
             .map(|conv| causal_conv_transpose1d(conv, hidden))
             .transpose()
+    }
+
+    pub fn forward_stage_transformers(&self, stage_idx: usize, hidden: &Tensor) -> Result<Tensor> {
+        let Some(stage) = self.stages.get(stage_idx) else {
+            candle_core::bail!("codec stage {stage_idx} is out of range");
+        };
+        let mut hidden = hidden.transpose(1, 2)?.contiguous()?;
+        for layer in &stage.layers {
+            hidden = layer.forward(&hidden)?;
+        }
+        hidden.transpose(1, 2)
     }
 
     pub fn semantic_dim(&self) -> usize {
@@ -265,6 +294,22 @@ impl VoxtralCodecTransformerBlock {
             window_size,
         })
     }
+
+    pub fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let dim = hidden_states.dim(D::Minus1)?;
+        let attention_input = self.attention_norm.forward(hidden_states)?;
+        let attention = self.attention.forward(&attention_input, self.window_size)?;
+        let attention_scale = self
+            .attention_scale
+            .to_dtype(attention.dtype())?
+            .reshape((1, 1, dim))?;
+        let hidden_states = (hidden_states + attention.broadcast_mul(&attention_scale)?)?;
+
+        let ffn_input = self.ffn_norm.forward(&hidden_states)?;
+        let ffn = self.feed_forward.forward(&ffn_input)?;
+        let ffn_scale = self.ffn_scale.to_dtype(ffn.dtype())?.reshape((1, 1, dim))?;
+        hidden_states + ffn.broadcast_mul(&ffn_scale)?
+    }
 }
 
 impl VoxtralCodecAttention {
@@ -291,6 +336,115 @@ impl VoxtralCodecAttention {
             head_dim: config.head_dim,
         })
     }
+
+    pub fn forward(&self, hidden_states: &Tensor, window_size: usize) -> Result<Tensor> {
+        let (batch, seq_len, _dim) = hidden_states.dims3()?;
+        let repeat = self.n_heads / self.n_kv_heads;
+        let q_dim = self.n_heads * self.head_dim;
+
+        let query = linear_forward(&self.wq, hidden_states)?;
+        let key = linear_forward(&self.wk, hidden_states)?;
+        let value = linear_forward(&self.wv, hidden_states)?;
+        let query = self
+            .q_norm
+            .forward(&query)?
+            .reshape((batch, seq_len, self.n_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let key =
+            self.k_norm
+                .forward(&key)?
+                .reshape((batch, seq_len, self.n_kv_heads, self.head_dim))?;
+        let value = value.reshape((batch, seq_len, self.n_kv_heads, self.head_dim))?;
+        let key = repeat_kv(&key, repeat)?.transpose(1, 2)?.contiguous()?;
+        let value = repeat_kv(&value, repeat)?.transpose(1, 2)?.contiguous()?;
+
+        let scale = 1.0f64 / (self.head_dim as f64).sqrt();
+        let scores = (query.matmul(&key.transpose(D::Minus2, D::Minus1)?)? * scale)?;
+        let mask = alibi_causal_sliding_mask(
+            self.n_heads,
+            seq_len,
+            window_size,
+            scores.dtype(),
+            scores.device(),
+        )?;
+        let scores = scores.broadcast_add(&mask)?;
+        let weights = candle_nn::ops::softmax_last_dim(&scores)?;
+        let output = weights
+            .matmul(&value)?
+            .transpose(1, 2)?
+            .reshape((batch, seq_len, q_dim))?;
+
+        linear_forward(&self.wo, &output)
+    }
+}
+
+fn linear_forward(linear: &Linear, xs: &Tensor) -> Result<Tensor> {
+    let dims = xs.dims();
+    if dims.len() <= 2 {
+        return linear.forward(xs);
+    }
+
+    let input_dim = *dims.last().expect("tensor rank checked above");
+    let batch: usize = dims[..dims.len() - 1].iter().product();
+    let flat = xs.reshape((batch, input_dim))?;
+    let flat = linear.forward(&flat)?;
+    let output_dim = linear.weight().dim(0)?;
+    let mut output_shape = dims.to_vec();
+    *output_shape.last_mut().expect("tensor rank checked above") = output_dim;
+    flat.reshape(output_shape)
+}
+
+fn repeat_kv(hidden_states: &Tensor, repeat: usize) -> Result<Tensor> {
+    if repeat == 1 {
+        return Ok(hidden_states.clone());
+    }
+    let (batch, seq_len, n_kv_heads, head_dim) = hidden_states.dims4()?;
+    let expanded = hidden_states
+        .unsqueeze(3)?
+        .expand((batch, seq_len, n_kv_heads, repeat, head_dim))?;
+    expanded.reshape((batch, seq_len, n_kv_heads * repeat, head_dim))
+}
+
+fn alibi_causal_sliding_mask(
+    n_heads: usize,
+    seq_len: usize,
+    window_size: usize,
+    dtype: DType,
+    device: &candle_core::Device,
+) -> Result<Tensor> {
+    let slopes = alibi_slopes(n_heads);
+    let mut values = Vec::with_capacity(n_heads * seq_len * seq_len);
+    for &slope in &slopes {
+        for i in 0..seq_len {
+            for j in 0..seq_len {
+                let rel = j as isize - i as isize;
+                let outside_window = rel > 0 || rel < -(window_size as isize);
+                if outside_window {
+                    values.push(f32::NEG_INFINITY);
+                } else {
+                    values.push(slope * rel as f32);
+                }
+            }
+        }
+    }
+    Tensor::from_vec(values, (1, n_heads, seq_len, seq_len), device)?.to_dtype(dtype)
+}
+
+fn alibi_slopes(n_heads: usize) -> Vec<f32> {
+    if n_heads == 0 {
+        return Vec::new();
+    }
+    if n_heads.is_power_of_two() {
+        let ratio = 2f32.powf(-8.0 / n_heads as f32);
+        return (0..n_heads).map(|idx| ratio.powi(idx as i32)).collect();
+    }
+
+    let lower_power = 1usize << (usize::BITS - n_heads.leading_zeros() - 1);
+    let mut slopes = alibi_slopes(lower_power);
+    let extra = alibi_slopes(lower_power * 2);
+    slopes.extend(extra.into_iter().step_by(2).take(n_heads - lower_power));
+    slopes
 }
 
 fn load_weight_norm_conv1d(
@@ -504,5 +658,61 @@ mod tests {
         );
         assert_eq!(codec.stages[0].window_size, 8);
         assert_eq!(codec.stages[1].window_size, 16);
+    }
+
+    #[test]
+    fn runs_tiny_codec_transformer_stage() {
+        let config = tiny_config();
+        let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
+        let codec = VoxtralAudioTokenizer::load(&config, vb).unwrap();
+        let device = Device::Cpu;
+        let hidden = Tensor::zeros(
+            (1, config.multimodal.audio_tokenizer_args.dim, 3),
+            DType::F32,
+            &device,
+        )
+        .unwrap();
+
+        let transformed = codec.forward_stage_transformers(0, &hidden).unwrap();
+
+        assert_eq!(
+            transformed.dims(),
+            &[1, config.multimodal.audio_tokenizer_args.dim, 3]
+        );
+    }
+
+    #[test]
+    fn decodes_tiny_codec_waveform_shape() {
+        let config = tiny_config();
+        let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
+        let codec = VoxtralAudioTokenizer::load(&config, vb).unwrap();
+        let device = Device::Cpu;
+        let codes = Tensor::new(&[2u32, 2, 3, 2, 2, 3], &device)
+            .unwrap()
+            .reshape((1, 3, 2))
+            .unwrap();
+
+        let waveform = codec.decode_codes_to_waveform(&codes).unwrap();
+
+        assert_eq!(waveform.dims(), &[1, 1, 480]);
+    }
+
+    #[test]
+    fn builds_alibi_causal_sliding_mask() {
+        let device = Device::Cpu;
+
+        let mask = alibi_causal_sliding_mask(2, 4, 2, DType::F32, &device).unwrap();
+        let values = mask
+            .reshape((2 * 4 * 4,))
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+
+        let idx = |head: usize, row: usize, col: usize| head * 16 + row * 4 + col;
+        assert_eq!(values[idx(0, 0, 0)], 0.0);
+        assert!(values[idx(0, 0, 1)].is_infinite());
+        assert!(values[idx(0, 3, 0)].is_infinite());
+        assert_eq!(values[idx(0, 3, 1)], -2.0);
+        assert_eq!(values[idx(1, 3, 1)], -0.125);
     }
 }

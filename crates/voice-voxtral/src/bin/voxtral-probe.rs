@@ -245,7 +245,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "probe.acoustic_forward.codec_input_projection_dtype={:?}",
                 codec_input.dtype()
             );
-            if let Some(upsampled) = modules.codec.forward_stage_upsample(0, &codec_input)? {
+            let codec_stage0 = modules.codec.forward_stage_transformers(0, &codec_input)?;
+            println!(
+                "probe.acoustic_forward.codec_stage0_transformer_dims={:?}",
+                codec_stage0.dims()
+            );
+            println!(
+                "probe.acoustic_forward.codec_stage0_transformer_dtype={:?}",
+                codec_stage0.dtype()
+            );
+            if let Some(upsampled) = modules.codec.forward_stage_upsample(0, &codec_stage0)? {
                 println!(
                     "probe.acoustic_forward.codec_stage0_upsample_dims={:?}",
                     upsampled.dims()
@@ -255,6 +264,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                     upsampled.dtype()
                 );
             }
+            let waveform = modules.codec.decode_codes_to_waveform(&codec_codes)?;
+            println!(
+                "probe.acoustic_forward.codec_waveform_dims={:?}",
+                waveform.dims()
+            );
+            println!(
+                "probe.acoustic_forward.codec_waveform_dtype={:?}",
+                waveform.dtype()
+            );
         }
     }
 

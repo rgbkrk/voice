@@ -3,7 +3,7 @@ use candle_nn::{
     embedding, linear_no_bias, rms_norm, Activation, Embedding, Linear, RmsNorm, VarBuilder,
 };
 
-use crate::{AcousticTransformerConfig, VoxtralConfig};
+use crate::{AcousticTransformerConfig, VoxtralAudioTokenizer, VoxtralConfig};
 
 const EMPTY_AUDIO_TOKEN_ID: usize = 0;
 const END_AUDIO_TOKEN_ID: usize = 1;
@@ -14,6 +14,7 @@ pub struct VoxtralInferenceModules {
     pub embeddings: VoxtralMultimodalEmbeddings,
     pub language: VoxtralLanguageBackbone,
     pub acoustic: VoxtralAcousticTransformer,
+    pub codec: VoxtralAudioTokenizer,
 }
 
 pub struct VoxtralMultimodalEmbeddings {
@@ -64,12 +65,14 @@ impl VoxtralInferenceModules {
     pub fn load(config: &VoxtralConfig, vb: VarBuilder) -> Result<Self> {
         let embeddings = VoxtralMultimodalEmbeddings::load(config, vb.clone())?;
         let language = VoxtralLanguageBackbone::load(config, vb.clone())?;
-        let acoustic = VoxtralAcousticTransformer::load(config, vb)?;
+        let acoustic = VoxtralAcousticTransformer::load(config, vb.clone())?;
+        let codec = VoxtralAudioTokenizer::load(config, vb)?;
 
         Ok(Self {
             embeddings,
             language,
             acoustic,
+            codec,
         })
     }
 }
@@ -567,13 +570,13 @@ fn semantic_logits_mask(config: &VoxtralConfig, device: &candle_core::Device) ->
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use candle_core::{DType, Device};
     use candle_nn::VarBuilder;
 
     use super::*;
 
-    fn tiny_config() -> VoxtralConfig {
+    pub(crate) fn tiny_config() -> VoxtralConfig {
         VoxtralConfig::from_json_str(
             r#"{
               "dim": 8,

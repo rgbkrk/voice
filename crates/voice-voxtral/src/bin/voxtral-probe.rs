@@ -168,6 +168,38 @@ fn main() -> Result<(), Box<dyn Error>> {
             "probe.load_modules.acoustic.acoustic_codebook_output={:?}",
             modules.acoustic.acoustic_codebook_output.weight().dims()
         );
+        println!(
+            "probe.load_modules.codec.semantic_embedding={:?}",
+            modules.codec.codebook.semantic_embedding.dims()
+        );
+        println!(
+            "probe.load_modules.codec.input_conv={:?}",
+            modules.codec.input_conv.weight().dims()
+        );
+        println!(
+            "probe.load_modules.codec.stages={}",
+            modules.codec.stages.len()
+        );
+        for (stage_idx, stage) in modules.codec.stages.iter().enumerate() {
+            println!(
+                "probe.load_modules.codec.stage.{stage_idx}.layers={}",
+                stage.layers.len()
+            );
+            println!(
+                "probe.load_modules.codec.stage.{stage_idx}.window={}",
+                stage.window_size
+            );
+            if let Some(upsample) = &stage.upsample {
+                println!(
+                    "probe.load_modules.codec.stage.{stage_idx}.upsample={:?}",
+                    upsample.weight().dims()
+                );
+            }
+        }
+        println!(
+            "probe.load_modules.codec.output_proj={:?}",
+            modules.codec.output_proj.weight().dims()
+        );
 
         if args.acoustic_forward {
             let audio_model = &config.multimodal.audio_model_args;
@@ -193,6 +225,25 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!(
                 "probe.acoustic_forward.frame_code_dtype={:?}",
                 frame_codes.dtype()
+            );
+            let codec_codes = frame_codes.reshape((1, config.num_codebooks(), 1))?;
+            let codec_latents = modules.codec.decode_code_embeddings(&codec_codes)?;
+            println!(
+                "probe.acoustic_forward.codec_latent_dims={:?}",
+                codec_latents.dims()
+            );
+            println!(
+                "probe.acoustic_forward.codec_latent_dtype={:?}",
+                codec_latents.dtype()
+            );
+            let codec_input = modules.codec.forward_input_projection(&codec_latents)?;
+            println!(
+                "probe.acoustic_forward.codec_input_projection_dims={:?}",
+                codec_input.dims()
+            );
+            println!(
+                "probe.acoustic_forward.codec_input_projection_dtype={:?}",
+                codec_input.dtype()
             );
         }
     }

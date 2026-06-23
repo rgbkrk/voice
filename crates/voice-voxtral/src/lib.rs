@@ -6,6 +6,7 @@
 //! End-to-end text-to-audio generation is still follow-up work.
 
 mod assets;
+mod codec;
 mod config;
 mod error;
 mod model;
@@ -18,6 +19,10 @@ mod weights;
 pub use assets::{
     VoxtralAssetPaths, VoxtralAssetResolver, VoxtralSource, CONFIG_FILE, DEFAULT_REPO,
     TOKENIZER_FILE, VOICE_EMBEDDING_DIR, WEIGHTS_FILE,
+};
+pub use codec::{
+    VoxtralAudioCodebook, VoxtralAudioTokenizer, VoxtralCodecAttention, VoxtralCodecStage,
+    VoxtralCodecTransformerBlock,
 };
 pub use config::{
     AcousticTransformerConfig, AudioEncodingConfig, AudioModelConfig, AudioTokenizerConfig,

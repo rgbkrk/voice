@@ -576,9 +576,8 @@ pub(crate) mod tests {
 
     use super::*;
 
-    pub(crate) fn tiny_config() -> VoxtralConfig {
-        VoxtralConfig::from_json_str(
-            r#"{
+    pub(crate) fn tiny_config_json() -> &'static str {
+        r#"{
               "dim": 8,
               "n_layers": 2,
               "head_dim": 4,
@@ -655,9 +654,11 @@ pub(crate) mod tests {
                   "voice": {"casual_male": 1}
                 }
               }
-            }"#,
-        )
-        .unwrap()
+            }"#
+    }
+
+    pub(crate) fn tiny_config() -> VoxtralConfig {
+        VoxtralConfig::from_json_str(tiny_config_json()).unwrap()
     }
 
     #[test]

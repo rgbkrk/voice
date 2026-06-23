@@ -162,6 +162,21 @@ impl VoxtralAudioTokenizer {
         causal_conv1d(&self.input_conv, latents)
     }
 
+    pub fn forward_stage_upsample(
+        &self,
+        stage_idx: usize,
+        hidden: &Tensor,
+    ) -> Result<Option<Tensor>> {
+        let Some(stage) = self.stages.get(stage_idx) else {
+            candle_core::bail!("codec stage {stage_idx} is out of range");
+        };
+        stage
+            .upsample
+            .as_ref()
+            .map(|conv| causal_conv_transpose1d(conv, hidden))
+            .transpose()
+    }
+
     pub fn semantic_dim(&self) -> usize {
         self.codebook.semantic_dim
     }
@@ -342,6 +357,22 @@ fn causal_conv1d(conv: &nn::Conv1d, xs: &Tensor) -> Result<Tensor> {
     conv.forward(&padded)
 }
 
+fn causal_conv_transpose1d(conv: &nn::ConvTranspose1d, xs: &Tensor) -> Result<Tensor> {
+    let config = conv.config();
+    let kernel_size = conv.weight().dim(2)?;
+    let total_padding = kernel_size.saturating_sub(config.stride);
+    let right_padding = total_padding;
+    let left_padding = total_padding.saturating_sub(right_padding);
+    let out = conv.forward(xs)?;
+    let out_len = out.dim(2)?;
+    if left_padding + right_padding > out_len {
+        candle_core::bail!(
+            "cannot trim conv transpose output length {out_len} by left={left_padding} right={right_padding}"
+        );
+    }
+    out.narrow(2, left_padding, out_len - left_padding - right_padding)
+}
+
 fn replicate_pad_last_dim(xs: &Tensor, left: usize, right: usize) -> Result<Tensor> {
     let length = xs.dim(2)?;
     if length == 0 && (left > 0 || right > 0) {
@@ -388,7 +419,7 @@ mod tests {
     use candle_nn::VarBuilder;
 
     use super::*;
-    use crate::transformer::tests::tiny_config;
+    use crate::transformer::tests::{tiny_config, tiny_config_json};
 
     #[test]
     fn loads_tiny_codec_decoder_from_varbuilder() {
@@ -442,5 +473,36 @@ mod tests {
             projected.dims(),
             &[1, config.multimodal.audio_tokenizer_args.dim, 3]
         );
+    }
+
+    #[test]
+    fn trims_tiny_codec_upsample_projection() {
+        let mut value: serde_json::Value = serde_json::from_str(tiny_config_json()).unwrap();
+        let tokenizer = value
+            .get_mut("multimodal")
+            .and_then(|v| v.get_mut("audio_tokenizer_args"))
+            .unwrap();
+        tokenizer["decoder_transformer_lengths_str"] = serde_json::json!("1,1");
+        tokenizer["decoder_convs_kernels_str"] = serde_json::json!("3,4");
+        tokenizer["decoder_convs_strides_str"] = serde_json::json!("1,2");
+        let config = VoxtralConfig::from_json_str(&serde_json::to_string(&value).unwrap()).unwrap();
+        let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
+        let codec = VoxtralAudioTokenizer::load(&config, vb).unwrap();
+        let device = Device::Cpu;
+        let hidden = Tensor::zeros(
+            (1, config.multimodal.audio_tokenizer_args.dim, 3),
+            DType::F32,
+            &device,
+        )
+        .unwrap();
+
+        let upsampled = codec.forward_stage_upsample(0, &hidden).unwrap().unwrap();
+
+        assert_eq!(
+            upsampled.dims(),
+            &[1, config.multimodal.audio_tokenizer_args.dim, 6]
+        );
+        assert_eq!(codec.stages[0].window_size, 8);
+        assert_eq!(codec.stages[1].window_size, 16);
     }
 }

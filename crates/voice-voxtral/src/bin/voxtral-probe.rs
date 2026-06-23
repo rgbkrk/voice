@@ -245,6 +245,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "probe.acoustic_forward.codec_input_projection_dtype={:?}",
                 codec_input.dtype()
             );
+            if let Some(upsampled) = modules.codec.forward_stage_upsample(0, &codec_input)? {
+                println!(
+                    "probe.acoustic_forward.codec_stage0_upsample_dims={:?}",
+                    upsampled.dims()
+                );
+                println!(
+                    "probe.acoustic_forward.codec_stage0_upsample_dtype={:?}",
+                    upsampled.dtype()
+                );
+            }
         }
     }
 

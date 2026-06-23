@@ -1,7 +1,7 @@
 use candle_core::{Device, Module, Result, Tensor};
 use candle_nn::{
-    conv1d, embedding, linear_no_bias, Activation, Conv1d, Conv1dConfig, Embedding, Linear,
-    VarBuilder,
+    conv1d, embedding, linear, linear_no_bias, rms_norm, Activation, Conv1d, Conv1dConfig,
+    Embedding, Linear, RmsNorm, VarBuilder,
 };
 
 use crate::realtime::{REALTIME_ENCODER_PREFIX, REALTIME_STREAMS_PREFIX};
@@ -32,6 +32,36 @@ pub struct VoxtralRealtimeAudioProjector {
     pub text_hidden_size: usize,
 }
 
+pub struct VoxtralRealtimeAudioTransformer {
+    pub layers: Vec<VoxtralRealtimeAudioTransformerBlock>,
+    pub norm: RmsNorm,
+    pub rope_theta: f64,
+    pub sliding_window: usize,
+}
+
+pub struct VoxtralRealtimeAudioTransformerBlock {
+    pub attention: VoxtralRealtimeAudioAttention,
+    pub feed_forward: VoxtralRealtimeAudioFeedForward,
+    pub attention_norm: RmsNorm,
+    pub ffn_norm: RmsNorm,
+}
+
+pub struct VoxtralRealtimeAudioAttention {
+    pub wq: Linear,
+    pub wk: Linear,
+    pub wv: Linear,
+    pub wo: Linear,
+    pub n_heads: usize,
+    pub n_kv_heads: usize,
+    pub head_dim: usize,
+}
+
+pub struct VoxtralRealtimeAudioFeedForward {
+    pub w1: Linear,
+    pub w2: Linear,
+    pub w3: Linear,
+}
+
 impl VoxtralRealtimeInferenceModules {
     pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
         let token_embeddings = VoxtralRealtimeTokenEmbeddings::load(config, vb.clone())?;
@@ -43,6 +73,186 @@ impl VoxtralRealtimeInferenceModules {
             audio_stem,
             audio_projector,
         })
+    }
+}
+
+impl VoxtralRealtimeAudioTransformer {
+    pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
+        let encoder = &config.multimodal.whisper_model_args.encoder_args;
+        let mut layers = Vec::with_capacity(encoder.n_layers);
+        for layer_idx in 0..encoder.n_layers {
+            layers.push(VoxtralRealtimeAudioTransformerBlock::load(
+                config,
+                vb.pp(REALTIME_ENCODER_PREFIX)
+                    .pp("transformer")
+                    .pp(format!("layers.{layer_idx}")),
+            )?);
+        }
+        let norm = rms_norm(
+            encoder.dim,
+            encoder.norm_eps,
+            vb.pp(REALTIME_ENCODER_PREFIX).pp("transformer.norm"),
+        )?;
+
+        Ok(Self {
+            layers,
+            norm,
+            rope_theta: encoder.rope_theta,
+            sliding_window: encoder.sliding_window,
+        })
+    }
+
+    pub fn forward(&self, hidden_states: &Tensor, start_pos: usize) -> Result<Tensor> {
+        let mut hidden_states = hidden_states.clone();
+        for layer in &self.layers {
+            hidden_states = layer.forward(
+                &hidden_states,
+                start_pos,
+                self.rope_theta,
+                self.sliding_window,
+            )?;
+        }
+        self.norm.forward(&hidden_states)
+    }
+}
+
+impl VoxtralRealtimeAudioTransformerBlock {
+    pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
+        let encoder = &config.multimodal.whisper_model_args.encoder_args;
+        let attention = VoxtralRealtimeAudioAttention::load(config, vb.pp("attention"))?;
+        let feed_forward = VoxtralRealtimeAudioFeedForward::load(config, vb.pp("feed_forward"))?;
+        let attention_norm = rms_norm(encoder.dim, encoder.norm_eps, vb.pp("attention_norm"))?;
+        let ffn_norm = rms_norm(encoder.dim, encoder.norm_eps, vb.pp("ffn_norm"))?;
+
+        Ok(Self {
+            attention,
+            feed_forward,
+            attention_norm,
+            ffn_norm,
+        })
+    }
+
+    pub fn forward(
+        &self,
+        hidden_states: &Tensor,
+        start_pos: usize,
+        rope_theta: f64,
+        sliding_window: usize,
+    ) -> Result<Tensor> {
+        let residual = hidden_states.clone();
+        let attention_input = self.attention_norm.forward(hidden_states)?;
+        let attention_output =
+            self.attention
+                .forward(&attention_input, start_pos, rope_theta, sliding_window)?;
+        let hidden_states = (attention_output + residual)?;
+
+        let residual = hidden_states.clone();
+        let ffn_input = self.ffn_norm.forward(&hidden_states)?;
+        let ffn_output = self.feed_forward.forward(&ffn_input)?;
+        ffn_output + residual
+    }
+}
+
+impl VoxtralRealtimeAudioAttention {
+    pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
+        let encoder = &config.multimodal.whisper_model_args.encoder_args;
+        let q_dim = encoder.n_heads * encoder.head_dim;
+        let kv_dim = encoder.n_kv_heads * encoder.head_dim;
+        let wq = linear(encoder.dim, q_dim, vb.pp("wq"))?;
+        let wk = linear_no_bias(encoder.dim, kv_dim, vb.pp("wk"))?;
+        let wv = linear(encoder.dim, kv_dim, vb.pp("wv"))?;
+        let wo = linear(q_dim, encoder.dim, vb.pp("wo"))?;
+
+        Ok(Self {
+            wq,
+            wk,
+            wv,
+            wo,
+            n_heads: encoder.n_heads,
+            n_kv_heads: encoder.n_kv_heads,
+            head_dim: encoder.head_dim,
+        })
+    }
+
+    pub fn forward(
+        &self,
+        hidden_states: &Tensor,
+        start_pos: usize,
+        rope_theta: f64,
+        sliding_window: usize,
+    ) -> Result<Tensor> {
+        let (batch, seq_len, _dim) = hidden_states.dims3()?;
+        let repeat = self.n_heads / self.n_kv_heads;
+        let query = self
+            .wq
+            .forward(hidden_states)?
+            .reshape((batch, seq_len, self.n_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let key = self
+            .wk
+            .forward(hidden_states)?
+            .reshape((batch, seq_len, self.n_kv_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let value = self.wv.forward(hidden_states)?.reshape((
+            batch,
+            seq_len,
+            self.n_kv_heads,
+            self.head_dim,
+        ))?;
+
+        let (cos, sin) = rope_frequencies(
+            seq_len,
+            self.head_dim,
+            start_pos,
+            rope_theta,
+            query.dtype(),
+            query.device(),
+        )?;
+        let query = candle_nn::rotary_emb::rope_i(&query, &cos, &sin)?;
+        let key = candle_nn::rotary_emb::rope_i(&key, &cos, &sin)?;
+        let key = repeat_kv_heads(&key, repeat)?;
+        let value = repeat_kv(&value, repeat)?.transpose(1, 2)?.contiguous()?;
+
+        let scale = 1.0f64 / (self.head_dim as f64).sqrt();
+        let scores = (query
+            .matmul(&key.transpose(candle_core::D::Minus2, candle_core::D::Minus1)?)?
+            * scale)?;
+        let mask = sliding_causal_mask(
+            seq_len,
+            start_pos,
+            sliding_window,
+            scores.dtype(),
+            scores.device(),
+        )?;
+        let scores = scores.broadcast_add(&mask)?;
+        let weights = candle_nn::ops::softmax_last_dim(&scores)?;
+        let output = weights.matmul(&value)?.transpose(1, 2)?.reshape((
+            batch,
+            seq_len,
+            self.n_heads * self.head_dim,
+        ))?;
+
+        self.wo.forward(&output)
+    }
+}
+
+impl VoxtralRealtimeAudioFeedForward {
+    pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
+        let encoder = &config.multimodal.whisper_model_args.encoder_args;
+        let w1 = linear_no_bias(encoder.dim, encoder.hidden_dim, vb.pp("w1"))?;
+        let w2 = linear(encoder.hidden_dim, encoder.dim, vb.pp("w2"))?;
+        let w3 = linear_no_bias(encoder.dim, encoder.hidden_dim, vb.pp("w3"))?;
+        Ok(Self { w1, w2, w3 })
+    }
+
+    pub fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let gate = self.w1.forward(hidden_states)?;
+        let gate = Activation::Silu.forward(&gate)?;
+        let up = self.w3.forward(hidden_states)?;
+        let hidden_states = gate.broadcast_mul(&up)?;
+        self.w2.forward(&hidden_states)
     }
 }
 
@@ -222,6 +432,86 @@ fn zero_pad_last_dim(xs: &Tensor, left: usize, right: usize) -> Result<Tensor> {
     Tensor::cat(&parts, 2)
 }
 
+fn repeat_kv(hidden_states: &Tensor, repeat: usize) -> Result<Tensor> {
+    if repeat == 1 {
+        return Ok(hidden_states.clone());
+    }
+
+    let (_batch, _seq_len, n_kv_heads, _head_dim) = hidden_states.dims4()?;
+    let mut repeated = Vec::with_capacity(n_kv_heads * repeat);
+    for head_idx in 0..n_kv_heads {
+        let head = hidden_states.narrow(2, head_idx, 1)?;
+        for _ in 0..repeat {
+            repeated.push(head.clone());
+        }
+    }
+    Tensor::cat(&repeated, 2)
+}
+
+fn repeat_kv_heads(hidden_states: &Tensor, repeat: usize) -> Result<Tensor> {
+    if repeat == 1 {
+        return Ok(hidden_states.clone());
+    }
+
+    let (batch, n_kv_heads, seq_len, head_dim) = hidden_states.dims4()?;
+    let expanded = hidden_states
+        .unsqueeze(2)?
+        .expand((batch, n_kv_heads, repeat, seq_len, head_dim))?;
+    expanded.reshape((batch, n_kv_heads * repeat, seq_len, head_dim))
+}
+
+fn rope_frequencies(
+    seq_len: usize,
+    head_dim: usize,
+    start_pos: usize,
+    theta: f64,
+    dtype: candle_core::DType,
+    device: &Device,
+) -> Result<(Tensor, Tensor)> {
+    let half_dim = head_dim / 2;
+    let mut cos = Vec::with_capacity(seq_len * half_dim);
+    let mut sin = Vec::with_capacity(seq_len * half_dim);
+    for pos in start_pos..start_pos + seq_len {
+        for idx in 0..half_dim {
+            let freq = 1.0 / theta.powf((2 * idx) as f64 / head_dim as f64);
+            let angle = pos as f64 * freq;
+            cos.push(angle.cos() as f32);
+            sin.push(angle.sin() as f32);
+        }
+    }
+
+    let cos = Tensor::from_vec(cos, (seq_len, half_dim), device)?.to_dtype(dtype)?;
+    let sin = Tensor::from_vec(sin, (seq_len, half_dim), device)?.to_dtype(dtype)?;
+    Ok((cos, sin))
+}
+
+fn sliding_causal_mask(
+    seq_len: usize,
+    start_pos: usize,
+    sliding_window: usize,
+    dtype: candle_core::DType,
+    device: &Device,
+) -> Result<Tensor> {
+    let mut values = Vec::with_capacity(seq_len * seq_len);
+    for query_pos in 0..seq_len {
+        let query_abs = start_pos + query_pos;
+        let valid_start = if sliding_window == 0 {
+            0
+        } else {
+            query_abs.saturating_sub(sliding_window - 1)
+        };
+        for key_pos in 0..seq_len {
+            let key_abs = start_pos + key_pos;
+            if key_abs <= query_abs && key_abs >= valid_start {
+                values.push(0.0);
+            } else {
+                values.push(f32::NEG_INFINITY);
+            }
+        }
+    }
+    Tensor::from_vec(values, (1, 1, seq_len, seq_len), device)?.to_dtype(dtype)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,13 +547,13 @@ mod tests {
                             global_log_mel_max: 1.5,
                             transcription_format: crate::REALTIME_TRANSCRIPTION_FORMAT.to_string(),
                         },
-                        dim: 6,
+                        dim: 8,
                         n_layers: 1,
-                        head_dim: 3,
-                        hidden_dim: 12,
+                        head_dim: 4,
+                        hidden_dim: 16,
                         n_heads: 2,
                         vocab_size: 64,
-                        n_kv_heads: 2,
+                        n_kv_heads: 1,
                         use_biases: true,
                         use_cache: false,
                         rope_theta: 1_000_000.0,
@@ -297,9 +587,9 @@ mod tests {
 
         let hidden = modules.audio_stem.forward_features(&input).unwrap();
 
-        assert_eq!(hidden.dims(), &[1, 5, 6]);
-        assert_eq!(modules.audio_stem.conv1.weight().dims(), &[6, 4, 3]);
-        assert_eq!(modules.audio_stem.conv2.weight().dims(), &[6, 6, 3]);
+        assert_eq!(hidden.dims(), &[1, 5, 8]);
+        assert_eq!(modules.audio_stem.conv1.weight().dims(), &[8, 4, 3]);
+        assert_eq!(modules.audio_stem.conv2.weight().dims(), &[8, 8, 3]);
     }
 
     #[test]
@@ -310,13 +600,35 @@ mod tests {
             VarBuilder::zeros(DType::F32, &Device::Cpu),
         )
         .unwrap();
-        let encoder_hidden = Tensor::zeros((1, 5, 6), DType::F32, &Device::Cpu).unwrap();
+        let encoder_hidden = Tensor::zeros((1, 5, 8), DType::F32, &Device::Cpu).unwrap();
 
         let projected = modules.audio_projector.forward(&encoder_hidden).unwrap();
 
         assert_eq!(projected.dims(), &[1, 2, 8]);
-        assert_eq!(modules.audio_projector.linear_1.weight().dims(), &[8, 12]);
+        assert_eq!(modules.audio_projector.linear_1.weight().dims(), &[8, 16]);
         assert_eq!(modules.audio_projector.linear_2.weight().dims(), &[8, 8]);
+    }
+
+    #[test]
+    fn runs_tiny_realtime_audio_transformer() {
+        let config = tiny_realtime_config();
+        let transformer = VoxtralRealtimeAudioTransformer::load(
+            &config,
+            VarBuilder::zeros(DType::F32, &Device::Cpu),
+        )
+        .unwrap();
+        let hidden_states = Tensor::zeros((1, 5, 8), DType::F32, &Device::Cpu).unwrap();
+
+        let hidden = transformer.forward(&hidden_states, 0).unwrap();
+
+        assert_eq!(transformer.layers.len(), 1);
+        assert_eq!(transformer.layers[0].attention.wq.weight().dims(), &[8, 8]);
+        assert_eq!(transformer.layers[0].attention.wk.weight().dims(), &[4, 8]);
+        assert_eq!(
+            transformer.layers[0].feed_forward.w2.weight().dims(),
+            &[8, 16]
+        );
+        assert_eq!(hidden.dims(), &[1, 5, 8]);
     }
 
     #[test]
@@ -406,5 +718,43 @@ mod tests {
         assert_eq!(mel.frames, 8);
         assert_eq!(encoder_stem_hidden.dims(), &[1, 4, 1280]);
         assert_eq!(audio_embeds.dims(), &[1, 1, 3072]);
+    }
+
+    #[test]
+    fn loads_local_realtime_audio_transformer_when_env_is_set() {
+        let Ok(dir) = std::env::var("VOXTRAL_REALTIME_LOCAL_DIR") else {
+            return;
+        };
+        if std::env::var("VOXTRAL_REALTIME_LOAD_FULL").as_deref() != Ok("1") {
+            return;
+        }
+
+        let model = crate::VoxtralRealtimeModel::load_from_dir(dir).unwrap();
+        let transformer = model
+            .load_audio_transformer(DType::BF16, &Device::Cpu)
+            .unwrap();
+
+        assert_eq!(transformer.layers.len(), 32);
+        assert_eq!(
+            transformer.layers[0].attention.wq.weight().dims(),
+            &[2048, 1280]
+        );
+        assert_eq!(
+            transformer.layers[0].attention.wk.weight().dims(),
+            &[2048, 1280]
+        );
+        assert_eq!(
+            transformer.layers[0].attention.wv.weight().dims(),
+            &[2048, 1280]
+        );
+        assert_eq!(
+            transformer.layers[0].attention.wo.weight().dims(),
+            &[1280, 2048]
+        );
+        assert_eq!(
+            transformer.layers[31].feed_forward.w2.weight().dims(),
+            &[1280, 5120]
+        );
+        assert_eq!(transformer.norm.weight().dims(), &[1280]);
     }
 }

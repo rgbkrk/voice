@@ -6,8 +6,9 @@ use hf_hub::api::sync::Api;
 use serde::Deserialize;
 
 use crate::{
-    Result, VoxtralCheckpointSummary, VoxtralError, VoxtralRealtimeInferenceModules, VoxtralSource,
-    VoxtralTokenizerMetadata, VoxtralWeightMetadata,
+    Result, VoxtralCheckpointSummary, VoxtralError, VoxtralRealtimeAudioTransformer,
+    VoxtralRealtimeInferenceModules, VoxtralSource, VoxtralTokenizerMetadata,
+    VoxtralWeightMetadata,
 };
 
 pub const REALTIME_DEFAULT_REPO: &str = "mistralai/Voxtral-Mini-4B-Realtime-2602";
@@ -519,6 +520,16 @@ impl VoxtralRealtimeModel {
     ) -> Result<VoxtralRealtimeInferenceModules> {
         let vb = self.var_builder(dtype, device)?;
         VoxtralRealtimeInferenceModules::load(&self.config, vb)
+            .map_err(|e| VoxtralError::Candle(e.to_string()))
+    }
+
+    pub fn load_audio_transformer(
+        &self,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<VoxtralRealtimeAudioTransformer> {
+        let vb = self.var_builder(dtype, device)?;
+        VoxtralRealtimeAudioTransformer::load(&self.config, vb)
             .map_err(|e| VoxtralError::Candle(e.to_string()))
     }
 

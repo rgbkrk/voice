@@ -65,7 +65,9 @@ pub use realtime_audio::{
     VoxtralRealtimeMelFilters, VoxtralRealtimeMelSpectrogram, REALTIME_MIN_MEL_VALUE,
 };
 pub use realtime_inference::{
-    VoxtralRealtimeAudioProjector, VoxtralRealtimeAudioStem, VoxtralRealtimeInferenceModules,
+    VoxtralRealtimeAudioAttention, VoxtralRealtimeAudioFeedForward, VoxtralRealtimeAudioProjector,
+    VoxtralRealtimeAudioStem, VoxtralRealtimeAudioTransformer,
+    VoxtralRealtimeAudioTransformerBlock, VoxtralRealtimeInferenceModules,
     VoxtralRealtimeTokenEmbeddings,
 };
 pub use streaming::{

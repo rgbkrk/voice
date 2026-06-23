@@ -35,7 +35,10 @@ pub use config::{
     MultimodalConfig, VoxtralConfig,
 };
 pub use error::{Result, VoxtralError};
-pub use generation::{VoxtralGeneratedAudio, VoxtralGenerationOptions};
+pub use generation::{
+    VoxtralGeneratedAudio, VoxtralGenerationOptions, VoxtralGenerationTrace,
+    VoxtralRuntimeLoadTrace, VoxtralTtsRuntime,
+};
 pub use model::VoxtralModel;
 pub use prompt::{
     build_prompt_embeddings, build_prompt_token_ids, VoxtralPrompt,
@@ -83,7 +86,8 @@ pub use tokenizer::{
 };
 pub use transformer::{
     VoxtralAcousticTransformer, VoxtralAttention, VoxtralFeedForward, VoxtralInferenceModules,
-    VoxtralLanguageBackbone, VoxtralMultimodalEmbeddings, VoxtralTransformerBlock,
+    VoxtralLanguageBackbone, VoxtralLanguageCache, VoxtralMultimodalEmbeddings,
+    VoxtralTransformerBlock,
 };
 pub use voice_embedding::{
     load_voice_embedding, load_voice_embedding_with_hidden_dim, VOXTRAL_VOICE_EMBEDDING_HIDDEN_DIM,

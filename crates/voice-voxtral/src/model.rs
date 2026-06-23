@@ -12,6 +12,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct VoxtralModel {
     config: VoxtralConfig,
+    resolver: Option<VoxtralAssetResolver>,
     assets: Option<VoxtralAssetPaths>,
     tokenizer: Option<VoxtralTokenizerMetadata>,
     weights: Option<VoxtralWeightMetadata>,
@@ -21,6 +22,7 @@ impl VoxtralModel {
     pub fn new(config: VoxtralConfig) -> Self {
         Self {
             config,
+            resolver: None,
             assets: None,
             tokenizer: None,
             weights: None,
@@ -60,6 +62,7 @@ impl VoxtralModel {
 
         Ok(Self {
             config,
+            resolver: Some(resolver.clone()),
             assets: Some(assets),
             tokenizer,
             weights: Some(weights),
@@ -84,6 +87,20 @@ impl VoxtralModel {
 
     pub fn checkpoint_summary(&self) -> Option<crate::VoxtralCheckpointSummary> {
         self.weights.as_ref().map(|weights| weights.summary())
+    }
+
+    pub fn resolve_voice_embedding_path(&self, voice: &str) -> Result<std::path::PathBuf> {
+        if let Some(path) = self
+            .assets
+            .as_ref()
+            .and_then(|assets| assets.voice_embeddings.get(voice))
+        {
+            return Ok(path.clone());
+        }
+        let resolver = self.resolver.as_ref().ok_or_else(|| {
+            VoxtralError::InvalidCheckpoint("model was created without asset resolver".into())
+        })?;
+        resolver.resolve_voice_embedding(voice)
     }
 
     /// Open a Candle VarBuilder over the mmaped safetensors checkpoint.

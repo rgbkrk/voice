@@ -55,6 +55,17 @@ pub struct VoxtralAttention {
     pub head_dim: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct VoxtralLanguageCache {
+    layers: Vec<VoxtralAttentionCache>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct VoxtralAttentionCache {
+    key: Option<Tensor>,
+    value: Option<Tensor>,
+}
+
 pub struct VoxtralFeedForward {
     pub w1: Linear,
     pub w2: Linear,
@@ -159,6 +170,127 @@ impl VoxtralLanguageBackbone {
             hidden_states = layer.forward_causal(&hidden_states, start_pos, rope_theta)?;
         }
         self.norm.forward(&hidden_states)
+    }
+
+    pub fn new_cache(&self) -> VoxtralLanguageCache {
+        VoxtralLanguageCache::new(self.layers.len())
+    }
+
+    pub fn forward_causal_cached(
+        &self,
+        hidden_states: &Tensor,
+        start_pos: usize,
+        rope_theta: f64,
+        cache: &mut VoxtralLanguageCache,
+    ) -> Result<Tensor> {
+        if cache.layers.len() != self.layers.len() {
+            candle_core::bail!(
+                "language cache has {} layers, expected {}",
+                cache.layers.len(),
+                self.layers.len()
+            );
+        }
+
+        let mut hidden_states = hidden_states.clone();
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            hidden_states = layer.forward_causal_cached(
+                &hidden_states,
+                start_pos,
+                rope_theta,
+                cache.layer_mut(layer_idx)?,
+            )?;
+        }
+        self.norm.forward(&hidden_states)
+    }
+}
+
+impl VoxtralLanguageCache {
+    pub fn new(layer_count: usize) -> Self {
+        Self {
+            layers: vec![VoxtralAttentionCache::default(); layer_count],
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.layers
+            .first()
+            .map(VoxtralAttentionCache::len)
+            .unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn layer_mut(&mut self, layer_idx: usize) -> Result<&mut VoxtralAttentionCache> {
+        self.layers.get_mut(layer_idx).ok_or_else(|| {
+            candle_core::Error::Msg(format!("missing language cache for layer {layer_idx}"))
+        })
+    }
+}
+
+impl VoxtralAttentionCache {
+    fn len(&self) -> usize {
+        self.key.as_ref().map(|key| key.dims()[2]).unwrap_or(0)
+    }
+
+    fn update(&mut self, key: Tensor, value: Tensor) -> Result<(Tensor, Tensor)> {
+        let key_dims = key.dims();
+        let value_dims = value.dims();
+        if key_dims.len() != 4 || value_dims.len() != 4 {
+            candle_core::bail!(
+                "attention cache expects rank-4 key/value tensors, got {:?} and {:?}",
+                key_dims,
+                value_dims
+            );
+        }
+        if key_dims[0] != value_dims[0]
+            || key_dims[1] != value_dims[1]
+            || key_dims[2] != value_dims[2]
+            || key_dims[3] != value_dims[3]
+        {
+            candle_core::bail!("key/value cache dims differ: {key_dims:?} vs {value_dims:?}");
+        }
+
+        match (&self.key, &self.value) {
+            (None, None) => {
+                self.key = Some(key.clone());
+                self.value = Some(value.clone());
+                Ok((key, value))
+            }
+            (Some(cached_key), Some(cached_value)) => {
+                let cached_key_dims = cached_key.dims();
+                let cached_value_dims = cached_value.dims();
+                if cached_key_dims.len() != 4 || cached_value_dims.len() != 4 {
+                    candle_core::bail!(
+                        "cached key/value tensors must be rank 4, got {:?} and {:?}",
+                        cached_key_dims,
+                        cached_value_dims
+                    );
+                }
+                if cached_key_dims[0] != key_dims[0]
+                    || cached_key_dims[1] != key_dims[1]
+                    || cached_key_dims[3] != key_dims[3]
+                    || cached_value_dims[0] != value_dims[0]
+                    || cached_value_dims[1] != value_dims[1]
+                    || cached_value_dims[3] != value_dims[3]
+                {
+                    candle_core::bail!(
+                        "new key/value dims {:?}/{:?} are incompatible with cached dims {:?}/{:?}",
+                        key_dims,
+                        value_dims,
+                        cached_key_dims,
+                        cached_value_dims
+                    );
+                }
+                let full_key = Tensor::cat(&[cached_key, &key], 2)?;
+                let full_value = Tensor::cat(&[cached_value, &value], 2)?;
+                self.key = Some(full_key.clone());
+                self.value = Some(full_value.clone());
+                Ok((full_key, full_value))
+            }
+            _ => candle_core::bail!("attention cache is partially initialized"),
+        }
     }
 }
 
@@ -452,6 +584,26 @@ impl VoxtralTransformerBlock {
         let ffn_output = self.feed_forward.forward(&ffn_input)?;
         ffn_output + residual
     }
+
+    fn forward_causal_cached(
+        &self,
+        hidden_states: &Tensor,
+        start_pos: usize,
+        rope_theta: f64,
+        cache: &mut VoxtralAttentionCache,
+    ) -> Result<Tensor> {
+        let residual = hidden_states.clone();
+        let attention_input = self.attention_norm.forward(hidden_states)?;
+        let attention_output =
+            self.attention
+                .forward_causal_cached(&attention_input, start_pos, rope_theta, cache)?;
+        let hidden_states = (attention_output + residual)?;
+
+        let residual = hidden_states.clone();
+        let ffn_input = self.ffn_norm.forward(&hidden_states)?;
+        let ffn_output = self.feed_forward.forward(&ffn_input)?;
+        ffn_output + residual
+    }
 }
 
 impl VoxtralAttention {
@@ -562,6 +714,71 @@ impl VoxtralAttention {
         let scale = 1.0f64 / (self.head_dim as f64).sqrt();
         let scores = (query.matmul(&key.transpose(D::Minus2, D::Minus1)?)? * scale)?;
         let mask = causal_mask(seq_len, scores.dtype(), scores.device())?;
+        let scores = scores.broadcast_add(&mask)?;
+        let weights = candle_nn::ops::softmax_last_dim(&scores)?;
+        let output = weights.matmul(&value)?.transpose(1, 2)?.reshape((
+            batch,
+            seq_len,
+            self.n_heads * self.head_dim,
+        ))?;
+
+        self.wo.forward_compat(&output)
+    }
+
+    fn forward_causal_cached(
+        &self,
+        hidden_states: &Tensor,
+        start_pos: usize,
+        rope_theta: f64,
+        cache: &mut VoxtralAttentionCache,
+    ) -> Result<Tensor> {
+        let (batch, seq_len, _dim) = hidden_states.dims3()?;
+        if cache.len() != start_pos {
+            candle_core::bail!(
+                "attention cache length {} does not match start_pos {start_pos}",
+                cache.len()
+            );
+        }
+        let repeat = self.n_heads / self.n_kv_heads;
+
+        let query = self
+            .wq
+            .forward_compat(hidden_states)?
+            .reshape((batch, seq_len, self.n_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let key = self
+            .wk
+            .forward_compat(hidden_states)?
+            .reshape((batch, seq_len, self.n_kv_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let value = self
+            .wv
+            .forward_compat(hidden_states)?
+            .reshape((batch, seq_len, self.n_kv_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+
+        let (cos, sin) = rope_frequencies(
+            seq_len,
+            self.head_dim,
+            start_pos,
+            rope_theta,
+            query.dtype(),
+            query.device(),
+        )?;
+        let query = candle_nn::rotary_emb::rope_i(&query, &cos, &sin)?;
+        let key = candle_nn::rotary_emb::rope_i(&key, &cos, &sin)?;
+        let (key, value) = cache.update(key, value)?;
+        let key_len = key.dim(2)?;
+        let key = repeat_kv_heads(&key, repeat)?;
+        let value = repeat_kv_heads(&value, repeat)?;
+
+        let scale = 1.0f64 / (self.head_dim as f64).sqrt();
+        let scores = (query.matmul(&key.transpose(D::Minus2, D::Minus1)?)? * scale)?;
+        let mask =
+            causal_mask_with_offset(seq_len, key_len, start_pos, scores.dtype(), scores.device())?;
         let scores = scores.broadcast_add(&mask)?;
         let weights = candle_nn::ops::softmax_last_dim(&scores)?;
         let output = weights.matmul(&value)?.transpose(1, 2)?.reshape((
@@ -716,6 +933,27 @@ fn causal_mask(seq_len: usize, dtype: DType, device: &Device) -> Result<Tensor> 
     Tensor::from_vec(values, (1, 1, seq_len, seq_len), device)?.to_dtype(dtype)
 }
 
+fn causal_mask_with_offset(
+    query_len: usize,
+    key_len: usize,
+    start_pos: usize,
+    dtype: DType,
+    device: &Device,
+) -> Result<Tensor> {
+    let mut values = Vec::with_capacity(query_len * key_len);
+    for query_pos in 0..query_len {
+        let absolute_query_pos = start_pos + query_pos;
+        for key_pos in 0..key_len {
+            if key_pos <= absolute_query_pos {
+                values.push(0.0);
+            } else {
+                values.push(f32::NEG_INFINITY);
+            }
+        }
+    }
+    Tensor::from_vec(values, (1, 1, query_len, key_len), device)?.to_dtype(dtype)
+}
+
 fn time_embedding(timestep: &Tensor, dim: usize) -> Result<Tensor> {
     let timestep = match timestep.dims() {
         [_batch] => timestep.unsqueeze(1)?,
@@ -754,6 +992,8 @@ fn semantic_logits_mask(config: &VoxtralConfig, device: &candle_core::Device) ->
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::collections::HashMap;
+
     use candle_core::{DType, Device};
     use candle_nn::VarBuilder;
 
@@ -895,6 +1135,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn cached_language_forward_matches_full_prefix() {
+        let config = tiny_config();
+        let device = Device::Cpu;
+        let tensors = deterministic_language_tensors(&config, &device);
+        let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
+        let language = VoxtralLanguageBackbone::load(&config, vb).unwrap();
+        let input_values = (0..4 * config.dim)
+            .map(|idx| ((idx % 13) as f32 - 6.0) * 0.03)
+            .collect::<Vec<_>>();
+        let input = Tensor::from_vec(input_values, (1, 4, config.dim), &device).unwrap();
+
+        let full = language
+            .forward_causal(&input, 0, config.rope_theta)
+            .unwrap();
+        let mut cache = language.new_cache();
+        let prefill_input = input.narrow(1, 0, 3).unwrap();
+        let step_input = input.narrow(1, 3, 1).unwrap();
+        let prefill = language
+            .forward_causal_cached(&prefill_input, 0, config.rope_theta, &mut cache)
+            .unwrap();
+        let step = language
+            .forward_causal_cached(&step_input, 3, config.rope_theta, &mut cache)
+            .unwrap();
+
+        assert_eq!(cache.len(), 4);
+        assert_eq!(prefill.dims(), &[1, 3, config.dim]);
+        assert_eq!(step.dims(), &[1, 1, config.dim]);
+        assert!(
+            max_abs_diff(&full.narrow(1, 0, 3).unwrap(), &prefill) < 1e-4,
+            "cached prefill diverged from full-prefix forward"
+        );
+        assert!(
+            max_abs_diff(&full.narrow(1, 3, 1).unwrap(), &step) < 1e-4,
+            "cached decode step diverged from full-prefix forward"
+        );
+    }
+
+    #[test]
     fn embeds_tiny_audio_codes_for_next_language_step() {
         let config = tiny_config();
         let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
@@ -1028,5 +1306,115 @@ pub(crate) mod tests {
             &[1, semantic_codebook_output_size(model.config())]
         );
         assert_eq!(frame_codes.dims(), &[1, model.config().num_codebooks()]);
+    }
+
+    fn deterministic_language_tensors(
+        config: &VoxtralConfig,
+        device: &Device,
+    ) -> HashMap<String, Tensor> {
+        let mut tensors = HashMap::new();
+        for layer_idx in 0..config.n_layers {
+            let prefix = format!("layers.{layer_idx}");
+            insert_test_tensor(
+                &mut tensors,
+                format!("{prefix}.attention.wq.weight"),
+                &[config.n_heads * config.head_dim, config.dim],
+                device,
+            );
+            insert_test_tensor(
+                &mut tensors,
+                format!("{prefix}.attention.wk.weight"),
+                &[config.n_kv_heads * config.head_dim, config.dim],
+                device,
+            );
+            insert_test_tensor(
+                &mut tensors,
+                format!("{prefix}.attention.wv.weight"),
+                &[config.n_kv_heads * config.head_dim, config.dim],
+                device,
+            );
+            insert_test_tensor(
+                &mut tensors,
+                format!("{prefix}.attention.wo.weight"),
+                &[config.dim, config.n_heads * config.head_dim],
+                device,
+            );
+            insert_test_tensor(
+                &mut tensors,
+                format!("{prefix}.feed_forward.w1.weight"),
+                &[config.hidden_dim, config.dim],
+                device,
+            );
+            insert_test_tensor(
+                &mut tensors,
+                format!("{prefix}.feed_forward.w2.weight"),
+                &[config.dim, config.hidden_dim],
+                device,
+            );
+            insert_test_tensor(
+                &mut tensors,
+                format!("{prefix}.feed_forward.w3.weight"),
+                &[config.hidden_dim, config.dim],
+                device,
+            );
+            insert_norm_tensor(
+                &mut tensors,
+                format!("{prefix}.attention_norm.weight"),
+                config.dim,
+                device,
+            );
+            insert_norm_tensor(
+                &mut tensors,
+                format!("{prefix}.ffn_norm.weight"),
+                config.dim,
+                device,
+            );
+        }
+        insert_norm_tensor(&mut tensors, "norm.weight".to_string(), config.dim, device);
+        tensors
+    }
+
+    fn insert_test_tensor(
+        tensors: &mut HashMap<String, Tensor>,
+        name: String,
+        dims: &[usize],
+        device: &Device,
+    ) {
+        let len = dims.iter().product::<usize>();
+        let seed = name.bytes().fold(0usize, |acc, byte| {
+            acc.wrapping_mul(31).wrapping_add(byte as usize)
+        });
+        let values = (0..len)
+            .map(|idx| (((idx + seed) % 29) as f32 - 14.0) * 0.015)
+            .collect::<Vec<_>>();
+        tensors.insert(
+            name,
+            Tensor::from_vec(values, dims.to_vec(), device).unwrap(),
+        );
+    }
+
+    fn insert_norm_tensor(
+        tensors: &mut HashMap<String, Tensor>,
+        name: String,
+        dim: usize,
+        device: &Device,
+    ) {
+        tensors.insert(
+            name,
+            Tensor::from_vec(vec![1.0f32; dim], (dim,), device).unwrap(),
+        );
+    }
+
+    fn max_abs_diff(left: &Tensor, right: &Tensor) -> f32 {
+        left.broadcast_sub(right)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap()
+            .into_iter()
+            .fold(0.0, f32::max)
     }
 }

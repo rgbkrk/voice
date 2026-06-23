@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use hf_hub::api::sync::Api;
 
-use crate::{Result, VoxtralConfig, VoxtralError, VOXTRAL_PRESET_VOICES};
+use crate::{get_preset_voice, Result, VoxtralConfig, VoxtralError, VOXTRAL_PRESET_VOICES};
 
 pub const DEFAULT_REPO: &str = "mistralai/Voxtral-4B-TTS-2603";
 pub const CONFIG_FILE: &str = "params.json";
@@ -93,6 +93,26 @@ impl VoxtralAssetResolver {
         }
     }
 
+    pub fn resolve_voice_embedding(&self, voice: &str) -> Result<PathBuf> {
+        match &self.source {
+            VoxtralSource::Local(dir) => {
+                let voice_dir = dir.join(VOICE_EMBEDDING_DIR);
+                require_file(voice_dir.join(format!("{voice}.pt")), voice)
+            }
+            VoxtralSource::Hub(repo_id) => {
+                if get_preset_voice(voice).is_none() {
+                    return Err(VoxtralError::InvalidConfig(format!(
+                        "unknown Voxtral preset voice {voice:?}"
+                    )));
+                }
+                let api = Api::new().map_err(|e| VoxtralError::Hub(e.to_string()))?;
+                let repo = api.model(repo_id.to_string());
+                repo.get(&format!("{VOICE_EMBEDDING_DIR}/{voice}.pt"))
+                    .map_err(|e| VoxtralError::Hub(e.to_string()))
+            }
+        }
+    }
+
     pub fn load_config(&self) -> Result<VoxtralConfig> {
         VoxtralConfig::from_path(self.resolve_config()?)
     }
@@ -107,16 +127,11 @@ impl VoxtralAssetResolver {
         };
         let voice_embedding_dir = dir.join(VOICE_EMBEDDING_DIR);
         let voice_embedding_dir = voice_embedding_dir.is_dir().then_some(voice_embedding_dir);
-        let voice_embeddings = if include_weights {
-            let dir = voice_embedding_dir.as_ref().ok_or_else(|| {
-                VoxtralError::InvalidConfig(format!(
-                    "missing required {VOICE_EMBEDDING_DIR} directory"
-                ))
-            })?;
-            resolve_local_voice_embeddings(dir)?
-        } else {
-            BTreeMap::new()
-        };
+        let voice_embeddings = voice_embedding_dir
+            .as_ref()
+            .map(|dir| resolve_local_voice_embeddings(dir))
+            .transpose()?
+            .unwrap_or_default();
 
         Ok(VoxtralAssetPaths {
             params_json,
@@ -143,19 +158,7 @@ impl VoxtralAssetResolver {
         } else {
             None
         };
-        let voice_embeddings = if include_weights {
-            let mut embeddings = BTreeMap::new();
-            for voice in VOXTRAL_PRESET_VOICES {
-                let filename = format!("{VOICE_EMBEDDING_DIR}/{}.pt", voice.id);
-                let path = repo
-                    .get(&filename)
-                    .map_err(|e| VoxtralError::Hub(e.to_string()))?;
-                embeddings.insert(voice.id.to_string(), path);
-            }
-            embeddings
-        } else {
-            BTreeMap::new()
-        };
+        let voice_embeddings: BTreeMap<String, PathBuf> = BTreeMap::new();
         let voice_embedding_dir = voice_embeddings
             .values()
             .next()
@@ -174,8 +177,10 @@ impl VoxtralAssetResolver {
 fn resolve_local_voice_embeddings(dir: &Path) -> Result<BTreeMap<String, PathBuf>> {
     let mut embeddings = BTreeMap::new();
     for voice in VOXTRAL_PRESET_VOICES {
-        let path = require_file(dir.join(format!("{}.pt", voice.id)), voice.id)?;
-        embeddings.insert(voice.id.to_string(), path);
+        let path = dir.join(format!("{}.pt", voice.id));
+        if path.is_file() {
+            embeddings.insert(voice.id.to_string(), path);
+        }
     }
     Ok(embeddings)
 }
@@ -231,6 +236,37 @@ mod tests {
         assert_eq!(assets.weights, None);
         assert!(assets.voice_embeddings.is_empty());
         assert!(resolver.resolve_all().is_err());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn local_inference_resolution_accepts_partial_voice_directory() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "voice-voxtral-assets-partial-{}-{stamp}",
+            std::process::id()
+        ));
+        let voice_dir = dir.join(VOICE_EMBEDDING_DIR);
+        std::fs::create_dir_all(&voice_dir).unwrap();
+        std::fs::write(dir.join(CONFIG_FILE), "{}").unwrap();
+        std::fs::write(dir.join(TOKENIZER_FILE), "{}").unwrap();
+        std::fs::write(dir.join(WEIGHTS_FILE), b"").unwrap();
+        std::fs::write(voice_dir.join("casual_male.pt"), b"").unwrap();
+
+        let resolver = VoxtralAssetResolver::new(VoxtralSource::Local(dir.clone()));
+        let assets = resolver.resolve_all().unwrap();
+
+        assert_eq!(assets.voice_embeddings.len(), 1);
+        assert_eq!(
+            assets.voice_embeddings.get("casual_male"),
+            Some(&voice_dir.join("casual_male.pt"))
+        );
+        assert!(resolver.resolve_voice_embedding("casual_male").is_ok());
+        assert!(resolver.resolve_voice_embedding("casual_female").is_err());
 
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -257,3 +257,39 @@ fn find_safetensors(dir: &Path) -> Result<PathBuf> {
     }
     Err(VoicersError::Model(format!("no safetensors in {:?}", dir)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(extension: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "voice_tts_test_{}_{}.{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed"),
+            extension
+        ))
+    }
+
+    #[test]
+    fn save_wav_writes_mono_float_samples() {
+        let path = temp_path("wav");
+        let samples = vec![0.0, 0.25, -0.25, 0.5, -0.5];
+        save_wav(&samples, &path, 24_000).expect("save wav");
+
+        let mut reader = hound::WavReader::open(&path).expect("read saved wav");
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, 24_000);
+        assert_eq!(spec.bits_per_sample, 32);
+        assert_eq!(spec.sample_format, hound::SampleFormat::Float);
+
+        let decoded = reader
+            .samples::<f32>()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("decode saved wav samples");
+        assert_eq!(decoded, samples);
+
+        let _ = std::fs::remove_file(path);
+    }
+}

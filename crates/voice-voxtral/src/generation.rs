@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
 use std::f32::consts::TAU;
+use std::time::{Duration, Instant};
 
 use candle_core::{DType, Device, Tensor};
 
 use crate::{
     build_prompt_embeddings, build_prompt_token_ids, load_voice_embedding, Result, VoxtralError,
-    VoxtralModel,
+    VoxtralInferenceModules, VoxtralModel, VoxtralTokenizerMetadata,
 };
 
 #[derive(Debug, Clone)]
@@ -13,6 +15,7 @@ pub struct VoxtralGenerationOptions {
     pub seed: u64,
     pub flow_steps: usize,
     pub cfg_alpha: f32,
+    pub use_kv_cache: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -23,6 +26,35 @@ pub struct VoxtralGeneratedAudio {
     pub ended: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct VoxtralGenerationTrace {
+    pub language_cache: bool,
+    pub voice_cache_hit: bool,
+    pub voice_load: Duration,
+    pub prompt: Duration,
+    pub language: Duration,
+    pub acoustic: Duration,
+    pub decode_loop: Duration,
+    pub codec: Duration,
+    pub first_frame: Option<Duration>,
+    pub total: Duration,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct VoxtralRuntimeLoadTrace {
+    pub model_load: Duration,
+    pub module_load: Duration,
+    pub total: Duration,
+}
+
+pub struct VoxtralTtsRuntime {
+    model: VoxtralModel,
+    modules: VoxtralInferenceModules,
+    dtype: DType,
+    device: Device,
+    voice_cache: BTreeMap<String, Tensor>,
+}
+
 impl Default for VoxtralGenerationOptions {
     fn default() -> Self {
         Self {
@@ -30,7 +62,161 @@ impl Default for VoxtralGenerationOptions {
             seed: 0x5658_5452_414c,
             flow_steps: 7,
             cfg_alpha: 1.2,
+            use_kv_cache: false,
         }
+    }
+}
+
+impl VoxtralTtsRuntime {
+    pub fn load(path_or_repo: &str, dtype: DType, device: Device) -> Result<Self> {
+        Ok(Self::load_with_trace(path_or_repo, dtype, device)?.0)
+    }
+
+    pub fn load_with_trace(
+        path_or_repo: &str,
+        dtype: DType,
+        device: Device,
+    ) -> Result<(Self, VoxtralRuntimeLoadTrace)> {
+        let total_start = Instant::now();
+        let model_start = Instant::now();
+        let model = VoxtralModel::load(path_or_repo)?;
+        let model_load = model_start.elapsed();
+        Self::from_model_with_trace(model, dtype, device, total_start, model_load)
+    }
+
+    pub fn load_from_dir(
+        dir: impl AsRef<std::path::Path>,
+        dtype: DType,
+        device: Device,
+    ) -> Result<Self> {
+        Ok(Self::load_from_dir_with_trace(dir, dtype, device)?.0)
+    }
+
+    pub fn load_from_dir_with_trace(
+        dir: impl AsRef<std::path::Path>,
+        dtype: DType,
+        device: Device,
+    ) -> Result<(Self, VoxtralRuntimeLoadTrace)> {
+        let total_start = Instant::now();
+        let model_start = Instant::now();
+        let model = VoxtralModel::load_from_dir(dir)?;
+        let model_load = model_start.elapsed();
+        Self::from_model_with_trace(model, dtype, device, total_start, model_load)
+    }
+
+    pub fn load_default(path_or_repo: &str) -> Result<Self> {
+        Ok(Self::load_default_with_trace(path_or_repo)?.0)
+    }
+
+    pub fn load_default_with_trace(path_or_repo: &str) -> Result<(Self, VoxtralRuntimeLoadTrace)> {
+        #[cfg(target_os = "macos")]
+        {
+            let device = Device::new_metal(0).map_err(|e| VoxtralError::Candle(e.to_string()))?;
+            Self::load_with_trace(path_or_repo, DType::F16, device)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self::load_with_trace(path_or_repo, DType::F32, Device::Cpu)
+        }
+    }
+
+    fn from_model_with_trace(
+        model: VoxtralModel,
+        dtype: DType,
+        device: Device,
+        total_start: Instant,
+        model_load: Duration,
+    ) -> Result<(Self, VoxtralRuntimeLoadTrace)> {
+        let module_start = Instant::now();
+        let modules = model.load_inference_modules(dtype, &device)?;
+        let module_load = module_start.elapsed();
+        let trace = VoxtralRuntimeLoadTrace {
+            model_load,
+            module_load,
+            total: total_start.elapsed(),
+        };
+
+        Ok((
+            Self {
+                model,
+                modules,
+                dtype,
+                device,
+                voice_cache: BTreeMap::new(),
+            },
+            trace,
+        ))
+    }
+
+    pub fn config(&self) -> &crate::VoxtralConfig {
+        self.model.config()
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
+    pub fn cached_voice_count(&self) -> usize {
+        self.voice_cache.len()
+    }
+
+    pub fn preload_voice(&mut self, voice: &str) -> Result<()> {
+        self.voice_embedding(voice).map(|_| ())
+    }
+
+    pub fn generate_audio(
+        &mut self,
+        text: &str,
+        voice: &str,
+        options: VoxtralGenerationOptions,
+    ) -> Result<VoxtralGeneratedAudio> {
+        Ok(self.generate_audio_with_trace(text, voice, options)?.0)
+    }
+
+    pub fn generate_audio_with_trace(
+        &mut self,
+        text: &str,
+        voice: &str,
+        options: VoxtralGenerationOptions,
+    ) -> Result<(VoxtralGeneratedAudio, VoxtralGenerationTrace)> {
+        let total_start = Instant::now();
+        let (voice_embeddings, voice_cache_hit, voice_load) = self.voice_embedding(voice)?;
+        let (audio, mut trace) = generate_audio_inner(GenerateAudioInner {
+            config: self.model.config(),
+            tokenizer: self
+                .model
+                .tokenizer()
+                .ok_or_else(|| VoxtralError::InvalidTokenizer("missing tekken.json".into()))?,
+            modules: &self.modules,
+            text,
+            voice,
+            voice_embeddings: &voice_embeddings,
+            device: &self.device,
+            options,
+        })?;
+        trace.voice_cache_hit = voice_cache_hit;
+        trace.voice_load = voice_load;
+        trace.total = total_start.elapsed();
+        Ok((audio, trace))
+    }
+
+    fn voice_embedding(&mut self, voice: &str) -> Result<(Tensor, bool, Duration)> {
+        if let Some(embedding) = self.voice_cache.get(voice) {
+            return Ok((embedding.clone(), true, Duration::ZERO));
+        }
+
+        let start = Instant::now();
+        let voice_path = self.model.resolve_voice_embedding_path(voice)?;
+        let embedding = load_voice_embedding(&voice_path, self.dtype, &self.device)?;
+        let elapsed = start.elapsed();
+        self.voice_cache
+            .insert(voice.to_string(), embedding.clone());
+        Ok((embedding, false, elapsed))
     }
 }
 
@@ -65,114 +251,187 @@ impl VoxtralModel {
         let tokenizer = self
             .tokenizer()
             .ok_or_else(|| VoxtralError::InvalidTokenizer("missing tekken.json".into()))?;
-        let assets = self.assets().ok_or_else(|| {
-            VoxtralError::InvalidCheckpoint("model was loaded without resolved assets".into())
-        })?;
-        let voice_path = assets.voice_embeddings.get(voice).ok_or_else(|| {
-            VoxtralError::InvalidCheckpoint(format!("voice embedding {voice:?} was not resolved"))
-        })?;
         let modules = self.load_inference_modules(dtype, device)?;
-
-        let encoder = tokenizer.encoder()?;
-        let text_token_ids = encoder.encode(text)?;
+        let voice_path = self.resolve_voice_embedding_path(voice)?;
         let voice_embeddings = load_voice_embedding(voice_path, dtype, device)?;
-        let voice_frames = candle(voice_embeddings.dim(0))?;
-        if let Some(expected_voice_frames) = tokenizer.voice_audio_tokens(voice) {
-            if expected_voice_frames != voice_frames {
-                return Err(VoxtralError::InvalidCheckpoint(format!(
-                    "voice {voice:?} has {voice_frames} rows but tekken metadata expects {expected_voice_frames}"
-                )));
-            }
-        }
+        Ok(generate_audio_inner(GenerateAudioInner {
+            config,
+            tokenizer,
+            modules: &modules,
+            text,
+            voice,
+            voice_embeddings: &voice_embeddings,
+            device,
+            options,
+        })?
+        .0)
+    }
+}
 
-        let prompt = build_prompt_token_ids(config, tokenizer, voice_frames, &text_token_ids)?;
-        let prompt_embeddings =
-            build_prompt_embeddings(&modules.embeddings, &prompt, &voice_embeddings, device)?;
-        let audio_token_id = usize::try_from(config.multimodal.audio_model_args.audio_token_id)
-            .map_err(|_| {
-                VoxtralError::InvalidConfig(format!(
-                    "audio_token_id must be non-negative, got {}",
-                    config.multimodal.audio_model_args.audio_token_id
-                ))
-            })?;
-        let audio_embedding = candle(
+struct GenerateAudioInner<'a> {
+    config: &'a crate::VoxtralConfig,
+    tokenizer: &'a VoxtralTokenizerMetadata,
+    modules: &'a VoxtralInferenceModules,
+    text: &'a str,
+    voice: &'a str,
+    voice_embeddings: &'a Tensor,
+    device: &'a Device,
+    options: VoxtralGenerationOptions,
+}
+
+fn generate_audio_inner(
+    request: GenerateAudioInner<'_>,
+) -> Result<(VoxtralGeneratedAudio, VoxtralGenerationTrace)> {
+    let GenerateAudioInner {
+        config,
+        tokenizer,
+        modules,
+        text,
+        voice,
+        voice_embeddings,
+        device,
+        options,
+    } = request;
+    let total_start = Instant::now();
+    let mut trace = VoxtralGenerationTrace::default();
+    let dtype = voice_embeddings.dtype();
+
+    let prompt_start = Instant::now();
+    let encoder = tokenizer.encoder()?;
+    let text_token_ids = encoder.encode(text)?;
+    let voice_frames = candle(voice_embeddings.dim(0))?;
+    if let Some(expected_voice_frames) = tokenizer.voice_audio_tokens(voice) {
+        if expected_voice_frames != voice_frames {
+            return Err(VoxtralError::InvalidCheckpoint(format!(
+                "voice {voice:?} has {voice_frames} rows but tekken metadata expects {expected_voice_frames}"
+            )));
+        }
+    }
+
+    let prompt = build_prompt_token_ids(config, tokenizer, voice_frames, &text_token_ids)?;
+    let prompt_embeddings =
+        build_prompt_embeddings(&modules.embeddings, &prompt, voice_embeddings, device)?;
+    let audio_token_id = usize::try_from(config.multimodal.audio_model_args.audio_token_id)
+        .map_err(|_| {
+            VoxtralError::InvalidConfig(format!(
+                "audio_token_id must be non-negative, got {}",
+                config.multimodal.audio_model_args.audio_token_id
+            ))
+        })?;
+    let audio_embedding = candle(
+        modules
+            .embeddings
+            .token_embeddings(&[audio_token_id], device),
+    )?;
+    let mut decode_embeddings = candle(Tensor::cat(&[prompt_embeddings, audio_embedding], 1))?;
+    let mut decode_input = decode_embeddings.clone();
+    let mut language_cache = options.use_kv_cache.then(|| modules.language.new_cache());
+    let timesteps = flow_timesteps(options.flow_steps)?;
+    trace.language_cache = options.use_kv_cache;
+    trace.prompt = prompt_start.elapsed();
+
+    let loop_start = Instant::now();
+    let mut code_frames = Vec::with_capacity(options.max_frames * config.num_codebooks());
+    let mut ended = false;
+
+    for frame_idx in 0..options.max_frames {
+        let language_start = Instant::now();
+        let hidden = if let Some(cache) = language_cache.as_mut() {
+            let start_pos = cache.len();
+            candle(modules.language.forward_causal_cached(
+                &decode_input,
+                start_pos,
+                config.rope_theta,
+                cache,
+            ))?
+        } else {
+            candle(
+                modules
+                    .language
+                    .forward_causal(&decode_embeddings, 0, config.rope_theta),
+            )?
+        };
+        let last_pos = candle(hidden.dim(1))? - 1;
+        let last_hidden = candle(
+            hidden
+                .narrow(1, last_pos, 1)
+                .and_then(|hidden| hidden.reshape((1, config.dim))),
+        )?;
+        trace.language += language_start.elapsed();
+
+        let acoustic_start = Instant::now();
+        let initial_noise = deterministic_noise(
+            options.seed,
+            frame_idx,
+            config.multimodal.audio_model_args.n_acoustic_codebook,
+            dtype,
+            device,
+        )?;
+        let frame_codes = candle(modules.acoustic.predict_frame_codes_from_noise(
+            config,
+            &last_hidden,
+            &initial_noise,
+            &timesteps,
+            options.cfg_alpha,
+        ))?;
+        trace.acoustic += acoustic_start.elapsed();
+        trace
+            .first_frame
+            .get_or_insert_with(|| loop_start.elapsed());
+
+        let frame = candle(frame_codes.to_vec2::<u32>())?.remove(0);
+        if frame[0] == 1 {
+            ended = true;
+            break;
+        }
+        code_frames.extend_from_slice(&frame);
+
+        let next_embedding = candle(
             modules
                 .embeddings
-                .token_embeddings(&[audio_token_id], device),
+                .audio_codes_embedding(config, &frame_codes),
         )?;
-        let mut decode_embeddings = candle(Tensor::cat(&[prompt_embeddings, audio_embedding], 1))?;
-        let timesteps = flow_timesteps(options.flow_steps)?;
-        let mut code_frames = Vec::with_capacity(options.max_frames * config.num_codebooks());
-        let mut ended = false;
-
-        for frame_idx in 0..options.max_frames {
-            let hidden = candle(modules.language.forward_causal(
-                &decode_embeddings,
-                0,
-                config.rope_theta,
-            ))?;
-            let last_pos = candle(decode_embeddings.dim(1))? - 1;
-            let last_hidden = candle(
-                hidden
-                    .narrow(1, last_pos, 1)
-                    .and_then(|hidden| hidden.reshape((1, config.dim))),
-            )?;
-            let initial_noise = deterministic_noise(
-                options.seed,
-                frame_idx,
-                config.multimodal.audio_model_args.n_acoustic_codebook,
-                dtype,
-                device,
-            )?;
-            let frame_codes = candle(modules.acoustic.predict_frame_codes_from_noise(
-                config,
-                &last_hidden,
-                &initial_noise,
-                &timesteps,
-                options.cfg_alpha,
-            ))?;
-            let frame = candle(frame_codes.to_vec2::<u32>())?.remove(0);
-            if frame[0] == 1 {
-                ended = true;
-                break;
-            }
-            code_frames.extend_from_slice(&frame);
-
-            let next_embedding = candle(
-                modules
-                    .embeddings
-                    .audio_codes_embedding(config, &frame_codes),
-            )?;
-            let next_embedding = candle(next_embedding.unsqueeze(1))?;
+        let next_embedding = candle(next_embedding.unsqueeze(1))?;
+        if language_cache.is_some() {
+            decode_input = next_embedding;
+        } else {
             decode_embeddings = candle(Tensor::cat(&[decode_embeddings, next_embedding], 1))?;
         }
+    }
+    trace.decode_loop = loop_start.elapsed();
 
-        let frames = code_frames.len() / config.num_codebooks();
-        if frames == 0 {
-            return Err(VoxtralError::Unsupported(
-                "generation produced no audio frames".into(),
-            ));
-        }
-        let codes = candle(Tensor::from_vec(
-            code_frames,
-            (frames, config.num_codebooks()),
-            device,
-        ))?;
-        let codes = candle(codes.transpose(0, 1))?;
-        let codes = candle(codes.unsqueeze(0))?;
-        let waveform = candle(modules.codec.decode_codes_to_waveform(&codes))?;
-        let samples = candle(waveform.to_dtype(DType::F32))?
-            .to_vec3::<f32>()
-            .map_err(|e| VoxtralError::Candle(e.to_string()))?[0][0]
-            .clone();
+    let frames = code_frames.len() / config.num_codebooks();
+    if frames == 0 {
+        return Err(VoxtralError::Unsupported(
+            "generation produced no audio frames".into(),
+        ));
+    }
 
-        Ok(VoxtralGeneratedAudio {
+    let codec_start = Instant::now();
+    let codes = candle(Tensor::from_vec(
+        code_frames,
+        (frames, config.num_codebooks()),
+        device,
+    ))?;
+    let codes = candle(codes.transpose(0, 1))?;
+    let codes = candle(codes.unsqueeze(0))?;
+    let waveform = candle(modules.codec.decode_codes_to_waveform(&codes))?;
+    let samples = candle(waveform.to_dtype(DType::F32))?
+        .to_vec3::<f32>()
+        .map_err(|e| VoxtralError::Candle(e.to_string()))?[0][0]
+        .clone();
+    trace.codec = codec_start.elapsed();
+    trace.total = total_start.elapsed();
+
+    Ok((
+        VoxtralGeneratedAudio {
             samples,
             sample_rate: config.sample_rate(),
             frames,
             ended,
-        })
-    }
+        },
+        trace,
+    ))
 }
 
 fn flow_timesteps(steps: usize) -> Result<Vec<f32>> {

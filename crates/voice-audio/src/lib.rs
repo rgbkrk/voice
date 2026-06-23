@@ -464,6 +464,23 @@ mod tests {
         let bytes = std::fs::read(&path).expect("read wav");
         assert!(bytes.starts_with(b"RIFF"));
         assert_eq!(&bytes[8..12], b"WAVE");
+
+        let mut reader = hound::WavReader::open(&path).expect("read saved wav");
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, 24_000);
+        assert_eq!(spec.bits_per_sample, 32);
+        assert_eq!(spec.sample_format, hound::SampleFormat::Float);
+
+        let decoded = reader
+            .samples::<f32>()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode saved wav samples");
+        assert_eq!(decoded.len(), samples.len());
+        let rms = (decoded.iter().map(|sample| sample * sample).sum::<f32>()
+            / decoded.len() as f32)
+            .sqrt();
+        assert!(rms > 0.0);
         let _ = std::fs::remove_file(path);
     }
 

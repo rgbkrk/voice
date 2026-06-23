@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use hf_hub::api::sync::Api;
 use serde::Deserialize;
 
-use crate::{Result, VoxtralError, VoxtralSource, VoxtralTokenizerMetadata, VoxtralWeightMetadata};
+use crate::{
+    Result, VoxtralCheckpointSummary, VoxtralError, VoxtralSource, VoxtralTokenizerMetadata,
+    VoxtralWeightMetadata,
+};
 
 pub const REALTIME_DEFAULT_REPO: &str = "mistralai/Voxtral-Mini-4B-Realtime-2602";
 pub const REALTIME_CONFIG_FILE: &str = "params.json";
@@ -14,7 +17,12 @@ pub const REALTIME_WEIGHTS_FILE: &str = "consolidated.safetensors";
 pub const REALTIME_SAMPLE_RATE: u32 = 16_000;
 pub const REALTIME_NUM_MEL_BINS: usize = 128;
 pub const REALTIME_TRANSCRIPTION_FORMAT: &str = "streaming";
-pub const REALTIME_EXPECTED_TENSOR_COUNT_UNKNOWN: usize = 0;
+pub const REALTIME_EXPECTED_TENSOR_COUNT: usize = 711;
+const REALTIME_TEXT_ADA_NORM_DIM: usize = 32;
+const REALTIME_ENCODER_PREFIX: &str = "mm_streams_embeddings.embedding_module.whisper_encoder";
+const REALTIME_STREAMS_PREFIX: &str = "mm_streams_embeddings.embedding_module";
+const SAFETENSORS_BF16: &str = "BF16";
+const SAFETENSORS_F32: &str = "F32";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct VoxtralRealtimeConfig {
@@ -149,6 +157,13 @@ pub struct VoxtralRealtimeAssetPaths {
 #[derive(Debug, Clone)]
 pub struct VoxtralRealtimeAssetResolver {
     source: VoxtralSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoxtralRealtimeExpectedTensor {
+    pub name: String,
+    pub dtype: &'static str,
+    pub shape: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -454,7 +469,7 @@ impl VoxtralRealtimeModel {
 
     pub fn checkpoint_summary(&self) -> Option<crate::VoxtralCheckpointSummary> {
         self.weights.as_ref().map(|weights| {
-            weights.summary_with_expected_tensor_count(REALTIME_EXPECTED_TENSOR_COUNT_UNKNOWN)
+            weights.summary_with_expected_tensor_count(REALTIME_EXPECTED_TENSOR_COUNT)
         })
     }
 
@@ -477,7 +492,9 @@ impl VoxtralRealtimeModel {
             validate_tokenizer_metadata(tokenizer, &config)?;
         }
         let weights = if let Some(weights) = &assets.weights {
-            Some(VoxtralWeightMetadata::from_safetensors_file(weights)?)
+            let weights = VoxtralWeightMetadata::from_safetensors_file(weights)?;
+            validate_realtime_checkpoint(&weights, &config)?;
+            Some(weights)
         } else if require_weights {
             return Err(VoxtralError::InvalidCheckpoint(format!(
                 "missing {REALTIME_WEIGHTS_FILE}"
@@ -494,6 +511,237 @@ impl VoxtralRealtimeModel {
             weights,
         })
     }
+}
+
+pub fn validate_realtime_checkpoint(
+    weights: &VoxtralWeightMetadata,
+    config: &VoxtralRealtimeConfig,
+) -> Result<VoxtralCheckpointSummary> {
+    if weights.tensor_count() != REALTIME_EXPECTED_TENSOR_COUNT {
+        return Err(VoxtralError::InvalidCheckpoint(format!(
+            "realtime checkpoint has {} tensors, expected {REALTIME_EXPECTED_TENSOR_COUNT}",
+            weights.tensor_count()
+        )));
+    }
+
+    for expected in expected_realtime_tensors(config) {
+        let tensor = weights.tensor(&expected.name).ok_or_else(|| {
+            VoxtralError::InvalidCheckpoint(format!("missing required tensor {}", expected.name))
+        })?;
+        if tensor.dtype != expected.dtype {
+            return Err(VoxtralError::InvalidCheckpoint(format!(
+                "tensor {} has dtype {}, expected {}",
+                expected.name, tensor.dtype, expected.dtype
+            )));
+        }
+        if tensor.shape != expected.shape {
+            return Err(VoxtralError::InvalidCheckpoint(format!(
+                "tensor {} has shape {:?}, expected {:?}",
+                expected.name, tensor.shape, expected.shape
+            )));
+        }
+    }
+
+    Ok(weights.summary_with_expected_tensor_count(REALTIME_EXPECTED_TENSOR_COUNT))
+}
+
+pub fn expected_realtime_tensors(
+    config: &VoxtralRealtimeConfig,
+) -> Vec<VoxtralRealtimeExpectedTensor> {
+    let mut tensors = Vec::with_capacity(REALTIME_EXPECTED_TENSOR_COUNT);
+    add_realtime_audio_tensors(config, &mut tensors);
+    add_realtime_text_tensors(config, &mut tensors);
+    expected_f32(&mut tensors, "norm.weight", [config.dim]);
+    tensors
+}
+
+fn add_realtime_audio_tensors(
+    config: &VoxtralRealtimeConfig,
+    tensors: &mut Vec<VoxtralRealtimeExpectedTensor>,
+) {
+    let encoder = &config.multimodal.whisper_model_args.encoder_args;
+    let encoding = &encoder.audio_encoding_args;
+    let dim = encoder.dim;
+    let qkv_dim = encoder.n_heads * encoder.head_dim;
+    let hidden = encoder.hidden_dim;
+    let adapter_input_dim = encoder.dim * config.downsample_factor();
+
+    expected_f32(
+        tensors,
+        format!("{REALTIME_ENCODER_PREFIX}.conv_layers.0.conv.weight"),
+        [dim, encoding.num_mel_bins, 3],
+    );
+    expected_f32(
+        tensors,
+        format!("{REALTIME_ENCODER_PREFIX}.conv_layers.0.conv.bias"),
+        [dim],
+    );
+    expected_f32(
+        tensors,
+        format!("{REALTIME_ENCODER_PREFIX}.conv_layers.1.conv.weight"),
+        [dim, dim, 3],
+    );
+    expected_f32(
+        tensors,
+        format!("{REALTIME_ENCODER_PREFIX}.conv_layers.1.conv.bias"),
+        [dim],
+    );
+
+    for layer in 0..encoder.n_layers {
+        let prefix = format!("{REALTIME_ENCODER_PREFIX}.transformer.layers.{layer}");
+        expected_bf16(
+            tensors,
+            format!("{prefix}.attention.wq.weight"),
+            [qkv_dim, dim],
+        );
+        expected_f32(tensors, format!("{prefix}.attention.wq.bias"), [qkv_dim]);
+        expected_bf16(
+            tensors,
+            format!("{prefix}.attention.wk.weight"),
+            [qkv_dim, dim],
+        );
+        expected_bf16(
+            tensors,
+            format!("{prefix}.attention.wv.weight"),
+            [qkv_dim, dim],
+        );
+        expected_f32(tensors, format!("{prefix}.attention.wv.bias"), [qkv_dim]);
+        expected_bf16(
+            tensors,
+            format!("{prefix}.attention.wo.weight"),
+            [dim, qkv_dim],
+        );
+        expected_f32(tensors, format!("{prefix}.attention.wo.bias"), [dim]);
+        expected_f32(tensors, format!("{prefix}.attention_norm.weight"), [dim]);
+        expected_f32(tensors, format!("{prefix}.ffn_norm.weight"), [dim]);
+        expected_bf16(
+            tensors,
+            format!("{prefix}.feed_forward.w1.weight"),
+            [hidden, dim],
+        );
+        expected_bf16(
+            tensors,
+            format!("{prefix}.feed_forward.w2.weight"),
+            [dim, hidden],
+        );
+        expected_f32(tensors, format!("{prefix}.feed_forward.w2.bias"), [dim]);
+        expected_bf16(
+            tensors,
+            format!("{prefix}.feed_forward.w3.weight"),
+            [hidden, dim],
+        );
+    }
+
+    expected_f32(
+        tensors,
+        format!("{REALTIME_ENCODER_PREFIX}.transformer.norm.weight"),
+        [dim],
+    );
+    expected_bf16(
+        tensors,
+        format!("{REALTIME_STREAMS_PREFIX}.audio_language_projection.0.weight"),
+        [config.dim, adapter_input_dim],
+    );
+    expected_bf16(
+        tensors,
+        format!("{REALTIME_STREAMS_PREFIX}.audio_language_projection.2.weight"),
+        [config.dim, config.dim],
+    );
+    expected_bf16(
+        tensors,
+        format!("{REALTIME_STREAMS_PREFIX}.tok_embeddings.weight"),
+        [config.vocab_size, config.dim],
+    );
+}
+
+fn add_realtime_text_tensors(
+    config: &VoxtralRealtimeConfig,
+    tensors: &mut Vec<VoxtralRealtimeExpectedTensor>,
+) {
+    let dim = config.dim;
+    let hidden = config.hidden_dim;
+    let q_dim = config.n_heads * config.head_dim;
+    let kv_dim = config.n_kv_heads * config.head_dim;
+
+    for layer in 0..config.n_layers {
+        let prefix = format!("layers.{layer}");
+        expected_f32(
+            tensors,
+            format!("{prefix}.ada_rms_norm_t_cond.0.weight"),
+            [REALTIME_TEXT_ADA_NORM_DIM, dim],
+        );
+        expected_f32(
+            tensors,
+            format!("{prefix}.ada_rms_norm_t_cond.2.weight"),
+            [dim, REALTIME_TEXT_ADA_NORM_DIM],
+        );
+        expected_bf16(
+            tensors,
+            format!("{prefix}.attention.wq.weight"),
+            [q_dim, dim],
+        );
+        expected_bf16(
+            tensors,
+            format!("{prefix}.attention.wk.weight"),
+            [kv_dim, dim],
+        );
+        expected_bf16(
+            tensors,
+            format!("{prefix}.attention.wv.weight"),
+            [kv_dim, dim],
+        );
+        expected_bf16(
+            tensors,
+            format!("{prefix}.attention.wo.weight"),
+            [dim, q_dim],
+        );
+        expected_f32(tensors, format!("{prefix}.attention_norm.weight"), [dim]);
+        expected_f32(tensors, format!("{prefix}.ffn_norm.weight"), [dim]);
+        expected_bf16(
+            tensors,
+            format!("{prefix}.feed_forward.w1.weight"),
+            [hidden, dim],
+        );
+        expected_bf16(
+            tensors,
+            format!("{prefix}.feed_forward.w2.weight"),
+            [dim, hidden],
+        );
+        expected_bf16(
+            tensors,
+            format!("{prefix}.feed_forward.w3.weight"),
+            [hidden, dim],
+        );
+    }
+}
+
+fn expected_bf16<const N: usize>(
+    tensors: &mut Vec<VoxtralRealtimeExpectedTensor>,
+    name: impl Into<String>,
+    shape: [usize; N],
+) {
+    expected(tensors, name, SAFETENSORS_BF16, shape);
+}
+
+fn expected_f32<const N: usize>(
+    tensors: &mut Vec<VoxtralRealtimeExpectedTensor>,
+    name: impl Into<String>,
+    shape: [usize; N],
+) {
+    expected(tensors, name, SAFETENSORS_F32, shape);
+}
+
+fn expected<const N: usize>(
+    tensors: &mut Vec<VoxtralRealtimeExpectedTensor>,
+    name: impl Into<String>,
+    dtype: &'static str,
+    shape: [usize; N],
+) {
+    tensors.push(VoxtralRealtimeExpectedTensor {
+        name: name.into(),
+        dtype,
+        shape: shape.to_vec(),
+    });
 }
 
 fn validate_tokenizer_metadata(
@@ -701,6 +949,43 @@ mod tests {
     }
 
     #[test]
+    fn expected_realtime_tensor_contract_matches_references() {
+        let config = VoxtralRealtimeConfig::from_json_str(REALTIME_PARAMS_JSON).unwrap();
+        let tensors = expected_realtime_tensors(&config);
+
+        assert_eq!(tensors.len(), REALTIME_EXPECTED_TENSOR_COUNT);
+        assert!(tensors.iter().any(|tensor| {
+            tensor.name == "mm_streams_embeddings.embedding_module.tok_embeddings.weight"
+                && tensor.dtype == SAFETENSORS_BF16
+                && tensor.shape == [131072, 3072]
+        }));
+        assert!(tensors.iter().any(|tensor| {
+            tensor.name == "mm_streams_embeddings.embedding_module.whisper_encoder.conv_layers.0.conv.weight"
+                && tensor.dtype == SAFETENSORS_F32
+                && tensor.shape == [1280, 128, 3]
+        }));
+        assert!(tensors.iter().any(|tensor| {
+            tensor.name
+                == "mm_streams_embeddings.embedding_module.audio_language_projection.0.weight"
+                && tensor.dtype == SAFETENSORS_BF16
+                && tensor.shape == [3072, 5120]
+        }));
+        assert!(tensors.iter().any(|tensor| {
+            tensor.name == "layers.0.ada_rms_norm_t_cond.0.weight"
+                && tensor.dtype == SAFETENSORS_F32
+                && tensor.shape == [32, 3072]
+        }));
+        assert!(tensors.iter().any(|tensor| {
+            tensor.name == "layers.25.feed_forward.w3.weight"
+                && tensor.dtype == SAFETENSORS_BF16
+                && tensor.shape == [9216, 3072]
+        }));
+        assert!(tensors
+            .iter()
+            .any(|tensor| tensor.name == "norm.weight" && tensor.dtype == SAFETENSORS_F32));
+    }
+
+    #[test]
     fn local_realtime_metadata_resolution_does_not_require_weights() {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -740,5 +1025,45 @@ mod tests {
         assert_eq!(tokenizer.special_token_id("[STREAMING_WORD]"), Some(33));
         assert_eq!(tokenizer.special_token_id("[REPEAT_AUDIO_TEXT]"), Some(34));
         assert_eq!(tokenizer.audio.transcription_delay_ms, Some(480));
+    }
+
+    #[test]
+    fn validates_local_realtime_checkpoint_when_env_is_set() {
+        let Ok(dir) = std::env::var("VOXTRAL_REALTIME_LOCAL_DIR") else {
+            return;
+        };
+        if std::env::var("VOXTRAL_REALTIME_LOAD_FULL").as_deref() != Ok("1") {
+            return;
+        }
+
+        let model = VoxtralRealtimeModel::load_from_dir(dir).unwrap();
+        let summary = model.checkpoint_summary().unwrap();
+
+        assert_eq!(summary.tensor_count, REALTIME_EXPECTED_TENSOR_COUNT);
+        assert_eq!(
+            summary.expected_tensor_count,
+            REALTIME_EXPECTED_TENSOR_COUNT
+        );
+        assert_eq!(
+            summary
+                .component_counts
+                .get(&crate::WeightComponent::LanguageModel)
+                .copied(),
+            Some(286)
+        );
+        assert_eq!(
+            summary
+                .component_counts
+                .get(&crate::WeightComponent::RealtimeStreams)
+                .copied(),
+            Some(424)
+        );
+        assert_eq!(
+            summary
+                .component_counts
+                .get(&crate::WeightComponent::FinalNorm)
+                .copied(),
+            Some(1)
+        );
     }
 }

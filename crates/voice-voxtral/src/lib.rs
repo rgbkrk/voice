@@ -40,14 +40,15 @@ pub use prompt::{
     VOXTRAL_NEXT_AUDIO_TEXT_TOKEN_ID, VOXTRAL_REPEAT_AUDIO_TEXT_TOKEN_ID,
 };
 pub use realtime::{
-    VoxtralRealtimeAssetPaths, VoxtralRealtimeAssetResolver, VoxtralRealtimeAudioEncoderConfig,
+    expected_realtime_tensors, validate_realtime_checkpoint, VoxtralRealtimeAssetPaths,
+    VoxtralRealtimeAssetResolver, VoxtralRealtimeAudioEncoderConfig,
     VoxtralRealtimeAudioEncodingConfig, VoxtralRealtimeConfig, VoxtralRealtimeDownsampleConfig,
-    VoxtralRealtimeModel, VoxtralRealtimeMultimodalConfig, VoxtralRealtimeTransformersAudioConfig,
-    VoxtralRealtimeTransformersConfig, VoxtralRealtimeTransformersTextConfig,
-    VoxtralRealtimeWhisperModelConfig, REALTIME_CONFIG_FILE, REALTIME_DEFAULT_REPO,
-    REALTIME_EXPECTED_TENSOR_COUNT_UNKNOWN, REALTIME_HF_CONFIG_FILE, REALTIME_NUM_MEL_BINS,
-    REALTIME_PROCESSOR_CONFIG_FILE, REALTIME_SAMPLE_RATE, REALTIME_TOKENIZER_FILE,
-    REALTIME_TRANSCRIPTION_FORMAT, REALTIME_WEIGHTS_FILE,
+    VoxtralRealtimeExpectedTensor, VoxtralRealtimeModel, VoxtralRealtimeMultimodalConfig,
+    VoxtralRealtimeTransformersAudioConfig, VoxtralRealtimeTransformersConfig,
+    VoxtralRealtimeTransformersTextConfig, VoxtralRealtimeWhisperModelConfig, REALTIME_CONFIG_FILE,
+    REALTIME_DEFAULT_REPO, REALTIME_EXPECTED_TENSOR_COUNT, REALTIME_HF_CONFIG_FILE,
+    REALTIME_NUM_MEL_BINS, REALTIME_PROCESSOR_CONFIG_FILE, REALTIME_SAMPLE_RATE,
+    REALTIME_TOKENIZER_FILE, REALTIME_TRANSCRIPTION_FORMAT, REALTIME_WEIGHTS_FILE,
 };
 pub use streaming::{
     plan_codec_chunk, VoxtralCodecChunk, VoxtralStreamingConfig, DEFAULT_CODEC_CHUNK_FRAMES,

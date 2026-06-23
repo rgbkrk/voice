@@ -17,6 +17,7 @@ pub enum WeightComponent {
     AudioTokenizer,
     LanguageModel,
     MultimodalEmbeddings,
+    RealtimeStreams,
     FinalNorm,
     Other,
 }
@@ -424,6 +425,8 @@ fn component_for_name(name: &str) -> WeightComponent {
         WeightComponent::LanguageModel
     } else if name.starts_with("mm_audio_embeddings.") {
         WeightComponent::MultimodalEmbeddings
+    } else if name.starts_with("mm_streams_embeddings.") {
+        WeightComponent::RealtimeStreams
     } else if name == "norm.weight" {
         WeightComponent::FinalNorm
     } else {

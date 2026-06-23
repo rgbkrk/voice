@@ -70,8 +70,8 @@ pub enum SttBackend {
 /// Existing callers can continue using `WhisperModel` directly via
 /// `load_model`; this enum is for opt-in backend selection.
 pub enum SttModel {
-    Whisper(WhisperModel),
-    Voxtral(VoxtralRealtimeSttModel),
+    Whisper(Box<WhisperModel>),
+    Voxtral(Box<VoxtralRealtimeSttModel>),
 }
 
 /// Loaded Voxtral Realtime STT model ready for transcription.
@@ -113,7 +113,7 @@ impl SttModel {
         sample_rate: u32,
     ) -> Result<TranscribeResult> {
         match self {
-            Self::Whisper(model) => transcribe_audio(model, samples, sample_rate),
+            Self::Whisper(model) => transcribe_audio(model.as_mut(), samples, sample_rate),
             Self::Voxtral(model) => model.transcribe_audio(samples, sample_rate),
         }
     }
@@ -278,10 +278,10 @@ pub fn load_backend_model_on_device(
     device: Device,
 ) -> Result<SttModel> {
     match backend {
-        SttBackend::Whisper => load_model_on_device(path_or_repo, device).map(SttModel::Whisper),
-        SttBackend::Voxtral => {
-            load_voxtral_realtime_model_on_device(path_or_repo, device).map(SttModel::Voxtral)
-        }
+        SttBackend::Whisper => load_model_on_device(path_or_repo, device)
+            .map(|model| SttModel::Whisper(Box::new(model))),
+        SttBackend::Voxtral => load_voxtral_realtime_model_on_device(path_or_repo, device)
+            .map(|model| SttModel::Voxtral(Box::new(model))),
     }
 }
 

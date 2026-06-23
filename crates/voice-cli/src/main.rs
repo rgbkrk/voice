@@ -1239,18 +1239,16 @@ fn run_say(say_args: SayArgs) {
                         == Some("failed");
                     if failed {
                         eprintln!("Daemon synthesis failed, falling back to local");
-                    } else {
-                        if output_format == Some(voice_audio::AudioOutputFormat::OggOpus) {
-                            if let Some(output_path) = &say_args.output {
-                                if voice_audio::is_ogg_opus_file(output_path) {
-                                    return;
-                                }
-                                let _ = std::fs::remove_file(output_path);
-                                eprintln!("Daemon output was not Ogg/Opus, falling back to local");
+                    } else if output_format == Some(voice_audio::AudioOutputFormat::OggOpus) {
+                        if let Some(output_path) = &say_args.output {
+                            if voice_audio::is_ogg_opus_file(output_path) {
+                                return;
                             }
-                        } else {
-                            return;
+                            let _ = std::fs::remove_file(output_path);
+                            eprintln!("Daemon output was not Ogg/Opus, falling back to local");
                         }
+                    } else {
+                        return;
                     }
                 }
                 Ok(resp) => {

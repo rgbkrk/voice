@@ -108,7 +108,7 @@ struct ZipEntry {
     local_header_offset: u64,
 }
 
-fn find_voice_embedding_data_entry<'a>(entries: &'a [ZipEntry]) -> Result<&'a ZipEntry> {
+fn find_voice_embedding_data_entry(entries: &[ZipEntry]) -> Result<&ZipEntry> {
     for candidate in VOICE_EMBEDDING_DATA_PATHS {
         if let Some(entry) = entries
             .iter()

@@ -69,7 +69,7 @@ pub use realtime_inference::{
     VoxtralRealtimeAudioProjector, VoxtralRealtimeAudioStem, VoxtralRealtimeAudioTransformer,
     VoxtralRealtimeAudioTransformerBlock, VoxtralRealtimeInferenceModules,
     VoxtralRealtimeTextAdaRmsNorm, VoxtralRealtimeTextAttention, VoxtralRealtimeTextDecoder,
-    VoxtralRealtimeTextDecoderBlock, VoxtralRealtimeTextFeedForward,
+    VoxtralRealtimeTextDecoderBlock, VoxtralRealtimeTextFeedForward, VoxtralRealtimeTextGeneration,
     VoxtralRealtimeTokenEmbeddings,
 };
 pub use streaming::{

@@ -105,6 +105,14 @@ pub struct VoxtralRealtimeTextAdaRmsNorm {
     pub hidden_dim: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoxtralRealtimeTextGeneration {
+    pub generated_tokens: Vec<usize>,
+    pub reached_eos: bool,
+    pub prompt_len: usize,
+    pub audio_tokens: usize,
+}
+
 impl VoxtralRealtimeInferenceModules {
     pub fn load(config: &VoxtralRealtimeConfig, vb: VarBuilder) -> Result<Self> {
         let token_embeddings = VoxtralRealtimeTokenEmbeddings::load(config, vb.clone())?;
@@ -515,6 +523,78 @@ impl VoxtralRealtimeTextDecoder {
             .last_mut()
             .expect("hidden_states rank is always at least one") = vocab;
         logits.reshape(output_shape)
+    }
+
+    pub fn greedy_decode_streaming_audio_embeddings(
+        &self,
+        token_embeddings: &VoxtralRealtimeTokenEmbeddings,
+        audio_embeddings: &Tensor,
+        delay_tokens: usize,
+        max_new_tokens: usize,
+    ) -> Result<VoxtralRealtimeTextGeneration> {
+        let prompt = crate::build_realtime_streaming_prompt(delay_tokens);
+        self.greedy_decode_audio_embeddings_with_prompt(
+            token_embeddings,
+            audio_embeddings,
+            &prompt.input_ids,
+            delay_tokens,
+            max_new_tokens,
+        )
+    }
+
+    pub fn greedy_decode_audio_embeddings_with_prompt(
+        &self,
+        token_embeddings: &VoxtralRealtimeTokenEmbeddings,
+        audio_embeddings: &Tensor,
+        prompt_ids: &[usize],
+        delay_tokens: usize,
+        max_new_tokens: usize,
+    ) -> Result<VoxtralRealtimeTextGeneration> {
+        let (batch, audio_tokens, _dim) = audio_embeddings.dims3()?;
+        if batch != 1 {
+            candle_core::bail!("realtime greedy decode currently supports batch=1, got {batch}");
+        }
+        if prompt_ids.is_empty() {
+            candle_core::bail!("realtime prompt must contain at least one token");
+        }
+        if prompt_ids.len() > audio_tokens {
+            candle_core::bail!(
+                "realtime prompt has {} tokens but only {audio_tokens} audio embeddings are available",
+                prompt_ids.len()
+            );
+        }
+
+        let mut input_token_ids = prompt_ids.to_vec();
+        let mut generated_tokens = Vec::new();
+        let mut reached_eos = false;
+        while generated_tokens.len() < max_new_tokens && input_token_ids.len() <= audio_tokens {
+            let seq_len = input_token_ids.len();
+            let text_embeddings =
+                token_embeddings.forward(&input_token_ids, audio_embeddings.device())?;
+            let audio_prefix = audio_embeddings.narrow(1, 0, seq_len)?;
+            let inputs_embeds = (audio_prefix + text_embeddings)?;
+            let hidden = self.forward(&inputs_embeds, 0, delay_tokens)?;
+            let logits = self.logits(&hidden, token_embeddings)?;
+            let vocab = logits.dim(2)?;
+            let last_logits = logits.narrow(1, seq_len - 1, 1)?.reshape((vocab,))?;
+            let token_id = last_logits.argmax(0)?.to_scalar::<u32>()? as usize;
+            generated_tokens.push(token_id);
+            if token_id == crate::REALTIME_EOS_TOKEN_ID {
+                reached_eos = true;
+                break;
+            }
+            if input_token_ids.len() == audio_tokens {
+                break;
+            }
+            input_token_ids.push(token_id);
+        }
+
+        Ok(VoxtralRealtimeTextGeneration {
+            generated_tokens,
+            reached_eos,
+            prompt_len: prompt_ids.len(),
+            audio_tokens,
+        })
     }
 }
 
@@ -1025,6 +1105,42 @@ mod tests {
         assert_eq!(decoder.layers[0].ada_norm.down.weight().dims(), &[32, 8]);
         assert_eq!(hidden.dims(), &[1, 3, 8]);
         assert_eq!(logits.dims(), &[1, 3, 64]);
+    }
+
+    #[test]
+    fn runs_tiny_realtime_greedy_schedule() {
+        let config = tiny_realtime_config();
+        let modules = VoxtralRealtimeInferenceModules::load(
+            &config,
+            VarBuilder::zeros(DType::F32, &Device::Cpu),
+        )
+        .unwrap();
+        let decoder =
+            VoxtralRealtimeTextDecoder::load(&config, VarBuilder::zeros(DType::F32, &Device::Cpu))
+                .unwrap();
+        let audio_embeddings = Tensor::zeros((1, 4, 8), DType::F32, &Device::Cpu).unwrap();
+        let prompt_ids = [
+            crate::REALTIME_BOS_TOKEN_ID,
+            crate::REALTIME_STREAMING_PAD_TOKEN_ID,
+        ];
+
+        let generation = decoder
+            .greedy_decode_audio_embeddings_with_prompt(
+                &modules.token_embeddings,
+                &audio_embeddings,
+                &prompt_ids,
+                1,
+                2,
+            )
+            .unwrap();
+
+        assert_eq!(generation.prompt_len, 2);
+        assert_eq!(generation.audio_tokens, 4);
+        assert!(generation.generated_tokens.len() <= 2);
+        assert!(generation
+            .generated_tokens
+            .iter()
+            .all(|token| *token < config.vocab_size));
     }
 
     #[test]

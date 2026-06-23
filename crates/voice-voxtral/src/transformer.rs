@@ -179,24 +179,43 @@ impl VoxtralAcousticTransformer {
         llm_hidden: &Tensor,
         timestep: &Tensor,
     ) -> Result<Tensor> {
+        let (batch, acoustic_codebooks) = x_t.dims2()?;
+        let (hidden_batch, _) = llm_hidden.dims2()?;
+        if hidden_batch != batch {
+            candle_core::bail!("x_t batch {batch} does not match llm_hidden batch {hidden_batch}");
+        }
         let time_emb = time_embedding(timestep, self.time_projection.weight().dims()[0])?
             .to_dtype(llm_hidden.dtype())?;
-        let time_emb = self.time_projection.forward(&time_emb)?;
-        let llm_hidden = self.llm_projection.forward(llm_hidden)?;
+        let time_emb = linear_forward(&self.time_projection, &time_emb)?;
+        let llm_hidden = linear_forward(&self.llm_projection, llm_hidden)?;
+        let hidden_dim = llm_hidden.dim(1)?;
+        let time_dim = time_emb.dim(1)?;
+        if hidden_dim != time_dim {
+            candle_core::bail!("projected llm/time dims differ: {hidden_dim} vs {time_dim}");
+        }
 
         let inputs = Tensor::cat(
             &[
-                self.input_projection.forward(&x_t.unsqueeze(1)?)?,
-                time_emb.unsqueeze(1)?,
-                llm_hidden.unsqueeze(1)?,
+                linear_forward(
+                    &self.input_projection,
+                    &x_t.reshape((batch, 1, acoustic_codebooks))?,
+                )?,
+                time_emb.reshape((batch, 1, time_dim))?,
+                llm_hidden.reshape((batch, 1, hidden_dim))?,
             ],
             1,
         )?;
+        if inputs.dims() != [batch, 3, hidden_dim] {
+            candle_core::bail!(
+                "expected acoustic transformer input dims [{batch}, 3, {hidden_dim}], got {:?}",
+                inputs.dims()
+            );
+        }
 
         let hidden = self.forward_attention_layers(&inputs)?;
         let hidden = self.norm.forward(&hidden)?;
-        let acoustic_hidden = hidden.narrow(1, 0, 1)?.squeeze(1)?;
-        self.acoustic_codebook_output.forward(&acoustic_hidden)
+        let acoustic_hidden = hidden.narrow(1, 0, 1)?.reshape((batch, hidden_dim))?;
+        linear_forward(&self.acoustic_codebook_output, &acoustic_hidden)
     }
 
     /// Compute masked semantic-codebook logits for one generated frame.
@@ -307,7 +326,7 @@ impl VoxtralAcousticTransformer {
             .broadcast_as(shifted_codes.shape())?;
         let should_decode = semantic_code
             .ne(END_AUDIO_TOKEN_ID as u32)?
-            .unsqueeze(1)?
+            .reshape((batch, 1))?
             .broadcast_as(shifted_codes.shape())?;
 
         should_decode.where_cond(&shifted_codes, &empty_codes)
@@ -400,17 +419,17 @@ impl VoxtralAttention {
 
         let query = self
             .wq
-            .forward(hidden_states)?
+            .forward_compat(hidden_states)?
             .reshape((batch, seq_len, self.n_heads, self.head_dim))?
             .transpose(1, 2)?
             .contiguous()?;
-        let key = self.wk.forward(hidden_states)?.reshape((
+        let key = self.wk.forward_compat(hidden_states)?.reshape((
             batch,
             seq_len,
             self.n_kv_heads,
             self.head_dim,
         ))?;
-        let value = self.wv.forward(hidden_states)?.reshape((
+        let value = self.wv.forward_compat(hidden_states)?.reshape((
             batch,
             seq_len,
             self.n_kv_heads,
@@ -428,7 +447,7 @@ impl VoxtralAttention {
             self.n_heads * self.head_dim,
         ))?;
 
-        self.wo.forward(&output)
+        self.wo.forward_compat(&output)
     }
 }
 
@@ -442,12 +461,38 @@ impl VoxtralFeedForward {
     }
 
     pub fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
-        let gate = self.w1.forward(hidden_states)?;
+        let gate = self.w1.forward_compat(hidden_states)?;
         let gate = Activation::Silu.forward(&gate)?;
-        let up = self.w3.forward(hidden_states)?;
+        let up = self.w3.forward_compat(hidden_states)?;
         let hidden_states = gate.broadcast_mul(&up)?;
-        self.w2.forward(&hidden_states)
+        self.w2.forward_compat(&hidden_states)
     }
+}
+
+trait LinearCompat {
+    fn forward_compat(&self, xs: &Tensor) -> Result<Tensor>;
+}
+
+impl LinearCompat for Linear {
+    fn forward_compat(&self, xs: &Tensor) -> Result<Tensor> {
+        linear_forward(self, xs)
+    }
+}
+
+fn linear_forward(linear: &Linear, xs: &Tensor) -> Result<Tensor> {
+    let dims = xs.dims();
+    if dims.len() <= 2 {
+        return linear.forward(xs);
+    }
+
+    let input_dim = *dims.last().expect("tensor rank checked above");
+    let batch: usize = dims[..dims.len() - 1].iter().product();
+    let flat = xs.reshape((batch, input_dim))?;
+    let flat = linear.forward(&flat)?;
+    let output_dim = linear.weight().dim(0)?;
+    let mut output_shape = dims.to_vec();
+    *output_shape.last_mut().expect("tensor rank checked above") = output_dim;
+    flat.reshape(output_shape)
 }
 
 fn audio_codebook_vocab_size(config: &VoxtralConfig) -> usize {
@@ -708,6 +753,17 @@ mod tests {
 
         assert_eq!(frame_codes.dims(), &[1, 3]);
         assert_eq!(frame_codes.to_vec2::<u32>().unwrap(), vec![vec![1, 2, 2]]);
+    }
+
+    #[test]
+    fn reshapes_acoustic_frame_as_single_sequence_position() {
+        let device = Device::Cpu;
+        let x_t = Tensor::zeros((2, 36), DType::F32, &device).unwrap();
+        let (batch, acoustic_codebooks) = x_t.dims2().unwrap();
+
+        let acoustic_input = x_t.reshape((batch, 1, acoustic_codebooks)).unwrap();
+
+        assert_eq!(acoustic_input.dims(), &[2, 1, 36]);
     }
 
     #[test]

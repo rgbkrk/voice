@@ -1,9 +1,9 @@
 //! Voxtral TTS support primitives.
 //!
 //! This crate starts the native Voxtral integration with configuration,
-//! voice metadata, and asset discovery. It deliberately does not claim a
-//! working forward pass yet; `VoxtralModel` marks the boundary for the future
-//! Candle implementation.
+//! voice metadata, asset discovery, checkpoint validation, typed Candle module
+//! loading, and the first executable acoustic-transformer forward helpers.
+//! End-to-end text-to-audio generation is still follow-up work.
 
 mod assets;
 mod config;

@@ -1,7 +1,14 @@
-use candle_core::Result;
-use candle_nn::{embedding, linear_no_bias, rms_norm, Embedding, Linear, RmsNorm, VarBuilder};
+use candle_core::{DType, Module, Result, Tensor, D};
+use candle_nn::{
+    embedding, linear_no_bias, rms_norm, Activation, Embedding, Linear, RmsNorm, VarBuilder,
+};
 
 use crate::{AcousticTransformerConfig, VoxtralConfig};
+
+const EMPTY_AUDIO_TOKEN_ID: usize = 0;
+const END_AUDIO_TOKEN_ID: usize = 1;
+const AUDIO_SPECIAL_TOKEN_COUNT: usize = 2;
+const TIME_EMBEDDING_THETA: f64 = 10_000.0;
 
 pub struct VoxtralInferenceModules {
     pub embeddings: VoxtralMultimodalEmbeddings,
@@ -151,6 +158,59 @@ impl VoxtralAcousticTransformer {
             norm,
         })
     }
+
+    pub fn forward_attention_layers(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let mut hidden_states = hidden_states.clone();
+        for layer in &self.layers {
+            hidden_states = layer.forward_bidirectional(&hidden_states)?;
+        }
+        Ok(hidden_states)
+    }
+
+    /// Predict the flow-matching velocity for one acoustic frame.
+    ///
+    /// Mirrors vLLM-Omni's `_predict_velocity`: concatenate the noised acoustic
+    /// state, sinusoidal time embedding, and projected LLM hidden state, then run
+    /// the bidirectional acoustic transformer and predict acoustic codebook values
+    /// from the first sequence position.
+    pub fn predict_velocity(
+        &self,
+        x_t: &Tensor,
+        llm_hidden: &Tensor,
+        timestep: &Tensor,
+    ) -> Result<Tensor> {
+        let time_emb = time_embedding(timestep, self.time_projection.weight().dims()[0])?
+            .to_dtype(llm_hidden.dtype())?;
+        let time_emb = self.time_projection.forward(&time_emb)?;
+        let llm_hidden = self.llm_projection.forward(llm_hidden)?;
+
+        let inputs = Tensor::cat(
+            &[
+                self.input_projection.forward(&x_t.unsqueeze(1)?)?,
+                time_emb.unsqueeze(1)?,
+                llm_hidden.unsqueeze(1)?,
+            ],
+            1,
+        )?;
+
+        let hidden = self.forward_attention_layers(&inputs)?;
+        let hidden = self.norm.forward(&hidden)?;
+        let acoustic_hidden = hidden.narrow(1, 0, 1)?.squeeze(1)?;
+        self.acoustic_codebook_output.forward(&acoustic_hidden)
+    }
+
+    /// Compute masked semantic-codebook logits for one generated frame.
+    ///
+    /// `[EMPTY_AUDIO]` is never sampled. `[END_AUDIO]` remains valid, and padded
+    /// positions beyond the semantic codebook are masked out.
+    pub fn semantic_logits(&self, config: &VoxtralConfig, llm_hidden: &Tensor) -> Result<Tensor> {
+        let logits = self
+            .semantic_codebook_output
+            .forward(llm_hidden)?
+            .to_dtype(DType::F32)?;
+        let mask = semantic_logits_mask(config, logits.device())?;
+        logits.broadcast_add(&mask)
+    }
 }
 
 impl VoxtralTransformerBlock {
@@ -192,6 +252,18 @@ impl VoxtralTransformerBlock {
             vb,
         )
     }
+
+    pub fn forward_bidirectional(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let residual = hidden_states.clone();
+        let attention_input = self.attention_norm.forward(hidden_states)?;
+        let attention_output = self.attention.forward_bidirectional(&attention_input)?;
+        let hidden_states = (attention_output + residual)?;
+
+        let residual = hidden_states.clone();
+        let ffn_input = self.ffn_norm.forward(&hidden_states)?;
+        let ffn_output = self.feed_forward.forward(&ffn_input)?;
+        ffn_output + residual
+    }
 }
 
 impl VoxtralAttention {
@@ -220,6 +292,43 @@ impl VoxtralAttention {
             head_dim,
         })
     }
+
+    pub fn forward_bidirectional(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let (batch, seq_len, _dim) = hidden_states.dims3()?;
+        let repeat = self.n_heads / self.n_kv_heads;
+
+        let query = self
+            .wq
+            .forward(hidden_states)?
+            .reshape((batch, seq_len, self.n_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let key = self.wk.forward(hidden_states)?.reshape((
+            batch,
+            seq_len,
+            self.n_kv_heads,
+            self.head_dim,
+        ))?;
+        let value = self.wv.forward(hidden_states)?.reshape((
+            batch,
+            seq_len,
+            self.n_kv_heads,
+            self.head_dim,
+        ))?;
+        let key = repeat_kv(&key, repeat)?.transpose(1, 2)?.contiguous()?;
+        let value = repeat_kv(&value, repeat)?.transpose(1, 2)?.contiguous()?;
+
+        let scale = 1.0f64 / (self.head_dim as f64).sqrt();
+        let scores = (query.matmul(&key.transpose(D::Minus2, D::Minus1)?)? * scale)?;
+        let weights = candle_nn::ops::softmax_last_dim(&scores)?;
+        let output = weights.matmul(&value)?.transpose(1, 2)?.reshape((
+            batch,
+            seq_len,
+            self.n_heads * self.head_dim,
+        ))?;
+
+        self.wo.forward(&output)
+    }
 }
 
 impl VoxtralFeedForward {
@@ -229,6 +338,14 @@ impl VoxtralFeedForward {
         let w3 = linear_no_bias(dim, hidden_dim, vb.pp("w3"))?;
 
         Ok(Self { w1, w2, w3 })
+    }
+
+    pub fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let gate = self.w1.forward(hidden_states)?;
+        let gate = Activation::Silu.forward(&gate)?;
+        let up = self.w3.forward(hidden_states)?;
+        let hidden_states = gate.broadcast_mul(&up)?;
+        self.w2.forward(&hidden_states)
     }
 }
 
@@ -249,6 +366,58 @@ fn semantic_codebook_output_size(config: &VoxtralConfig) -> usize {
 
 fn round_up_to_multiple(value: usize, multiple: usize) -> usize {
     multiple * value.div_ceil(multiple)
+}
+
+fn repeat_kv(hidden_states: &Tensor, repeat: usize) -> Result<Tensor> {
+    if repeat == 1 {
+        return Ok(hidden_states.clone());
+    }
+
+    let (_batch, _seq_len, n_kv_heads, _head_dim) = hidden_states.dims4()?;
+    let mut repeated = Vec::with_capacity(n_kv_heads * repeat);
+    for head_idx in 0..n_kv_heads {
+        let head = hidden_states.narrow(2, head_idx, 1)?;
+        for _ in 0..repeat {
+            repeated.push(head.clone());
+        }
+    }
+    Tensor::cat(&repeated, 2)
+}
+
+fn time_embedding(timestep: &Tensor, dim: usize) -> Result<Tensor> {
+    let timestep = match timestep.dims() {
+        [_batch] => timestep.unsqueeze(1)?,
+        [_batch, 1] => timestep.clone(),
+        _ => candle_core::bail!(
+            "expected timestep shape [batch] or [batch, 1], got {:?}",
+            timestep.dims()
+        ),
+    };
+    let half_dim = dim / 2;
+    let inv_freq: Vec<f32> = (0..half_dim)
+        .map(|idx| (-TIME_EMBEDDING_THETA.ln() * idx as f64 / half_dim as f64).exp() as f32)
+        .collect();
+    let inv_freq =
+        Tensor::new(inv_freq.as_slice(), timestep.device())?.to_dtype(timestep.dtype())?;
+    let angles = timestep.broadcast_mul(&inv_freq.unsqueeze(0)?)?;
+    Tensor::cat(&[angles.cos()?, angles.sin()?], D::Minus1)
+}
+
+fn semantic_logits_mask(config: &VoxtralConfig, device: &candle_core::Device) -> Result<Tensor> {
+    debug_assert_eq!(END_AUDIO_TOKEN_ID, AUDIO_SPECIAL_TOKEN_COUNT - 1);
+    let valid_len =
+        AUDIO_SPECIAL_TOKEN_COUNT + config.multimodal.audio_model_args.semantic_codebook_size;
+    let output_len = semantic_codebook_output_size(config);
+    let mask: Vec<f32> = (0..output_len)
+        .map(|idx| {
+            if idx == EMPTY_AUDIO_TOKEN_ID || idx >= valid_len {
+                f32::NEG_INFINITY
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    Tensor::new(mask.as_slice(), device)
 }
 
 #[cfg(test)]
@@ -369,6 +538,90 @@ mod tests {
         assert_eq!(
             modules.acoustic.semantic_codebook_output.weight().dims(),
             &[128, 8]
+        );
+    }
+
+    #[test]
+    fn runs_tiny_acoustic_transformer_velocity_path() {
+        let config = tiny_config();
+        let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
+        let modules = VoxtralInferenceModules::load(&config, vb).unwrap();
+        let device = Device::Cpu;
+
+        let x_t = Tensor::zeros((2, 2), DType::F32, &device).unwrap();
+        let llm_hidden = Tensor::zeros((2, 8), DType::F32, &device).unwrap();
+        let timestep = Tensor::new(&[0.0f32, 0.5], &device).unwrap();
+
+        let velocity = modules
+            .acoustic
+            .predict_velocity(&x_t, &llm_hidden, &timestep)
+            .unwrap();
+
+        assert_eq!(velocity.dims(), &[2, 2]);
+    }
+
+    #[test]
+    fn masks_tiny_semantic_logits_like_reference() {
+        let config = tiny_config();
+        let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
+        let modules = VoxtralInferenceModules::load(&config, vb).unwrap();
+        let device = Device::Cpu;
+
+        let llm_hidden = Tensor::zeros((1, 8), DType::F32, &device).unwrap();
+        let logits = modules
+            .acoustic
+            .semantic_logits(&config, &llm_hidden)
+            .unwrap();
+        let logits = logits.to_vec2::<f32>().unwrap();
+        let row = &logits[0];
+
+        assert_eq!(row.len(), 128);
+        assert!(
+            row[EMPTY_AUDIO_TOKEN_ID].is_infinite() && row[EMPTY_AUDIO_TOKEN_ID].is_sign_negative()
+        );
+        assert_eq!(row[END_AUDIO_TOKEN_ID], 0.0);
+        assert_eq!(
+            row[AUDIO_SPECIAL_TOKEN_COUNT
+                + config.multimodal.audio_model_args.semantic_codebook_size
+                - 1],
+            0.0
+        );
+        assert!(row[AUDIO_SPECIAL_TOKEN_COUNT
+            + config.multimodal.audio_model_args.semantic_codebook_size]
+            .is_infinite());
+    }
+
+    #[test]
+    fn runs_local_acoustic_forward_when_env_is_set() {
+        let Ok(dir) = std::env::var("VOXTRAL_LOCAL_DIR") else {
+            return;
+        };
+        if std::env::var("VOXTRAL_FORWARD_SMOKE").as_deref() != Ok("1") {
+            return;
+        }
+
+        let device = Device::Cpu;
+        let model = crate::VoxtralModel::load_from_dir(dir).unwrap();
+        let vb = model.var_builder(DType::F32, &device).unwrap();
+        let acoustic_module = VoxtralAcousticTransformer::load(model.config(), vb).unwrap();
+        let audio_model = &model.config().multimodal.audio_model_args;
+        let acoustic = &audio_model.acoustic_transformer_args;
+
+        let x_t = Tensor::zeros((1, audio_model.n_acoustic_codebook), DType::F32, &device).unwrap();
+        let llm_hidden = Tensor::zeros((1, acoustic.input_dim), DType::F32, &device).unwrap();
+        let timestep = Tensor::new(&[0.0f32], &device).unwrap();
+
+        let velocity = acoustic_module
+            .predict_velocity(&x_t, &llm_hidden, &timestep)
+            .unwrap();
+        let semantic_logits = acoustic_module
+            .semantic_logits(model.config(), &llm_hidden)
+            .unwrap();
+
+        assert_eq!(velocity.dims(), &[1, audio_model.n_acoustic_codebook]);
+        assert_eq!(
+            semantic_logits.dims(),
+            &[1, semantic_codebook_output_size(model.config())]
         );
     }
 }

@@ -78,7 +78,7 @@ pub use streaming::{
 };
 pub use tokenizer::{
     TekkenAudioEncodingConfig, TekkenAudioMetadata, TekkenConfig, TekkenSpecialToken,
-    TekkenVocabToken, VoxtralTekkenEncoder, VoxtralTokenizerMetadata,
+    TekkenVocabToken, VoxtralTekkenDecoder, VoxtralTekkenEncoder, VoxtralTokenizerMetadata,
 };
 pub use transformer::{
     VoxtralAcousticTransformer, VoxtralAttention, VoxtralFeedForward, VoxtralInferenceModules,

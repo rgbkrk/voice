@@ -26,6 +26,13 @@ pub struct VoxtralTekkenEncoder {
     default_vocab_size: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct VoxtralTekkenDecoder {
+    token_bytes: HashMap<usize, Vec<u8>>,
+    token_id_offset: usize,
+    default_vocab_size: usize,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TekkenConfig {
     pub pattern: String,
@@ -102,6 +109,10 @@ impl VoxtralTokenizerMetadata {
 
     pub fn encoder(&self) -> Result<VoxtralTekkenEncoder> {
         VoxtralTekkenEncoder::from_metadata(self)
+    }
+
+    pub fn decoder(&self) -> Result<VoxtralTekkenDecoder> {
+        VoxtralTekkenDecoder::from_metadata(self)
     }
 
     pub fn validate_for_config(&self, config: &VoxtralConfig) -> Result<()> {
@@ -337,6 +348,58 @@ impl VoxtralTekkenEncoder {
     }
 }
 
+impl VoxtralTekkenDecoder {
+    pub fn from_metadata(metadata: &VoxtralTokenizerMetadata) -> Result<Self> {
+        let usable_vocab = metadata
+            .config
+            .default_vocab_size
+            .checked_sub(metadata.config.default_num_special_tokens)
+            .ok_or_else(|| {
+                VoxtralError::InvalidTokenizer(format!(
+                    "default_vocab_size {} is smaller than default_num_special_tokens {}",
+                    metadata.config.default_vocab_size, metadata.config.default_num_special_tokens
+                ))
+            })?;
+        let mut token_bytes = HashMap::with_capacity(usable_vocab.min(metadata.vocab.len()));
+        for token in &metadata.vocab {
+            if token.rank >= usable_vocab {
+                continue;
+            }
+            token_bytes.insert(token.rank, decode_base64(&token.token_bytes)?);
+        }
+
+        Ok(Self {
+            token_bytes,
+            token_id_offset: metadata.config.default_num_special_tokens,
+            default_vocab_size: metadata.config.default_vocab_size,
+        })
+    }
+
+    pub fn decode(&self, token_ids: &[usize]) -> String {
+        let mut bytes = Vec::new();
+        for token_id in token_ids {
+            if let Some(token_bytes) = self.token_bytes(*token_id) {
+                bytes.extend_from_slice(token_bytes);
+            }
+        }
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    pub fn decode_token(&self, token_id: usize) -> Option<String> {
+        self.token_bytes(token_id)
+            .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+    }
+
+    pub fn token_bytes(&self, token_id: usize) -> Option<&[u8]> {
+        if token_id < self.token_id_offset || token_id >= self.default_vocab_size {
+            return None;
+        }
+        self.token_bytes
+            .get(&(token_id - self.token_id_offset))
+            .map(Vec::as_slice)
+    }
+}
+
 fn decode_base64(input: &str) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(input.len() * 3 / 4);
     let mut value = 0u32;
@@ -503,6 +566,32 @@ pub(crate) mod tests {
         let encoder = tokenizer.encoder().unwrap();
 
         assert_eq!(encoder.encode("ab a!").unwrap(), vec![41, 42, 37, 43]);
+    }
+
+    #[test]
+    fn decodes_token_ids_to_text_and_skips_specials() {
+        let tokenizer = VoxtralTokenizerMetadata::from_json_str(&tokenizer_json()).unwrap();
+        let decoder = tokenizer.decoder().unwrap();
+
+        assert_eq!(decoder.decode(&[1, 41, 42, 37, 43, 2]), "ab a!");
+        assert_eq!(decoder.decode_token(41).as_deref(), Some("ab"));
+        assert_eq!(decoder.decode_token(1), None);
+    }
+
+    #[test]
+    fn loads_local_tekken_decoder_when_env_is_set() {
+        let Ok(dir) = std::env::var("VOXTRAL_REALTIME_LOCAL_DIR") else {
+            return;
+        };
+        let tokenizer = VoxtralTokenizerMetadata::from_path(
+            std::path::Path::new(&dir).join(crate::REALTIME_TOKENIZER_FILE),
+        )
+        .unwrap();
+        let decoder = tokenizer.decoder().unwrap();
+
+        assert_eq!(tokenizer.config.default_num_special_tokens, 1000);
+        assert_eq!(decoder.decode(&[1, 2, 32]), "");
+        assert!(decoder.decode_token(1000).is_some());
     }
 
     #[test]

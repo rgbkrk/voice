@@ -18,6 +18,15 @@ pub const REALTIME_SAMPLE_RATE: u32 = 16_000;
 pub const REALTIME_NUM_MEL_BINS: usize = 128;
 pub const REALTIME_TRANSCRIPTION_FORMAT: &str = "streaming";
 pub const REALTIME_EXPECTED_TENSOR_COUNT: usize = 711;
+pub const REALTIME_BOS_TOKEN_ID: usize = 1;
+pub const REALTIME_EOS_TOKEN_ID: usize = 2;
+pub const REALTIME_AUDIO_TOKEN_ID: usize = 24;
+pub const REALTIME_BEGIN_AUDIO_TOKEN_ID: usize = 25;
+pub const REALTIME_STREAMING_PAD_TOKEN_ID: usize = 32;
+pub const REALTIME_STREAMING_WORD_TOKEN_ID: usize = 33;
+pub const REALTIME_REPEAT_AUDIO_TEXT_TOKEN_ID: usize = 34;
+pub const REALTIME_DEFAULT_LEFT_PAD_TOKENS: usize = 32;
+pub const REALTIME_DEFAULT_OFFLINE_BUFFER_TOKENS: usize = 10;
 const REALTIME_TEXT_ADA_NORM_DIM: usize = 32;
 const REALTIME_ENCODER_PREFIX: &str = "mm_streams_embeddings.embedding_module.whisper_encoder";
 const REALTIME_STREAMS_PREFIX: &str = "mm_streams_embeddings.embedding_module";
@@ -157,6 +166,26 @@ pub struct VoxtralRealtimeAssetPaths {
 #[derive(Debug, Clone)]
 pub struct VoxtralRealtimeAssetResolver {
     source: VoxtralSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoxtralRealtimePrompt {
+    pub input_ids: Vec<usize>,
+    pub left_pad_tokens: usize,
+    pub delay_tokens: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoxtralRealtimePaddingPlan {
+    pub input_samples: usize,
+    pub raw_audio_length_per_token: usize,
+    pub left_pad_tokens: usize,
+    pub delay_tokens: usize,
+    pub right_pad_tokens: usize,
+    pub align_pad_samples: usize,
+    pub left_pad_samples: usize,
+    pub right_pad_samples: usize,
+    pub padded_samples: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -543,6 +572,145 @@ pub fn validate_realtime_checkpoint(
     }
 
     Ok(weights.summary_with_expected_tensor_count(REALTIME_EXPECTED_TENSOR_COUNT))
+}
+
+pub fn realtime_raw_audio_length_per_token(config: &VoxtralRealtimeConfig) -> Result<usize> {
+    let sample_rate = config.sample_rate() as f64;
+    let raw = sample_rate / config.frame_rate();
+    let rounded = raw.round();
+    if (raw - rounded).abs() > f64::EPSILON {
+        return Err(VoxtralError::InvalidConfig(format!(
+            "sample_rate/frame_rate must be integral, got {raw}"
+        )));
+    }
+    let raw = rounded as usize;
+    if raw == 0 {
+        return Err(VoxtralError::InvalidConfig(
+            "raw audio length per token must be greater than zero".into(),
+        ));
+    }
+    Ok(raw)
+}
+
+pub fn realtime_audio_frames_per_token(config: &VoxtralRealtimeConfig) -> Result<usize> {
+    let raw = realtime_raw_audio_length_per_token(config)?;
+    let hop = config
+        .multimodal
+        .whisper_model_args
+        .encoder_args
+        .audio_encoding_args
+        .hop_length;
+    if hop == 0 || raw % hop != 0 {
+        return Err(VoxtralError::InvalidConfig(format!(
+            "raw audio length per token {raw} must be divisible by hop_length {hop}"
+        )));
+    }
+    Ok(raw / hop)
+}
+
+pub fn realtime_num_audio_tokens_for_samples(
+    config: &VoxtralRealtimeConfig,
+    sample_count: usize,
+) -> Result<usize> {
+    let hop = config
+        .multimodal
+        .whisper_model_args
+        .encoder_args
+        .audio_encoding_args
+        .hop_length;
+    let frames_per_token = realtime_audio_frames_per_token(config)?;
+    let mel_frames = if sample_count % hop == 0 {
+        sample_count / hop
+    } else {
+        sample_count.div_ceil(hop).saturating_sub(1)
+    };
+    Ok(mel_frames.div_ceil(frames_per_token))
+}
+
+pub fn realtime_num_delay_tokens(config: &VoxtralRealtimeConfig, delay_ms: usize) -> Result<usize> {
+    let delay_samples = delay_ms
+        .checked_mul(config.sample_rate() as usize)
+        .ok_or_else(|| VoxtralError::InvalidConfig("delay_ms overflow".into()))?
+        / 1000;
+    realtime_num_audio_tokens_for_samples(config, delay_samples)
+}
+
+pub fn build_realtime_streaming_prompt(delay_tokens: usize) -> VoxtralRealtimePrompt {
+    build_realtime_streaming_prompt_with_left_pad(REALTIME_DEFAULT_LEFT_PAD_TOKENS, delay_tokens)
+}
+
+pub fn build_realtime_streaming_prompt_with_left_pad(
+    left_pad_tokens: usize,
+    delay_tokens: usize,
+) -> VoxtralRealtimePrompt {
+    let mut input_ids = Vec::with_capacity(1 + left_pad_tokens + delay_tokens);
+    input_ids.push(REALTIME_BOS_TOKEN_ID);
+    input_ids.extend(std::iter::repeat_n(
+        REALTIME_STREAMING_PAD_TOKEN_ID,
+        left_pad_tokens + delay_tokens,
+    ));
+    VoxtralRealtimePrompt {
+        input_ids,
+        left_pad_tokens,
+        delay_tokens,
+    }
+}
+
+pub fn plan_realtime_audio_padding(
+    config: &VoxtralRealtimeConfig,
+    sample_count: usize,
+    delay_tokens: usize,
+) -> Result<VoxtralRealtimePaddingPlan> {
+    plan_realtime_audio_padding_with_left_pad(
+        config,
+        sample_count,
+        REALTIME_DEFAULT_LEFT_PAD_TOKENS,
+        delay_tokens,
+    )
+}
+
+pub fn plan_realtime_audio_padding_with_left_pad(
+    config: &VoxtralRealtimeConfig,
+    sample_count: usize,
+    left_pad_tokens: usize,
+    delay_tokens: usize,
+) -> Result<VoxtralRealtimePaddingPlan> {
+    let raw_audio_length_per_token = realtime_raw_audio_length_per_token(config)?;
+    let align_pad_samples = (raw_audio_length_per_token
+        - (sample_count % raw_audio_length_per_token))
+        % raw_audio_length_per_token;
+    let right_pad_tokens = delay_tokens + 1 + REALTIME_DEFAULT_OFFLINE_BUFFER_TOKENS;
+    let left_pad_samples = left_pad_tokens
+        .checked_mul(raw_audio_length_per_token)
+        .ok_or_else(|| VoxtralError::InvalidConfig("left pad overflow".into()))?;
+    let right_pad_samples = right_pad_tokens
+        .checked_mul(raw_audio_length_per_token)
+        .and_then(|padding| padding.checked_add(align_pad_samples))
+        .ok_or_else(|| VoxtralError::InvalidConfig("right pad overflow".into()))?;
+    let padded_samples = sample_count
+        .checked_add(left_pad_samples)
+        .and_then(|samples| samples.checked_add(right_pad_samples))
+        .ok_or_else(|| VoxtralError::InvalidConfig("padded sample count overflow".into()))?;
+
+    Ok(VoxtralRealtimePaddingPlan {
+        input_samples: sample_count,
+        raw_audio_length_per_token,
+        left_pad_tokens,
+        delay_tokens,
+        right_pad_tokens,
+        align_pad_samples,
+        left_pad_samples,
+        right_pad_samples,
+        padded_samples,
+    })
+}
+
+pub fn pad_realtime_audio(samples: &[f32], plan: &VoxtralRealtimePaddingPlan) -> Vec<f32> {
+    let mut padded = vec![0.0; plan.padded_samples];
+    let start = plan.left_pad_samples;
+    let end = start + samples.len();
+    padded[start..end].copy_from_slice(samples);
+    padded
 }
 
 pub fn expected_realtime_tensors(
@@ -983,6 +1151,65 @@ mod tests {
         assert!(tensors
             .iter()
             .any(|tensor| tensor.name == "norm.weight" && tensor.dtype == SAFETENSORS_F32));
+    }
+
+    #[test]
+    fn computes_realtime_audio_token_timing() {
+        let config = VoxtralRealtimeConfig::from_json_str(REALTIME_PARAMS_JSON).unwrap();
+
+        assert_eq!(realtime_raw_audio_length_per_token(&config).unwrap(), 1280);
+        assert_eq!(realtime_audio_frames_per_token(&config).unwrap(), 8);
+        assert_eq!(
+            realtime_num_audio_tokens_for_samples(&config, 7_680).unwrap(),
+            6
+        );
+        assert_eq!(realtime_num_delay_tokens(&config, 480).unwrap(), 6);
+        assert_eq!(realtime_num_delay_tokens(&config, 80).unwrap(), 1);
+        assert_eq!(realtime_num_delay_tokens(&config, 2_400).unwrap(), 30);
+        assert_eq!(
+            realtime_num_audio_tokens_for_samples(&config, 16_000).unwrap(),
+            13
+        );
+    }
+
+    #[test]
+    fn builds_default_realtime_streaming_prompt() {
+        let prompt = build_realtime_streaming_prompt(6);
+
+        assert_eq!(prompt.left_pad_tokens, 32);
+        assert_eq!(prompt.delay_tokens, 6);
+        assert_eq!(prompt.input_ids.len(), 39);
+        assert_eq!(prompt.input_ids[0], REALTIME_BOS_TOKEN_ID);
+        assert!(prompt.input_ids[1..]
+            .iter()
+            .all(|id| *id == REALTIME_STREAMING_PAD_TOKEN_ID));
+    }
+
+    #[test]
+    fn plans_and_applies_offline_streaming_audio_padding() {
+        let config = VoxtralRealtimeConfig::from_json_str(REALTIME_PARAMS_JSON).unwrap();
+        let samples = vec![0.25; 16_000];
+        let plan = plan_realtime_audio_padding(&config, samples.len(), 6).unwrap();
+
+        assert_eq!(plan.raw_audio_length_per_token, 1280);
+        assert_eq!(plan.left_pad_samples, 40_960);
+        assert_eq!(plan.align_pad_samples, 640);
+        assert_eq!(plan.right_pad_tokens, 17);
+        assert_eq!(plan.right_pad_samples, 22_400);
+        assert_eq!(plan.padded_samples, 79_360);
+
+        let padded = pad_realtime_audio(&samples, &plan);
+        assert_eq!(padded.len(), plan.padded_samples);
+        assert!(padded[..plan.left_pad_samples]
+            .iter()
+            .all(|sample| *sample == 0.0));
+        assert_eq!(
+            &padded[plan.left_pad_samples..plan.left_pad_samples + samples.len()],
+            samples.as_slice()
+        );
+        assert!(padded[plan.left_pad_samples + samples.len()..]
+            .iter()
+            .all(|sample| *sample == 0.0));
     }
 
     #[test]

@@ -211,6 +211,107 @@ impl VoxtralAcousticTransformer {
         let mask = semantic_logits_mask(config, logits.device())?;
         logits.broadcast_add(&mask)
     }
+
+    /// Predict one frame of semantic + acoustic audio codebook IDs.
+    ///
+    /// This mirrors vLLM-Omni's `forward`/`decode_one_frame` boundary but keeps
+    /// the stochastic policy outside this module: callers provide the initial
+    /// acoustic noise and the Euler timestep schedule.
+    pub fn predict_frame_codes_from_noise(
+        &self,
+        config: &VoxtralConfig,
+        llm_hidden: &Tensor,
+        initial_noise: &Tensor,
+        timesteps: &[f32],
+        cfg_alpha: f32,
+    ) -> Result<Tensor> {
+        if timesteps.len() < 2 {
+            candle_core::bail!("expected at least two timesteps, got {}", timesteps.len());
+        }
+
+        let semantic_code = self
+            .semantic_logits(config, llm_hidden)?
+            .argmax_keepdim(D::Minus1)?;
+        let acoustic_codes = self.decode_acoustic_codes_from_noise(
+            config,
+            &semantic_code.squeeze(1)?,
+            llm_hidden,
+            initial_noise,
+            timesteps,
+            cfg_alpha,
+        )?;
+
+        Tensor::cat(&[semantic_code.to_dtype(DType::U32)?, acoustic_codes], 1)
+    }
+
+    fn decode_acoustic_codes_from_noise(
+        &self,
+        config: &VoxtralConfig,
+        semantic_code: &Tensor,
+        llm_hidden: &Tensor,
+        initial_noise: &Tensor,
+        timesteps: &[f32],
+        cfg_alpha: f32,
+    ) -> Result<Tensor> {
+        let audio_model = &config.multimodal.audio_model_args;
+        let (batch, acoustic_codebooks) = initial_noise.dims2()?;
+        let (hidden_batch, hidden_dim) = llm_hidden.dims2()?;
+        if batch != hidden_batch {
+            candle_core::bail!(
+                "initial_noise batch {} does not match llm_hidden batch {}",
+                batch,
+                hidden_batch
+            );
+        }
+        if acoustic_codebooks != audio_model.n_acoustic_codebook {
+            candle_core::bail!(
+                "initial_noise has {} acoustic codebooks, expected {}",
+                acoustic_codebooks,
+                audio_model.n_acoustic_codebook
+            );
+        }
+        if hidden_dim != audio_model.acoustic_transformer_args.input_dim {
+            candle_core::bail!(
+                "llm_hidden dim {} does not match acoustic input dim {}",
+                hidden_dim,
+                audio_model.acoustic_transformer_args.input_dim
+            );
+        }
+
+        let device = llm_hidden.device();
+        let dtype = llm_hidden.dtype();
+        let llm_hidden_zero = Tensor::zeros_like(llm_hidden)?;
+        let mut sampled = initial_noise.to_dtype(dtype)?;
+
+        for step in timesteps.windows(2) {
+            let t = step[0];
+            let dt = step[1] - step[0];
+            let t_batched = vec![t; batch * 2];
+            let t_batched = Tensor::new(t_batched.as_slice(), device)?.to_dtype(dtype)?;
+            let x_batched = Tensor::cat(&[&sampled, &sampled], 0)?;
+            let llm_batched = Tensor::cat(&[llm_hidden, &llm_hidden_zero], 0)?;
+
+            let velocity = self.predict_velocity(&x_batched, &llm_batched, &t_batched)?;
+            let conditional = velocity.narrow(0, 0, batch)?;
+            let unconditional = velocity.narrow(0, batch, batch)?;
+            let guided =
+                ((conditional * cfg_alpha as f64)? + (unconditional * (1.0 - cfg_alpha) as f64)?)?;
+            sampled = (sampled + (guided * dt as f64)?)?;
+        }
+
+        let scaled = (((sampled.clamp(-1.0f32, 1.0f32)? + 1.0)? * 0.5)?
+            * (audio_model.acoustic_codebook_size - 1) as f64)?;
+        let shifted_codes =
+            (scaled.round()? + AUDIO_SPECIAL_TOKEN_COUNT as f64)?.to_dtype(DType::U32)?;
+        let empty_codes = Tensor::new(AUDIO_SPECIAL_TOKEN_COUNT as u32, device)?
+            .broadcast_as(shifted_codes.shape())?;
+        let should_decode = semantic_code
+            .ne(END_AUDIO_TOKEN_ID as u32)?
+            .unsqueeze(1)?
+            .broadcast_as(shifted_codes.shape())?;
+
+        should_decode.where_cond(&shifted_codes, &empty_codes)
+    }
 }
 
 impl VoxtralTransformerBlock {
@@ -592,6 +693,24 @@ mod tests {
     }
 
     #[test]
+    fn predicts_tiny_frame_codes_from_supplied_noise() {
+        let config = tiny_config();
+        let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
+        let modules = VoxtralInferenceModules::load(&config, vb).unwrap();
+        let device = Device::Cpu;
+
+        let llm_hidden = Tensor::zeros((1, 8), DType::F32, &device).unwrap();
+        let initial_noise = Tensor::zeros((1, 2), DType::F32, &device).unwrap();
+        let frame_codes = modules
+            .acoustic
+            .predict_frame_codes_from_noise(&config, &llm_hidden, &initial_noise, &[0.0, 1.0], 1.2)
+            .unwrap();
+
+        assert_eq!(frame_codes.dims(), &[1, 3]);
+        assert_eq!(frame_codes.to_vec2::<u32>().unwrap(), vec![vec![1, 2, 2]]);
+    }
+
+    #[test]
     fn runs_local_acoustic_forward_when_env_is_set() {
         let Ok(dir) = std::env::var("VOXTRAL_LOCAL_DIR") else {
             return;
@@ -617,11 +736,15 @@ mod tests {
         let semantic_logits = acoustic_module
             .semantic_logits(model.config(), &llm_hidden)
             .unwrap();
+        let frame_codes = acoustic_module
+            .predict_frame_codes_from_noise(model.config(), &llm_hidden, &x_t, &[0.0, 1.0], 1.2)
+            .unwrap();
 
         assert_eq!(velocity.dims(), &[1, audio_model.n_acoustic_codebook]);
         assert_eq!(
             semantic_logits.dims(),
             &[1, semantic_codebook_output_size(model.config())]
         );
+        assert_eq!(frame_codes.dims(), &[1, model.config().num_codebooks()]);
     }
 }

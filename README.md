@@ -640,6 +640,7 @@ All other voices are fetched from HuggingFace Hub on first use:
 | [`voice-tts`](https://crates.io/crates/voice-tts) | Core TTS library — model loading and inference |
 | [`voice-stt`](https://crates.io/crates/voice-stt) | Speech-to-text library — Whisper transcription, resampling |
 | [`voice-kokoro`](https://crates.io/crates/voice-kokoro) | Kokoro TTS backend — ALBERT encoder, prosody predictor, iSTFT decoder |
+| [`voice-voxtral`](crates/voice-voxtral) | Experimental Voxtral TTS foundation — config parsing, asset discovery, preset voices |
 | [`voice-whisper`](https://crates.io/crates/voice-whisper) | Whisper STT backend — greedy decoding, GPU mel spectrogram |
 | [`voice-g2p`](https://crates.io/crates/voice-g2p) | Grapheme-to-phoneme — misaki dictionary + embedded OOV fallback |
 
@@ -709,6 +710,12 @@ fn main() -> voice_stt::Result<()> {
 - **G2P pipeline**: Ports [misaki](https://github.com/hexgrad/misaki)'s English G2P — POS tagging (embedded averaged perceptron), 90k gold + 93k silver dictionary entries, morphological decomposition, number/currency handling, embedded OOV fallback
 - **Inference**: StyleTTS2-based model with ISTFT vocoder head. Audio chunks stream to speakers as they're generated — the first chunk plays while subsequent chunks are still synthesizing
 - **Startup**: Model loads in a background thread while text resolution, G2P, and voice loading happen on the main thread
+
+### TTS: Voxtral (experimental)
+
+- **Status**: `voice-voxtral` is a foundation crate only; native audio generation is not implemented yet.
+- **Scope**: Parses Voxtral `params.json`, exposes the official preset voice IDs, and resolves local or HuggingFace metadata without downloading the 8 GB weights by default.
+- **Next milestones**: Mistral/Tekken tokenizer parity, audio codebook parsing, acoustic transformer inference, and the audio tokenizer decoder.
 
 ### STT: Whisper (distil-large-v3 / distil-medium.en)
 

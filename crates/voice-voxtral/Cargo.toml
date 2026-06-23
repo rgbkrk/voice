@@ -1,0 +1,15 @@
+[package]
+name = "voice-voxtral"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+description = "Voxtral TTS model support for the voice toolkit"
+license = "MIT"
+repository = "https://github.com/rgbkrk/voice"
+readme = "README.md"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hf-hub = { workspace = true }

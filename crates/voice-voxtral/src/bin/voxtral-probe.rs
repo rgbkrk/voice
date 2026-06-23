@@ -1,5 +1,8 @@
 use std::env;
 use std::error::Error;
+use std::f32::consts::TAU;
+use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 use candle_core::{DType, Device, Module, Tensor};
@@ -21,6 +24,10 @@ struct Args {
     language_forward: bool,
     text: String,
     voice: String,
+    output_wav: Option<PathBuf>,
+    max_frames: usize,
+    seed: u64,
+    flow_steps: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,7 +151,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    if args.load_modules || args.acoustic_forward || args.language_forward {
+    if args.load_modules
+        || args.acoustic_forward
+        || args.language_forward
+        || args.output_wav.is_some()
+    {
         let modules = model.load_inference_modules(args.dtype, &device)?;
         println!(
             "probe.load_modules.language_layers={}",
@@ -305,6 +316,98 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
         }
 
+        if let Some(output_wav) = &args.output_wav {
+            let tokenizer = model
+                .tokenizer()
+                .ok_or("model did not include tekken.json")?;
+            let encoder = tokenizer.encoder()?;
+            let text_token_ids = encoder.encode(&args.text)?;
+            let assets = model
+                .assets()
+                .ok_or("model did not include resolved assets")?;
+            let voice_path = assets
+                .voice_embeddings
+                .get(&args.voice)
+                .ok_or_else(|| format!("voice embedding {:?} was not resolved", args.voice))?;
+            let voice_embeddings = load_voice_embedding(voice_path, args.dtype, &device)?;
+            let voice_frames = voice_embeddings.dim(0)?;
+            if let Some(expected_voice_frames) = tokenizer.voice_audio_tokens(&args.voice) {
+                if expected_voice_frames != voice_frames {
+                    return Err(format!(
+                        "voice {:?} has {voice_frames} rows but tekken metadata expects {expected_voice_frames}",
+                        args.voice
+                    )
+                    .into());
+                }
+            }
+            let prompt = build_prompt_token_ids(config, tokenizer, voice_frames, &text_token_ids)?;
+            let prompt_embeddings =
+                build_prompt_embeddings(&modules.embeddings, &prompt, &voice_embeddings, &device)?;
+            let audio_token_id = usize::try_from(config.multimodal.audio_model_args.audio_token_id)
+                .map_err(|_| "audio_token_id must be non-negative")?;
+            let audio_embedding = modules
+                .embeddings
+                .token_embeddings(&[audio_token_id], &device)?;
+            let mut decode_embeddings = Tensor::cat(&[prompt_embeddings, audio_embedding], 1)?;
+            let timesteps = flow_timesteps(args.flow_steps)?;
+            let mut code_frames = Vec::with_capacity(args.max_frames * config.num_codebooks());
+
+            for frame_idx in 0..args.max_frames {
+                let hidden =
+                    modules
+                        .language
+                        .forward_causal(&decode_embeddings, 0, config.rope_theta)?;
+                let last_hidden = hidden
+                    .narrow(1, decode_embeddings.dim(1)? - 1, 1)?
+                    .reshape((1, config.dim))?;
+                let initial_noise = deterministic_noise(
+                    args.seed,
+                    frame_idx,
+                    config.multimodal.audio_model_args.n_acoustic_codebook,
+                    args.dtype,
+                    &device,
+                )?;
+                let frame_codes = modules.acoustic.predict_frame_codes_from_noise(
+                    config,
+                    &last_hidden,
+                    &initial_noise,
+                    &timesteps,
+                    1.2,
+                )?;
+                let frame = frame_codes.to_vec2::<u32>()?.remove(0);
+                if frame[0] == 1 {
+                    println!("probe.generate_wav.end_audio_frame={frame_idx}");
+                    break;
+                }
+                code_frames.extend_from_slice(&frame);
+
+                let next_embedding = modules
+                    .embeddings
+                    .audio_codes_embedding(config, &frame_codes)?
+                    .unsqueeze(1)?;
+                decode_embeddings = Tensor::cat(&[decode_embeddings, next_embedding], 1)?;
+                println!(
+                    "probe.generate_wav.frame.{frame_idx}.semantic_code={}",
+                    frame[0]
+                );
+            }
+
+            let frames = code_frames.len() / config.num_codebooks();
+            if frames == 0 {
+                return Err("generation produced no audio frames".into());
+            }
+            let codes = Tensor::from_vec(code_frames, (frames, config.num_codebooks()), &device)?
+                .transpose(0, 1)?
+                .unsqueeze(0)?;
+            let waveform = modules.codec.decode_codes_to_waveform(&codes)?;
+            let samples = waveform.to_dtype(DType::F32)?.to_vec3::<f32>()?[0][0].clone();
+            write_wav_pcm16(output_wav, &samples, config.sample_rate())?;
+
+            println!("probe.generate_wav.frames={frames}");
+            println!("probe.generate_wav.samples={}", samples.len());
+            println!("probe.generate_wav.output={}", output_wav.display());
+        }
+
         if args.acoustic_forward {
             let audio_model = &config.multimodal.audio_model_args;
             let acoustic = &audio_model.acoustic_transformer_args;
@@ -395,6 +498,10 @@ impl Args {
         let mut language_forward = false;
         let mut text = "Voxtral support is running from native Rust.".to_string();
         let mut voice = "casual_male".to_string();
+        let mut output_wav = None;
+        let mut max_frames = 8;
+        let mut seed = 0x5658_5452_414c;
+        let mut flow_steps = 7;
 
         let mut raw = env::args().skip(1);
         while let Some(arg) = raw.next() {
@@ -427,6 +534,21 @@ impl Args {
                 "--voice" => {
                     voice = raw.next().ok_or("--voice requires a value")?;
                 }
+                "--output-wav" => {
+                    output_wav = Some(PathBuf::from(
+                        raw.next().ok_or("--output-wav requires a path")?,
+                    ));
+                    load_modules = true;
+                }
+                "--max-frames" => {
+                    max_frames = raw.next().ok_or("--max-frames requires a value")?.parse()?;
+                }
+                "--seed" => {
+                    seed = raw.next().ok_or("--seed requires a value")?.parse()?;
+                }
+                "--flow-steps" => {
+                    flow_steps = raw.next().ok_or("--flow-steps requires a value")?.parse()?;
+                }
                 "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
@@ -450,6 +572,10 @@ impl Args {
             language_forward,
             text,
             voice,
+            output_wav,
+            max_frames,
+            seed,
+            flow_steps,
         })
     }
 }
@@ -492,6 +618,97 @@ fn parse_dtype(raw: &str) -> Result<DType, Box<dyn Error>> {
 
 fn print_help() {
     println!(
-        "Usage: voxtral-probe --model-dir PATH [--device cpu|metal] [--dtype f32|f16|bf16] [--load-norm] [--linear-smoke] [--load-modules] [--acoustic-forward] [--language-forward] [--voice VOICE] [--text TEXT]"
+        "Usage: voxtral-probe --model-dir PATH [--device cpu|metal] [--dtype f32|f16|bf16] [--load-norm] [--linear-smoke] [--load-modules] [--acoustic-forward] [--language-forward] [--voice VOICE] [--text TEXT] [--output-wav PATH] [--max-frames N] [--flow-steps N] [--seed N]"
     );
+}
+
+fn flow_timesteps(steps: usize) -> Result<Vec<f32>, Box<dyn Error>> {
+    if steps == 0 {
+        return Err("--flow-steps must be greater than zero".into());
+    }
+    Ok((0..=steps).map(|step| step as f32 / steps as f32).collect())
+}
+
+fn deterministic_noise(
+    seed: u64,
+    frame_idx: usize,
+    len: usize,
+    dtype: DType,
+    device: &Device,
+) -> Result<Tensor, Box<dyn Error>> {
+    let frame_seed = (frame_idx as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let mut rng = XorShift64::new(seed ^ frame_seed);
+    let mut values = Vec::with_capacity(len);
+    while values.len() < len {
+        let u1 = rng.next_f32().max(f32::MIN_POSITIVE);
+        let u2 = rng.next_f32();
+        let radius = (-2.0 * u1.ln()).sqrt();
+        values.push(radius * (TAU * u2).cos());
+        if values.len() < len {
+            values.push(radius * (TAU * u2).sin());
+        }
+    }
+    Ok(Tensor::from_vec(values, (1, len), device)?.to_dtype(dtype)?)
+}
+
+struct XorShift64 {
+    state: u64,
+}
+
+impl XorShift64 {
+    fn new(seed: u64) -> Self {
+        Self {
+            state: if seed == 0 {
+                0x1234_5678_abcd_ef01
+            } else {
+                seed
+            },
+        }
+    }
+
+    fn next_f32(&mut self) -> f32 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        ((x >> 40) as f32) / ((1u64 << 24) as f32)
+    }
+}
+
+fn write_wav_pcm16(
+    path: &PathBuf,
+    samples: &[f32],
+    sample_rate: u32,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    let data_bytes = samples.len() as u32 * 2;
+    let riff_size = 36u32
+        .checked_add(data_bytes)
+        .ok_or("WAV output is too large")?;
+    let mut file = fs::File::create(path)?;
+    file.write_all(b"RIFF")?;
+    file.write_all(&riff_size.to_le_bytes())?;
+    file.write_all(b"WAVE")?;
+    file.write_all(b"fmt ")?;
+    file.write_all(&16u32.to_le_bytes())?;
+    file.write_all(&1u16.to_le_bytes())?;
+    file.write_all(&1u16.to_le_bytes())?;
+    file.write_all(&sample_rate.to_le_bytes())?;
+    file.write_all(&(sample_rate * 2).to_le_bytes())?;
+    file.write_all(&2u16.to_le_bytes())?;
+    file.write_all(&16u16.to_le_bytes())?;
+    file.write_all(b"data")?;
+    file.write_all(&data_bytes.to_le_bytes())?;
+    for sample in samples {
+        let sample = sample.clamp(-1.0, 1.0);
+        let pcm = (sample * i16::MAX as f32) as i16;
+        file.write_all(&pcm.to_le_bytes())?;
+    }
+    Ok(())
 }

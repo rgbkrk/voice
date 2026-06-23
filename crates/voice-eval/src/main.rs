@@ -15,6 +15,14 @@ struct Args {
     #[arg(long, default_value = "The quick brown fox jumps over the lazy dog.")]
     text: String,
 
+    /// Existing audio file to transcribe and score instead of synthesizing.
+    #[arg(long = "input-wav")]
+    input_wav: Option<PathBuf>,
+
+    /// Reference text to score against when --input-wav is used.
+    #[arg(long = "expected-text")]
+    expected_text: Option<String>,
+
     /// Kokoro voice name.
     #[arg(short, long, default_value = "af_heart")]
     voice: String,
@@ -62,20 +70,44 @@ struct EvalReport {
     word_error_count: usize,
     word_error_rate: Option<f32>,
     stt_token_count: usize,
+    input_wav: Option<PathBuf>,
     output_wav: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let phoneme_chunks = voice_g2p::text_to_phoneme_chunks(&args.text)?;
-    let synthesis_mode = if args.stochastic {
-        voice_tts::SynthesisMode::Stochastic
-    } else {
-        voice_tts::SynthesisMode::Deterministic
-    };
+    let reference_text = args
+        .expected_text
+        .clone()
+        .unwrap_or_else(|| args.text.clone());
+    let (samples, sample_rate, phoneme_chunks, synthesis_mode) =
+        if let Some(input_wav) = &args.input_wav {
+            let audio = voice_stt::load_audio_file(input_wav)?;
+            (audio.samples, audio.sample_rate, Vec::new(), "input-wav")
+        } else {
+            let phoneme_chunks = voice_g2p::text_to_phoneme_chunks(&args.text)?;
+            let synthesis_mode = if args.stochastic {
+                voice_tts::SynthesisMode::Stochastic
+            } else {
+                voice_tts::SynthesisMode::Deterministic
+            };
+            let (samples, sample_rate) = synthesize(&args, &phoneme_chunks, synthesis_mode)?;
+            (
+                samples,
+                sample_rate,
+                phoneme_chunks,
+                if args.stochastic {
+                    "stochastic"
+                } else {
+                    "deterministic"
+                },
+            )
+        };
 
-    let (samples, sample_rate) = synthesize(&args, &phoneme_chunks, synthesis_mode)?;
+    if args.input_wav.is_some() && args.output_wav.is_some() {
+        return Err("--output-wav cannot be used with --input-wav".into());
+    }
 
     if let Some(path) = &args.output_wav {
         voice_tts::save_wav(&samples, path, sample_rate)?;
@@ -83,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut stt_model = voice_stt::load_model(&args.stt_model)?;
     let transcription = voice_stt::transcribe_audio(&mut stt_model, &samples, sample_rate)?;
-    let wer = word_error_rate(&args.text, &transcription.text);
+    let wer = word_error_rate(&reference_text, &transcription.text);
     let duration_seconds = if sample_rate == 0 {
         0.0
     } else {
@@ -91,15 +123,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let report = EvalReport {
-        text: args.text,
+        text: reference_text,
         voice: args.voice,
         tts_model: args.tts_model,
         stt_model: args.stt_model,
-        synthesis_mode: if args.stochastic {
-            "stochastic"
-        } else {
-            "deterministic"
-        },
+        synthesis_mode,
         sample_rate,
         sample_count: samples.len(),
         duration_seconds,
@@ -111,6 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         word_error_count: wer.distance,
         word_error_rate: wer.rate,
         stt_token_count: transcription.tokens.len(),
+        input_wav: args.input_wav,
         output_wav: args.output_wav,
     };
 
@@ -170,6 +199,9 @@ fn print_text_report(report: &EvalReport) {
     );
     if let Some(path) = &report.output_wav {
         println!("wav: {}", path.display());
+    }
+    if let Some(path) = &report.input_wav {
+        println!("input wav: {}", path.display());
     }
 }
 

@@ -195,6 +195,10 @@ struct SayArgs {
     #[arg(long = "voxtral-pronunciation-aliases")]
     voxtral_pronunciation_aliases: bool,
 
+    /// Choose Voxtral max frames from the post-normalization synthesis text
+    #[arg(long = "voxtral-auto-max-frames")]
+    voxtral_auto_max_frames: bool,
+
     /// Override Voxtral's initial streaming codec chunk size for daemon playback
     #[arg(long = "voxtral-stream-begin-frames")]
     voxtral_stream_begin_frames: Option<usize>,
@@ -397,6 +401,22 @@ fn validate_effective_voxtral_options(options: EffectiveVoxtralOptions) -> Resul
     validate_voxtral_stream_begin_frames(options.stream_begin_frames)
 }
 
+fn apply_auto_voxtral_max_frames(
+    mut options: EffectiveVoxtralOptions,
+    text: &str,
+    enabled: bool,
+) -> EffectiveVoxtralOptions {
+    if enabled {
+        let suggested = voice_voxtral::suggest_max_frames_for_text(text);
+        options.max_frames = if options.max_frames == VOXTRAL_DEFAULT_MAX_FRAMES {
+            suggested
+        } else {
+            options.max_frames.max(suggested)
+        };
+    }
+    options
+}
+
 impl SayArgs {
     fn effective_voxtral_options(&self) -> EffectiveVoxtralOptions {
         effective_voxtral_options(
@@ -542,6 +562,10 @@ struct StreamArgs {
     /// Apply known Voxtral pronunciation aliases before synthesis
     #[arg(long = "voxtral-pronunciation-aliases")]
     voxtral_pronunciation_aliases: bool,
+
+    /// Choose Voxtral max frames from the post-normalization synthesis text
+    #[arg(long = "voxtral-auto-max-frames")]
+    voxtral_auto_max_frames: bool,
 
     /// Override Voxtral's initial streaming codec chunk size
     #[arg(long = "voxtral-stream-begin-frames")]
@@ -783,6 +807,10 @@ struct BenchTtsArgs {
     /// Apply known Voxtral pronunciation aliases before synthesis
     #[arg(long = "voxtral-pronunciation-aliases")]
     voxtral_pronunciation_aliases: bool,
+
+    /// Choose Voxtral max frames from the post-normalization synthesis text
+    #[arg(long = "voxtral-auto-max-frames")]
+    voxtral_auto_max_frames: bool,
 
     /// Override Voxtral's initial streaming codec chunk size for benchmarking
     #[arg(long = "voxtral-stream-begin-frames")]
@@ -1411,6 +1439,7 @@ fn main() {
                     voxtral_realtime: false,
                     voxtral_normalize_text: false,
                     voxtral_pronunciation_aliases: false,
+                    voxtral_auto_max_frames: false,
                     voxtral_stream_begin_frames: None,
                     output: None,
                     format: None,
@@ -1937,6 +1966,11 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         let total_start = Instant::now();
         let text_prep_start = Instant::now();
         let (prepared, _phoneme_overrides) = prepare_bench_text(text, args, TtsEngine::Voxtral);
+        let voxtral = apply_auto_voxtral_max_frames(
+            voxtral,
+            &prepared,
+            args.voxtral_auto_max_frames,
+        );
         let text_prep = text_prep_start.elapsed();
 
         let synth_start = Instant::now();
@@ -2064,6 +2098,15 @@ fn bench_daemon_tts(
         let total_start = Instant::now();
         let text_prep_start = Instant::now();
         let (prepared, _phoneme_overrides) = prepare_bench_text(text, args, engine);
+        let voxtral = if engine == TtsEngine::Voxtral {
+            apply_auto_voxtral_max_frames(
+                voxtral,
+                &prepared,
+                args.voxtral_auto_max_frames,
+            )
+        } else {
+            voxtral
+        };
         let text_prep = text_prep_start.elapsed();
 
         let mut response_at = None;
@@ -2645,6 +2688,11 @@ fn run_say(say_args: SayArgs) {
                     say_args.voxtral_normalize_text,
                     say_args.voxtral_pronunciation_aliases,
                 );
+                let voxtral = apply_auto_voxtral_max_frames(
+                    voxtral,
+                    &text,
+                    say_args.voxtral_auto_max_frames,
+                );
                 let tts_options =
                     daemon_tts_options(say_args.engine, &say_args.voxtral_model, voxtral);
 
@@ -2833,11 +2881,19 @@ fn run_voxtral_say(
         say_args.voxtral_normalize_text,
         say_args.voxtral_pronunciation_aliases,
     );
+    let voxtral = apply_auto_voxtral_max_frames(
+        say_args.effective_voxtral_options(),
+        &text,
+        say_args.voxtral_auto_max_frames,
+    );
+    if let Err(message) = validate_effective_voxtral_options(voxtral) {
+        eprintln!("Error: {message}");
+        std::process::exit(1);
+    }
 
     if (say_args.speed - 1.0).abs() > f32::EPSILON {
         info!("Voxtral does not support --speed yet; generating at model speed");
     }
-    let voxtral = say_args.effective_voxtral_options();
 
     info!("Loading Voxtral TTS model ({})...", say_args.voxtral_model);
     let mut runtime = match voice_voxtral::VoxtralTtsRuntime::load_default(&say_args.voxtral_model)
@@ -2908,6 +2964,11 @@ fn run_stream(stream_args: StreamArgs) {
         stream_args.sub_file.clone(),
         stream_args.voxtral_normalize_text,
         stream_args.voxtral_pronunciation_aliases,
+    );
+    let voxtral = apply_auto_voxtral_max_frames(
+        voxtral,
+        &text,
+        stream_args.voxtral_auto_max_frames,
     );
 
     validate_stream_frame_params(stream_args.sample_rate, stream_args.frame_ms).unwrap_or_else(
@@ -4060,6 +4121,38 @@ mod tests {
     }
 
     #[test]
+    fn auto_voxtral_max_frames_uses_text_estimate_without_lowering_explicit_caps() {
+        let default_options =
+            effective_voxtral_options(VOXTRAL_DEFAULT_MAX_FRAMES, 7, false, None, false);
+        assert_eq!(
+            apply_auto_voxtral_max_frames(
+                default_options,
+                "Vox trell should pronounce Vox trell clearly in a short answer.",
+                true,
+            )
+            .max_frames,
+            56
+        );
+
+        let explicit_high = effective_voxtral_options(80, 7, false, None, false);
+        assert_eq!(
+            apply_auto_voxtral_max_frames(explicit_high, "hello world", true).max_frames,
+            80
+        );
+
+        let realtime = effective_voxtral_options(VOXTRAL_DEFAULT_MAX_FRAMES, 7, false, None, true);
+        assert_eq!(
+            apply_auto_voxtral_max_frames(
+                realtime,
+                "Vox trell should pronounce Vox trell clearly in a short answer.",
+                true,
+            )
+            .max_frames,
+            56
+        );
+    }
+
+    #[test]
     fn pcm_s16le_bytes_to_frames_decodes_little_endian_samples() {
         let bytes = [
             0x00, 0x00, // 0
@@ -4162,12 +4255,14 @@ mod tests {
             "voxtral",
             "--voxtral-normalize-text",
             "--voxtral-pronunciation-aliases",
+            "--voxtral-auto-max-frames",
             "Read ticket A17.",
         ]);
         match say.command {
             Some(Command::Say(args)) => {
                 assert!(args.voxtral_normalize_text);
                 assert!(args.voxtral_pronunciation_aliases);
+                assert!(args.voxtral_auto_max_frames);
             }
             other => panic!("expected say command, got {other:?}"),
         }
@@ -4179,12 +4274,14 @@ mod tests {
             "voxtral",
             "--voxtral-normalize-text",
             "--voxtral-pronunciation-aliases",
+            "--voxtral-auto-max-frames",
             "Read ticket A17.",
         ]);
         match stream.command {
             Some(Command::Stream(args)) => {
                 assert!(args.voxtral_normalize_text);
                 assert!(args.voxtral_pronunciation_aliases);
+                assert!(args.voxtral_auto_max_frames);
             }
             other => panic!("expected stream command, got {other:?}"),
         }
@@ -4197,6 +4294,7 @@ mod tests {
             "voxtral",
             "--voxtral-normalize-text",
             "--voxtral-pronunciation-aliases",
+            "--voxtral-auto-max-frames",
             "Read ticket A17.",
         ]);
         match bench.command {
@@ -4205,6 +4303,7 @@ mod tests {
             })) => {
                 assert!(args.voxtral_normalize_text);
                 assert!(args.voxtral_pronunciation_aliases);
+                assert!(args.voxtral_auto_max_frames);
             }
             other => panic!("expected bench tts command, got {other:?}"),
         }
@@ -4273,6 +4372,7 @@ mod tests {
             voxtral_sync_trace: false,
             voxtral_normalize_text: true,
             voxtral_pronunciation_aliases: false,
+            voxtral_auto_max_frames: false,
             voxtral_stream_begin_frames: None,
             daemon: false,
             stream_sample_rate: 24_000,

@@ -82,7 +82,8 @@ pub use streaming::{
     DEFAULT_CODEC_CHUNK_FRAMES_AT_BEGIN, DEFAULT_CODEC_LEFT_CONTEXT_FRAMES,
 };
 pub use text::{
-    normalize_tts_text, normalize_tts_text_with_options, VoxtralTextNormalizationOptions,
+    normalize_tts_text, normalize_tts_text_with_options, suggest_max_frames_for_text,
+    VoxtralTextNormalizationOptions, DEFAULT_SUGGESTED_MAX_FRAMES, SUGGESTED_MAX_FRAMES_CAP,
 };
 pub use tokenizer::{
     TekkenAudioEncodingConfig, TekkenAudioMetadata, TekkenConfig, TekkenSpecialToken,

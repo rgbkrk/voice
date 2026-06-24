@@ -110,6 +110,10 @@ struct Args {
     #[arg(long = "voxtral-pronunciation-aliases")]
     voxtral_pronunciation_aliases: bool,
 
+    /// Choose Voxtral max frames from the post-normalization synthesis text.
+    #[arg(long = "voxtral-auto-max-frames")]
+    voxtral_auto_max_frames: bool,
+
     /// Initial streaming codec chunk size for Voxtral matrix timing.
     #[arg(long = "voxtral-stream-begin-frames", default_value_t = 2)]
     voxtral_stream_begin_frames: usize,
@@ -205,6 +209,7 @@ struct EvalReport {
     synthesis_mode: &'static str,
     voxtral_text_normalization: bool,
     voxtral_pronunciation_aliases: bool,
+    voxtral_auto_max_frames: bool,
     sample_rate: u32,
     sample_count: usize,
     duration_seconds: f32,
@@ -237,6 +242,7 @@ struct VoxtralMatrixReport {
     sync_trace: bool,
     text_normalization: bool,
     pronunciation_aliases: bool,
+    auto_max_frames: bool,
     eos_scores: bool,
     eos_guard_frames: usize,
     eos_guard_max_rank: usize,
@@ -394,6 +400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         voxtral_text_normalization: args.tts_backend == "voxtral" && args.voxtral_normalize_text,
         voxtral_pronunciation_aliases: args.tts_backend == "voxtral"
             && args.voxtral_pronunciation_aliases,
+        voxtral_auto_max_frames: args.tts_backend == "voxtral" && args.voxtral_auto_max_frames,
         sample_rate,
         sample_count: samples.len(),
         duration_seconds,
@@ -475,8 +482,10 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut rows = Vec::new();
     for (text_index, case) in cases.iter().enumerate() {
-        for &max_frames in &args.matrix_max_frames {
+        for &configured_max_frames in &args.matrix_max_frames {
             for &flow_steps in &args.matrix_flow_steps {
+                let max_frames =
+                    effective_voxtral_max_frames(args, &case.synthesis_text, configured_max_frames);
                 let streaming = voice_voxtral::VoxtralStreamingConfig {
                     chunk_frames_at_begin: args.voxtral_stream_begin_frames,
                     ..Default::default()
@@ -603,6 +612,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         sync_trace: args.voxtral_sync_trace,
         text_normalization: args.voxtral_normalize_text,
         pronunciation_aliases: args.voxtral_pronunciation_aliases,
+        auto_max_frames: args.voxtral_auto_max_frames,
         eos_scores: args.voxtral_eos_scores,
         eos_guard_frames: args.voxtral_eos_guard_frames,
         eos_guard_max_rank: args.voxtral_eos_guard_rank,
@@ -699,6 +709,14 @@ fn maybe_normalize_voxtral_text(args: &Args, text: String) -> String {
     }
 }
 
+fn effective_voxtral_max_frames(args: &Args, synthesis_text: &str, configured: usize) -> usize {
+    if args.voxtral_auto_max_frames {
+        voice_voxtral::suggest_max_frames_for_text(synthesis_text)
+    } else {
+        configured
+    }
+}
+
 fn synthesize_kokoro(
     args: &Args,
     phoneme_chunks: &[String],
@@ -739,7 +757,7 @@ fn synthesize_voxtral(
         text,
         voice_name,
         voice_voxtral::VoxtralGenerationOptions {
-            max_frames: args.max_frames,
+            max_frames: effective_voxtral_max_frames(args, text, args.max_frames),
             seed: args.seed,
             flow_steps: args.flow_steps,
             use_kv_cache: args.voxtral_kv_cache,
@@ -1055,7 +1073,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
     );
     println!("voxtral_matrix.model_load_ms={:.1}", report.model_load_ms);
     println!(
-        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} pronunciation_aliases={} eos_scores={} eos_guard_frames={} eos_guard_max_rank={} eos_guard_max_margin={:.3}",
+        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} pronunciation_aliases={} auto_max_frames={} eos_scores={} eos_guard_frames={} eos_guard_max_rank={} eos_guard_max_margin={:.3}",
         report.matrix_max_frames,
         report.matrix_flow_steps,
         report.stream_begin_frames,
@@ -1063,6 +1081,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
         report.sync_trace,
         report.text_normalization,
         report.pronunciation_aliases,
+        report.auto_max_frames,
         report.eos_scores,
         report.eos_guard_frames,
         report.eos_guard_max_rank,
@@ -1204,6 +1223,9 @@ fn print_text_report(report: &EvalReport) {
     }
     if report.voxtral_pronunciation_aliases {
         println!("voxtral pronunciation aliases: enabled");
+    }
+    if report.voxtral_auto_max_frames {
+        println!("voxtral auto max frames: enabled");
     }
     println!("hypothesis: {}", report.transcription);
     println!("normalized reference: {}", report.normalized_reference);
@@ -1372,6 +1394,7 @@ mod tests {
             "Vox trahl should sound clear.",
             "--voxtral-normalize-text",
             "--voxtral-pronunciation-aliases",
+            "--voxtral-auto-max-frames",
         ])
         .unwrap();
 
@@ -1382,6 +1405,7 @@ mod tests {
         );
         assert!(args.voxtral_normalize_text);
         assert!(args.voxtral_pronunciation_aliases);
+        assert!(args.voxtral_auto_max_frames);
     }
 
     #[test]
@@ -1405,6 +1429,7 @@ mod tests {
             "5,6,7",
             "--voxtral-kv-cache",
             "--voxtral-pronunciation-aliases",
+            "--voxtral-auto-max-frames",
             "--voxtral-eos-scores",
             "--voxtral-eos-guard-frames",
             "8",
@@ -1440,6 +1465,7 @@ mod tests {
         assert_eq!(args.matrix_flow_steps, vec![5, 6, 7]);
         assert!(args.voxtral_kv_cache);
         assert!(args.voxtral_pronunciation_aliases);
+        assert!(args.voxtral_auto_max_frames);
         assert!(args.voxtral_eos_scores);
         assert_eq!(args.voxtral_eos_guard_frames, 8);
         assert_eq!(args.voxtral_eos_guard_rank, 3);
@@ -1580,6 +1606,41 @@ mod tests {
                     synthesis_text: "Kokoro should stay unchanged.".to_string(),
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn auto_voxtral_max_frames_uses_synthesis_text_estimate() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--tts-backend",
+            "voxtral",
+            "--voxtral-auto-max-frames",
+            "--max-frames",
+            "40",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            effective_voxtral_max_frames(
+                &args,
+                "Vox trell should pronounce Vox trell clearly in a short answer.",
+                args.max_frames,
+            ),
+            56
+        );
+
+        let fixed = Args::try_parse_from([
+            "voice-eval",
+            "--tts-backend",
+            "voxtral",
+            "--max-frames",
+            "40",
+        ])
+        .unwrap();
+        assert_eq!(
+            effective_voxtral_max_frames(&fixed, "hello world", fixed.max_frames),
+            40
         );
     }
 

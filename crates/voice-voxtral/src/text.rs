@@ -6,6 +6,9 @@ pub struct VoxtralTextNormalizationOptions {
     pub pronunciation_aliases: bool,
 }
 
+pub const DEFAULT_SUGGESTED_MAX_FRAMES: usize = 32;
+pub const SUGGESTED_MAX_FRAMES_CAP: usize = 64;
+
 /// Normalize numeric text forms that Voxtral currently handles poorly when
 /// they are left as compact written forms.
 pub fn normalize_tts_text(text: &str) -> String {
@@ -32,6 +35,42 @@ pub fn normalize_tts_text_with_options(
         apply_pronunciation_aliases(&text)
     } else {
         text
+    }
+}
+
+pub fn suggest_max_frames_for_text(text: &str) -> usize {
+    let word_count = count_speech_tokens(text);
+    let raw_frames = if word_count <= 4 {
+        DEFAULT_SUGGESTED_MAX_FRAMES
+    } else {
+        DEFAULT_SUGGESTED_MAX_FRAMES + (word_count - 4) * 3
+    };
+    round_up_to_multiple(raw_frames, 8)
+        .clamp(DEFAULT_SUGGESTED_MAX_FRAMES, SUGGESTED_MAX_FRAMES_CAP)
+}
+
+fn count_speech_tokens(text: &str) -> usize {
+    let mut count = 0;
+    let mut in_token = false;
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            if !in_token {
+                count += 1;
+                in_token = true;
+            }
+        } else {
+            in_token = false;
+        }
+    }
+    count
+}
+
+fn round_up_to_multiple(value: usize, multiple: usize) -> usize {
+    debug_assert!(multiple > 0);
+    if value == 0 {
+        0
+    } else {
+        value.div_ceil(multiple) * multiple
     }
 }
 
@@ -324,7 +363,8 @@ fn tens_word(tens: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_tts_text, normalize_tts_text_with_options, VoxtralTextNormalizationOptions,
+        normalize_tts_text, normalize_tts_text_with_options, suggest_max_frames_for_text,
+        VoxtralTextNormalizationOptions,
     };
 
     #[test]
@@ -427,6 +467,31 @@ mod tests {
                 }
             ),
             "Vox trell reads A seventeen at nine thirty PM."
+        );
+    }
+
+    #[test]
+    fn suggested_frame_budget_scales_with_preprocessed_text_length() {
+        assert_eq!(suggest_max_frames_for_text("hello world"), 32);
+        assert_eq!(
+            suggest_max_frames_for_text("A fast reply should arrive naturally."),
+            40
+        );
+        assert_eq!(
+            suggest_max_frames_for_text(
+                "Vox trell should pronounce Vox trell clearly in a short answer."
+            ),
+            56
+        );
+        assert_eq!(
+            suggest_max_frames_for_text(
+                "Read ticket A seventeen, version two point four point one, at nine thirty PM."
+            ),
+            64
+        );
+        assert_eq!(
+            suggest_max_frames_for_text("one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen"),
+            64
         );
     }
 }

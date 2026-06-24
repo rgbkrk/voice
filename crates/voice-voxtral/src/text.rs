@@ -110,10 +110,10 @@ fn replace_ascii_word(text: &str, word: &str, replacement: &str) -> String {
 
 fn is_word_boundary(text: &str, start: usize, end: usize) -> bool {
     let bytes = text.as_bytes();
-    let before = start == 0 || !is_ascii_alphanumeric(bytes[start - 1]);
+    let before = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
     let after = bytes
         .get(end)
-        .is_none_or(|byte| !is_ascii_alphanumeric(*byte));
+        .is_none_or(|byte| !byte.is_ascii_alphanumeric());
     before && after
 }
 

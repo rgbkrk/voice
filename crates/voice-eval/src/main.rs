@@ -980,7 +980,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
         println!(
             concat!(
                 "voxtral_matrix.row text_index={} max_frames={} flow_steps={} ",
-                "synthesis_text={:?} ",
+                "reference_text={:?} synthesis_text={:?} ",
                 "first_audio_ms={} total_ms={:.1} audio_ms={:.1} rtf={} ",
                 "wer={} errors={}/{} frames={} ended={} chunks={} ",
                 "segments={} long_gaps={} longest_gap_s={:.3} active_ratio={} ",
@@ -989,6 +989,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
             row.text_index,
             row.max_frames,
             row.flow_steps,
+            row.text,
             row.synthesis_text,
             format_optional_f64(row.first_audio_ms),
             row.total_ms,

@@ -7231,6 +7231,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "voice-ui"
+version = "0.1.0"
+
+[[package]]
 name = "voice-voxtral"
 version = "0.1.0"
 dependencies = [

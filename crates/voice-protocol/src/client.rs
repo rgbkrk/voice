@@ -26,6 +26,16 @@ pub struct TtsRequestOptions<'a> {
     pub voxtral_kv_cache: bool,
 }
 
+/// Options for daemon streaming TTS requests.
+#[derive(Debug, Clone, Default)]
+pub struct StreamSpeakOptions<'a> {
+    pub voice: Option<&'a str>,
+    pub speed: Option<f64>,
+    pub sample_rate: Option<u32>,
+    pub frame_ms: Option<u32>,
+    pub tts: TtsRequestOptions<'a>,
+}
+
 /// A synchronous client connection to the voice daemon.
 pub struct DaemonClient {
     stream: UnixStream,
@@ -224,11 +234,13 @@ impl DaemonClient {
     {
         self.stream_speak_with_options(
             text,
-            voice,
-            speed,
-            sample_rate,
-            frame_ms,
-            TtsRequestOptions::default(),
+            StreamSpeakOptions {
+                voice,
+                speed,
+                sample_rate,
+                frame_ms,
+                tts: TtsRequestOptions::default(),
+            },
             on_event,
         )
     }
@@ -237,31 +249,27 @@ impl DaemonClient {
     pub fn stream_speak_with_options<F>(
         &mut self,
         text: &str,
-        voice: Option<&str>,
-        speed: Option<f64>,
-        sample_rate: Option<u32>,
-        frame_ms: Option<u32>,
-        options: TtsRequestOptions<'_>,
+        options: StreamSpeakOptions<'_>,
         mut on_event: F,
     ) -> Result<Response, String>
     where
         F: FnMut(TtsStreamEvent) -> Result<(), String>,
     {
         let mut params = serde_json::json!({ "text": text });
-        if let Some(v) = voice {
+        if let Some(v) = options.voice {
             params["voice"] = Value::String(v.to_string());
         }
-        if let Some(s) = speed {
+        if let Some(s) = options.speed {
             params["speed"] = serde_json::json!(s);
         }
-        if let Some(rate) = sample_rate {
+        if let Some(rate) = options.sample_rate {
             params["sample_rate"] = serde_json::json!(rate);
         }
-        if let Some(ms) = frame_ms {
+        if let Some(ms) = options.frame_ms {
             params["frame_ms"] = serde_json::json!(ms);
         }
-        let read_timeout = read_timeout_for_tts_options(&options);
-        insert_tts_options(&mut params, options);
+        let read_timeout = read_timeout_for_tts_options(&options.tts);
+        insert_tts_options(&mut params, options.tts);
         if let Some(timeout) = read_timeout {
             self.stream
                 .set_read_timeout(Some(timeout))

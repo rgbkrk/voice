@@ -5,7 +5,8 @@
 
 use crate::config::DaemonConfig;
 use crate::queue::{
-    RequestQueue, StreamSpeakRequest, StreamTranscribeRequest, TtsOptions, VoiceRequest,
+    RequestQueue, StreamSpeakRequest, StreamTranscribeRequest, SynthesizeRequest, TtsOptions,
+    VoiceRequest,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -789,12 +790,14 @@ async fn dispatch(
                 queue
                     .enqueue_synthesize(
                         client_id.to_string(),
-                        text,
-                        output_path,
-                        output_format,
-                        voice,
-                        speed,
-                        options,
+                        SynthesizeRequest {
+                            text,
+                            output_path,
+                            output_format,
+                            voice,
+                            speed,
+                            options,
+                        },
                     )
                     .await
             }
@@ -966,10 +969,8 @@ fn optional_tts_options(req: &rpc::Request, default_engine: &str) -> Result<TtsO
         None => None,
     };
 
-    let voxtral_max_frames =
-        optional_usize_param(req, "voxtral_max_frames", 1, 16_384)?.map(|value| value as usize);
-    let voxtral_flow_steps =
-        optional_usize_param(req, "voxtral_flow_steps", 1, 256)?.map(|value| value as usize);
+    let voxtral_max_frames = optional_usize_param(req, "voxtral_max_frames", 1, 16_384)?;
+    let voxtral_flow_steps = optional_usize_param(req, "voxtral_flow_steps", 1, 256)?;
     let voxtral_kv_cache = match req.params.get("voxtral_kv_cache") {
         Some(value) => value.as_bool().ok_or_else(|| {
             Response::error(

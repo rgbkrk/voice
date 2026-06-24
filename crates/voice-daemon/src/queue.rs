@@ -21,6 +21,17 @@ pub struct TtsOptions {
     pub voxtral_kv_cache: bool,
 }
 
+/// Parameters for a daemon TTS file synthesis request.
+#[derive(Debug, Clone)]
+pub struct SynthesizeRequest {
+    pub text: String,
+    pub output_path: String,
+    pub output_format: Option<AudioOutputFormat>,
+    pub voice: Option<String>,
+    pub speed: Option<f64>,
+    pub options: TtsOptions,
+}
+
 /// Parameters for a daemon TTS stream request.
 #[derive(Debug, Clone)]
 pub struct StreamSpeakRequest {
@@ -200,22 +211,17 @@ impl RequestQueue {
     pub async fn enqueue_synthesize(
         &self,
         client_id: String,
-        text: String,
-        output_path: String,
-        output_format: Option<AudioOutputFormat>,
-        voice: Option<String>,
-        speed: Option<f64>,
-        options: TtsOptions,
+        request: SynthesizeRequest,
     ) -> String {
         self.enqueue(
             client_id,
             VoiceRequest::Synthesize {
-                text,
-                output_path,
-                output_format,
-                voice,
-                speed,
-                options,
+                text: request.text,
+                output_path: request.output_path,
+                output_format: request.output_format,
+                voice: request.voice,
+                speed: request.speed,
+                options: request.options,
             },
         )
         .await

@@ -1798,17 +1798,19 @@ fn run_stream(stream_args: StreamArgs) {
 
     let result = daemon.stream_speak_with_options(
         &text,
-        Some(&voice),
-        Some(stream_args.speed as f64),
-        Some(stream_args.sample_rate),
-        Some(stream_args.frame_ms),
-        daemon_tts_options(
-            stream_args.engine,
-            &stream_args.voxtral_model,
-            stream_args.voxtral_max_frames,
-            stream_args.voxtral_flow_steps,
-            stream_args.voxtral_kv_cache,
-        ),
+        voice_protocol::client::StreamSpeakOptions {
+            voice: Some(&voice),
+            speed: Some(stream_args.speed as f64),
+            sample_rate: Some(stream_args.sample_rate),
+            frame_ms: Some(stream_args.frame_ms),
+            tts: daemon_tts_options(
+                stream_args.engine,
+                &stream_args.voxtral_model,
+                stream_args.voxtral_max_frames,
+                stream_args.voxtral_flow_steps,
+                stream_args.voxtral_kv_cache,
+            ),
+        },
         |event| {
             if stream_args.json {
                 println!("{}", serde_json::to_string(&event).unwrap());

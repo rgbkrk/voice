@@ -15,11 +15,12 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    let timer: number | undefined;
 
     async function refreshDaemonState() {
       const daemonMessages = await fetchDaemonMessages();
       if (!active || !daemonMessages) {
-        return;
+        return false;
       }
 
       setMessages(daemonMessages);
@@ -28,14 +29,20 @@ export default function App() {
           ? value
           : daemonMessages[0].id,
       );
+      return true;
     }
 
-    void refreshDaemonState();
-    const timer = window.setInterval(refreshDaemonState, 2_000);
+    void refreshDaemonState().then((connected) => {
+      if (active && connected) {
+        timer = window.setInterval(refreshDaemonState, 2_000);
+      }
+    });
 
     return () => {
       active = false;
-      window.clearInterval(timer);
+      if (timer) {
+        window.clearInterval(timer);
+      }
     };
   }, []);
 

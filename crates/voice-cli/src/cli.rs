@@ -110,7 +110,7 @@ enum Command {
     /// Inspect and control a running voice daemon
     Daemon(DaemonArgs),
 
-    /// Benchmark TTS inference without playback
+    /// Benchmark TTS latency without playback
     Bench(BenchArgs),
 }
 
@@ -590,7 +590,7 @@ struct BenchArgs {
 
 #[derive(clap::Subcommand, Debug)]
 enum BenchCommand {
-    /// Compare local TTS inference stages without playback or daemon queueing
+    /// Compare TTS stages without playback
     Tts(BenchTtsArgs),
 }
 
@@ -631,6 +631,18 @@ struct BenchTtsArgs {
     /// Enable Voxtral language KV cache
     #[arg(long = "voxtral-kv-cache")]
     voxtral_kv_cache: bool,
+
+    /// Benchmark daemon streaming instead of local in-process synthesis
+    #[arg(long)]
+    daemon: bool,
+
+    /// Target daemon stream sample rate when --daemon is set
+    #[arg(long = "stream-sample-rate", default_value_t = 24_000)]
+    stream_sample_rate: u32,
+
+    /// Target daemon stream frame duration in milliseconds when --daemon is set
+    #[arg(long = "stream-frame-ms", default_value_t = 20)]
+    stream_frame_ms: u32,
 
     /// Number of measured synthesis runs per engine after model load
     #[arg(long = "runs", default_value_t = 1)]
@@ -1466,6 +1478,7 @@ fn print_daemon_voices(result: &serde_json::Value) {
 #[derive(Debug, Serialize)]
 struct TtsBenchReport {
     text: String,
+    mode: &'static str,
     runs: usize,
     output_dir: Option<String>,
     engines: Vec<TtsBenchEngineReport>,
@@ -1506,6 +1519,12 @@ struct TtsBenchRunReport {
     voxtral_acoustic_ms: Option<f64>,
     voxtral_decode_loop_ms: Option<f64>,
     voxtral_codec_ms: Option<f64>,
+    daemon_response_ms: Option<f64>,
+    daemon_started_ms: Option<f64>,
+    daemon_first_pcm_ms: Option<f64>,
+    daemon_stream_elapsed_ms: Option<f64>,
+    daemon_queue_id: Option<String>,
+    daemon_stream_id: Option<String>,
     output_wav: Option<String>,
 }
 
@@ -1528,6 +1547,13 @@ fn run_bench_tts(args: BenchTtsArgs) {
         eprintln!("Error: --voxtral-flow-steps must be greater than zero");
         std::process::exit(1);
     }
+    if args.daemon {
+        validate_stream_frame_params(args.stream_sample_rate, args.stream_frame_ms)
+            .unwrap_or_else(|e| {
+                eprintln!("voice bench tts: {e}");
+                std::process::exit(1);
+            });
+    }
 
     let text = match resolve_bench_text(&args) {
         Ok(text) => text,
@@ -1544,9 +1570,13 @@ fn run_bench_tts(args: BenchTtsArgs) {
 
     let mut reports = Vec::new();
     for engine in engines {
-        let result = match engine {
-            TtsEngine::Kokoro => bench_kokoro_tts(&args, &text),
-            TtsEngine::Voxtral => bench_voxtral_tts(&args, &text),
+        let result = if args.daemon {
+            bench_daemon_tts(&args, &text, engine)
+        } else {
+            match engine {
+                TtsEngine::Kokoro => bench_kokoro_tts(&args, &text),
+                TtsEngine::Voxtral => bench_voxtral_tts(&args, &text),
+            }
         };
         match result {
             Ok(report) => reports.push(report),
@@ -1559,6 +1589,7 @@ fn run_bench_tts(args: BenchTtsArgs) {
 
     let report = TtsBenchReport {
         text,
+        mode: if args.daemon { "daemon_stream" } else { "local" },
         runs: args.runs,
         output_dir: args
             .output_dir
@@ -1655,6 +1686,12 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
             voxtral_acoustic_ms: None,
             voxtral_decode_loop_ms: None,
             voxtral_codec_ms: None,
+            daemon_response_ms: None,
+            daemon_started_ms: None,
+            daemon_first_pcm_ms: None,
+            daemon_stream_elapsed_ms: None,
+            daemon_queue_id: None,
+            daemon_stream_id: None,
             output_wav,
         });
     }
@@ -1739,6 +1776,12 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             voxtral_acoustic_ms: Some(duration_ms(trace.acoustic)),
             voxtral_decode_loop_ms: Some(duration_ms(trace.decode_loop)),
             voxtral_codec_ms: Some(duration_ms(trace.codec)),
+            daemon_response_ms: None,
+            daemon_started_ms: None,
+            daemon_first_pcm_ms: None,
+            daemon_stream_elapsed_ms: None,
+            daemon_queue_id: None,
+            daemon_stream_id: None,
             output_wav,
         });
     }
@@ -1756,6 +1799,213 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         cold_total_ms: duration_ms(cold_total_ms),
         runs,
     })
+}
+
+fn bench_daemon_tts(
+    args: &BenchTtsArgs,
+    text: &str,
+    engine: TtsEngine,
+) -> Result<TtsBenchEngineReport, String> {
+    let voice = match engine {
+        TtsEngine::Kokoro => args.kokoro_voice.as_str(),
+        TtsEngine::Voxtral => args.voxtral_voice.as_str(),
+    };
+    validate_voice_for_engine(engine, voice)?;
+
+    let mut daemon = voice_protocol::client::DaemonClient::connect()
+        .ok_or_else(|| "voice daemon is not running; start it with `voice daemon start`".to_string())?;
+    if !daemon_supports_engine(&mut daemon, engine) {
+        return Err(format!(
+            "voice daemon does not advertise {} support",
+            engine.as_str()
+        ));
+    }
+
+    let mut runs = Vec::with_capacity(args.runs);
+    for run_idx in 0..args.runs {
+        let total_start = Instant::now();
+        let text_prep_start = Instant::now();
+        let (prepared, _phoneme_overrides) = prepare_bench_text(text, args);
+        let text_prep = text_prep_start.elapsed();
+
+        let mut response_at = None;
+        let mut started_at = None;
+        let mut first_pcm_at = None;
+        let mut queue_id = None;
+        let mut stream_id = None;
+        let mut samples = 0usize;
+        let mut frames = 0u64;
+        let mut stream_duration_ms = 0u64;
+        let mut daemon_elapsed_ms = None;
+        let mut terminal_error = None;
+
+        let stream_started = Instant::now();
+        let response = daemon.stream_speak_with_options_observed(
+            &prepared,
+            voice_protocol::client::StreamSpeakOptions {
+                voice: Some(voice),
+                speed: Some(1.0),
+                sample_rate: Some(args.stream_sample_rate),
+                frame_ms: Some(args.stream_frame_ms),
+                tts: daemon_tts_options(
+                    engine,
+                    &args.voxtral_model,
+                    args.voxtral_max_frames,
+                    args.voxtral_flow_steps,
+                    args.voxtral_kv_cache,
+                ),
+            },
+            |response| {
+                response_at = Some(total_start.elapsed());
+                if let Some(result) = response.result.as_ref() {
+                    queue_id = result
+                        .get("queue_id")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned);
+                    stream_id = result
+                        .get("stream_id")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned);
+                }
+                Ok(())
+            },
+            |event| {
+                match event {
+                    voice_stream::TtsStreamEvent::Started { .. } => {
+                        started_at.get_or_insert_with(|| total_start.elapsed());
+                    }
+                    voice_stream::TtsStreamEvent::Audio { frame } => {
+                        first_pcm_at.get_or_insert_with(|| total_start.elapsed());
+                        samples += frame.sample_count.saturating_sub(frame.padding_samples);
+                    }
+                    voice_stream::TtsStreamEvent::Ended(end) => {
+                        frames = end.frames;
+                        stream_duration_ms = end.duration_ms;
+                        daemon_elapsed_ms = Some(end.elapsed_ms);
+                    }
+                    voice_stream::TtsStreamEvent::Error(err) => {
+                        terminal_error = Some(err.message);
+                    }
+                    voice_stream::TtsStreamEvent::Cancelled(cancelled) => {
+                        terminal_error = Some(cancelled.reason);
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        if let Some(err) = response.error {
+            return Err(format!("daemon {} stream failed: {}", engine.as_str(), err.message));
+        }
+        if let Some(err) = terminal_error {
+            return Err(format!("daemon {} stream failed: {err}", engine.as_str()));
+        }
+
+        let worker_result = if let Some(id) = queue_id.as_deref() {
+            daemon_recent_result_for_queue(&mut daemon, id)?
+        } else {
+            None
+        };
+        let first_code_frame_ms = worker_result
+            .as_ref()
+            .and_then(|result| result.get("first_code_frame_ms"))
+            .and_then(json_number_ms);
+        let voxtral_codec_chunks = worker_result
+            .as_ref()
+            .and_then(|result| result.get("chunks"))
+            .and_then(|value| value.as_u64())
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|_| engine == TtsEngine::Voxtral);
+
+        let total = total_start.elapsed();
+        let first_audio = first_pcm_at.unwrap_or(total);
+        runs.push(TtsBenchRunReport {
+            run: run_idx + 1,
+            text_prep_ms: duration_ms(text_prep),
+            phoneme_ms: None,
+            voice_load_ms: None,
+            synth_ms: duration_ms(stream_started.elapsed()),
+            first_code_frame_ms,
+            first_audio_ms: duration_ms(first_audio),
+            total_ms: duration_ms(total),
+            audio_duration_ms: stream_duration_ms as f64,
+            samples,
+            sample_rate: args.stream_sample_rate,
+            chunks: None,
+            frames: Some(frames as usize),
+            ended: Some(true),
+            voxtral_language_cache: (engine == TtsEngine::Voxtral).then_some(args.voxtral_kv_cache),
+            voxtral_voice_cache_hit: None,
+            voxtral_codec_chunks,
+            voxtral_prompt_ms: None,
+            voxtral_language_ms: None,
+            voxtral_acoustic_ms: None,
+            voxtral_decode_loop_ms: None,
+            voxtral_codec_ms: None,
+            daemon_response_ms: response_at.map(duration_ms),
+            daemon_started_ms: started_at.map(duration_ms),
+            daemon_first_pcm_ms: Some(duration_ms(first_audio)),
+            daemon_stream_elapsed_ms: daemon_elapsed_ms.map(|ms| ms as f64),
+            daemon_queue_id: queue_id,
+            daemon_stream_id: stream_id,
+            output_wav: None,
+        });
+    }
+
+    let cold_first_audio_ms = runs[0].first_audio_ms;
+    let cold_total_ms = runs[0].total_ms;
+    let model = match engine {
+        TtsEngine::Kokoro => MODEL_REPO.to_string(),
+        TtsEngine::Voxtral => args.voxtral_model.clone(),
+    };
+
+    Ok(TtsBenchEngineReport {
+        engine: engine.as_str(),
+        voice: voice.to_string(),
+        model,
+        model_load_ms: 0.0,
+        cold_first_audio_ms,
+        cold_total_ms,
+        runs,
+    })
+}
+
+fn daemon_recent_result_for_queue(
+    daemon: &mut voice_protocol::client::DaemonClient,
+    queue_id: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let response = daemon.status()?;
+    if let Some(err) = response.error {
+        return Err(format!("daemon status failed: {}", err.message));
+    }
+    let recent = response
+        .result
+        .as_ref()
+        .and_then(|result| result.get("recent"))
+        .and_then(|recent| recent.as_array());
+    let Some(recent) = recent else {
+        return Ok(None);
+    };
+
+    for item in recent {
+        let is_match = item.get("id").and_then(|value| value.as_str()) == Some(queue_id);
+        if !is_match {
+            continue;
+        }
+        return item
+            .get("result")
+            .and_then(|value| value.as_str())
+            .map(|json| {
+                serde_json::from_str(json)
+                    .map_err(|e| format!("daemon queue result for {queue_id} was not JSON: {e}"))
+            })
+            .transpose();
+    }
+
+    Ok(None)
+}
+
+fn json_number_ms(value: &serde_json::Value) -> Option<f64> {
+    value.as_f64().or_else(|| value.as_u64().map(|value| value as f64))
 }
 
 fn resolve_bench_text(args: &BenchTtsArgs) -> Result<String, String> {
@@ -1848,6 +2098,7 @@ fn audio_duration_ms(samples: usize, sample_rate: u32) -> f64 {
 
 fn print_tts_bench_report(report: &TtsBenchReport) {
     println!("tts_bench.text={}", report.text);
+    println!("tts_bench.mode={}", report.mode);
     println!("tts_bench.runs={}", report.runs);
     if let Some(output_dir) = &report.output_dir {
         println!("tts_bench.output_dir={output_dir}");
@@ -1863,7 +2114,7 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
             engine.model
         );
         for run in &engine.runs {
-            println!(
+            let mut line = format!(
                 "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} phoneme_ms={} first_code_frame_ms={} voxtral_codec_chunks={} output_wav={}",
                 engine.engine,
                 run.run,
@@ -1882,6 +2133,23 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
                     .unwrap_or_else(|| "-".to_string()),
                 run.output_wav.as_deref().unwrap_or("")
             );
+            if let Some(first_pcm_ms) = run.daemon_first_pcm_ms {
+                line.push_str(&format!(
+                    " daemon_response_ms={} daemon_started_ms={} daemon_first_pcm_ms={first_pcm_ms:.1} daemon_stream_elapsed_ms={} daemon_queue_id={} daemon_stream_id={}",
+                    run.daemon_response_ms
+                        .map(|value| format!("{value:.1}"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    run.daemon_started_ms
+                        .map(|value| format!("{value:.1}"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    run.daemon_stream_elapsed_ms
+                        .map(|value| format!("{value:.1}"))
+                        .unwrap_or_else(|| "-".to_string()),
+                    run.daemon_queue_id.as_deref().unwrap_or(""),
+                    run.daemon_stream_id.as_deref().unwrap_or("")
+                ));
+            }
+            println!("{line}");
         }
     }
 }

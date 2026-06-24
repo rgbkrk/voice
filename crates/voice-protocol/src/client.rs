@@ -265,9 +265,24 @@ impl DaemonClient {
         &mut self,
         text: &str,
         options: StreamSpeakOptions<'_>,
+        on_event: F,
+    ) -> Result<Response, String>
+    where
+        F: FnMut(TtsStreamEvent) -> Result<(), String>,
+    {
+        self.stream_speak_with_options_observed(text, options, |_| Ok(()), on_event)
+    }
+
+    /// Stream TTS audio from the daemon while observing the initial queued response.
+    pub fn stream_speak_with_options_observed<R, F>(
+        &mut self,
+        text: &str,
+        options: StreamSpeakOptions<'_>,
+        mut on_response: R,
         mut on_event: F,
     ) -> Result<Response, String>
     where
+        R: FnMut(&Response) -> Result<(), String>,
         F: FnMut(TtsStreamEvent) -> Result<(), String>,
     {
         let mut params = serde_json::json!({ "text": text });
@@ -310,6 +325,7 @@ impl DaemonClient {
         let response = frame
             .json::<Response>()
             .map_err(|e| format!("parse response: {}", e))?;
+        on_response(&response)?;
         if response.error.is_some() {
             return Ok(response);
         }
@@ -944,6 +960,90 @@ mod tests {
 
         assert!(response.error.is_none());
         assert_eq!(events, vec!["tts.started", "tts.ended"]);
+
+        match old {
+            Some(value) => std::env::set_var(SOCKET_ENV, value),
+            None => std::env::remove_var(SOCKET_ENV),
+        }
+        let _ = std::fs::remove_file(path);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn stream_speak_observer_sees_initial_response_before_events() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "voice-protocol-stream-observer-test-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_frame_sync(&mut stream).unwrap().unwrap();
+
+            let response = Response::success(
+                Some(serde_json::json!(1)),
+                serde_json::json!({
+                    "queue_id": "q-observed",
+                    "stream_id": "s-observed",
+                    "status": "queued",
+                }),
+            );
+            write_frame_sync(
+                &mut stream,
+                &Frame::response(&serde_json::to_vec(&response).unwrap()),
+            )
+            .unwrap();
+
+            let ended = TtsStreamEvent::Ended(StreamEnded {
+                stream_id: "s-observed".to_string(),
+                frames: 0,
+                samples: 0,
+                duration_ms: 0,
+                elapsed_ms: 1,
+            });
+            let envelope = Event::new(ended.event_name(), serde_json::to_value(&ended).unwrap());
+            write_frame_sync(
+                &mut stream,
+                &Frame::event(&serde_json::to_vec(&envelope).unwrap()),
+            )
+            .unwrap();
+        });
+
+        let old = std::env::var(SOCKET_ENV).ok();
+        std::env::set_var(SOCKET_ENV, &path);
+
+        let mut client = DaemonClient::connect().unwrap();
+        let observed = std::cell::RefCell::new(Vec::new());
+        let response = client
+            .stream_speak_with_options_observed(
+                "hello",
+                StreamSpeakOptions::default(),
+                |response| {
+                    let queue_id = response
+                        .result
+                        .as_ref()
+                        .and_then(|result| result.get("queue_id"))
+                        .and_then(|queue_id| queue_id.as_str())
+                        .unwrap();
+                    observed.borrow_mut().push(format!("response:{queue_id}"));
+                    Ok(())
+                },
+                |event| {
+                    observed.borrow_mut().push(event.event_name().to_string());
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        assert!(response.error.is_none());
+        assert_eq!(
+            observed.into_inner(),
+            vec!["response:q-observed", "tts.ended"]
+        );
 
         match old {
             Some(value) => std::env::set_var(SOCKET_ENV, value),

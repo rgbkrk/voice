@@ -36,8 +36,8 @@ pub use config::{
 };
 pub use error::{Result, VoxtralError};
 pub use generation::{
-    VoxtralGeneratedAudio, VoxtralGenerationOptions, VoxtralGenerationTrace,
-    VoxtralRuntimeLoadTrace, VoxtralTtsRuntime,
+    VoxtralGeneratedAudio, VoxtralGeneratedAudioChunk, VoxtralGenerationOptions,
+    VoxtralGenerationTrace, VoxtralRuntimeLoadTrace, VoxtralTtsRuntime,
 };
 pub use model::VoxtralModel;
 pub use prompt::{

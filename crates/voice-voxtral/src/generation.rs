@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 use candle_core::{DType, Device, Tensor};
 
 use crate::{
-    build_prompt_embeddings, build_prompt_token_ids, load_voice_embedding, Result, VoxtralError,
-    VoxtralInferenceModules, VoxtralModel, VoxtralTokenizerMetadata,
+    build_prompt_embeddings, build_prompt_token_ids, load_voice_embedding, plan_codec_chunk,
+    Result, VoxtralCodecChunk, VoxtralError, VoxtralInferenceModules, VoxtralModel,
+    VoxtralStreamingConfig, VoxtralTokenizerMetadata,
 };
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,17 @@ pub struct VoxtralGeneratedAudio {
     pub ended: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct VoxtralGeneratedAudioChunk {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub chunk_index: usize,
+    pub context_frames: usize,
+    pub chunk_frames: usize,
+    pub generated_frames: usize,
+    pub finished: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct VoxtralGenerationTrace {
     pub language_cache: bool,
@@ -36,7 +48,9 @@ pub struct VoxtralGenerationTrace {
     pub acoustic: Duration,
     pub decode_loop: Duration,
     pub codec: Duration,
+    pub codec_chunks: usize,
     pub first_frame: Option<Duration>,
+    pub first_audio_chunk: Option<Duration>,
     pub total: Duration,
 }
 
@@ -199,6 +213,42 @@ impl VoxtralTtsRuntime {
             device: &self.device,
             options,
         })?;
+        trace.voice_cache_hit = voice_cache_hit;
+        trace.voice_load = voice_load;
+        trace.total = total_start.elapsed();
+        Ok((audio, trace))
+    }
+
+    pub fn generate_audio_streaming_with_trace<F>(
+        &mut self,
+        text: &str,
+        voice: &str,
+        options: VoxtralGenerationOptions,
+        streaming: VoxtralStreamingConfig,
+        on_chunk: F,
+    ) -> Result<(VoxtralGeneratedAudio, VoxtralGenerationTrace)>
+    where
+        F: FnMut(&VoxtralGeneratedAudioChunk) -> Result<()>,
+    {
+        let total_start = Instant::now();
+        let (voice_embeddings, voice_cache_hit, voice_load) = self.voice_embedding(voice)?;
+        let (audio, mut trace) = generate_audio_inner_streaming(
+            GenerateAudioInner {
+                config: self.model.config(),
+                tokenizer: self
+                    .model
+                    .tokenizer()
+                    .ok_or_else(|| VoxtralError::InvalidTokenizer("missing tekken.json".into()))?,
+                modules: &self.modules,
+                text,
+                voice,
+                voice_embeddings: &voice_embeddings,
+                device: &self.device,
+                options,
+            },
+            streaming,
+            on_chunk,
+        )?;
         trace.voice_cache_hit = voice_cache_hit;
         trace.voice_load = voice_load;
         trace.total = total_start.elapsed();
@@ -432,6 +482,291 @@ fn generate_audio_inner(
         },
         trace,
     ))
+}
+
+fn generate_audio_inner_streaming<F>(
+    request: GenerateAudioInner<'_>,
+    streaming: VoxtralStreamingConfig,
+    mut on_chunk: F,
+) -> Result<(VoxtralGeneratedAudio, VoxtralGenerationTrace)>
+where
+    F: FnMut(&VoxtralGeneratedAudioChunk) -> Result<()>,
+{
+    let GenerateAudioInner {
+        config,
+        tokenizer,
+        modules,
+        text,
+        voice,
+        voice_embeddings,
+        device,
+        options,
+    } = request;
+    let total_start = Instant::now();
+    let mut trace = VoxtralGenerationTrace::default();
+    let dtype = voice_embeddings.dtype();
+
+    let prompt_start = Instant::now();
+    let encoder = tokenizer.encoder()?;
+    let text_token_ids = encoder.encode(text)?;
+    let voice_frames = candle(voice_embeddings.dim(0))?;
+    if let Some(expected_voice_frames) = tokenizer.voice_audio_tokens(voice) {
+        if expected_voice_frames != voice_frames {
+            return Err(VoxtralError::InvalidCheckpoint(format!(
+                "voice {voice:?} has {voice_frames} rows but tekken metadata expects {expected_voice_frames}"
+            )));
+        }
+    }
+
+    let prompt = build_prompt_token_ids(config, tokenizer, voice_frames, &text_token_ids)?;
+    let prompt_embeddings =
+        build_prompt_embeddings(&modules.embeddings, &prompt, voice_embeddings, device)?;
+    let audio_token_id = usize::try_from(config.multimodal.audio_model_args.audio_token_id)
+        .map_err(|_| {
+            VoxtralError::InvalidConfig(format!(
+                "audio_token_id must be non-negative, got {}",
+                config.multimodal.audio_model_args.audio_token_id
+            ))
+        })?;
+    let audio_embedding = candle(
+        modules
+            .embeddings
+            .token_embeddings(&[audio_token_id], device),
+    )?;
+    let mut decode_embeddings = candle(Tensor::cat(&[prompt_embeddings, audio_embedding], 1))?;
+    let mut decode_input = decode_embeddings.clone();
+    let mut language_cache = options.use_kv_cache.then(|| modules.language.new_cache());
+    let timesteps = flow_timesteps(options.flow_steps)?;
+    trace.language_cache = options.use_kv_cache;
+    trace.prompt = prompt_start.elapsed();
+
+    let loop_start = Instant::now();
+    let mut frame_history: Vec<Vec<u32>> = Vec::with_capacity(options.max_frames);
+    let mut emitted_frames = 0usize;
+    let mut emitted_samples = Vec::new();
+    let mut ended = false;
+
+    for frame_idx in 0..options.max_frames {
+        let language_start = Instant::now();
+        let hidden = if let Some(cache) = language_cache.as_mut() {
+            let start_pos = cache.len();
+            candle(modules.language.forward_causal_cached(
+                &decode_input,
+                start_pos,
+                config.rope_theta,
+                cache,
+            ))?
+        } else {
+            candle(
+                modules
+                    .language
+                    .forward_causal(&decode_embeddings, 0, config.rope_theta),
+            )?
+        };
+        let last_pos = candle(hidden.dim(1))? - 1;
+        let last_hidden = candle(
+            hidden
+                .narrow(1, last_pos, 1)
+                .and_then(|hidden| hidden.reshape((1, config.dim))),
+        )?;
+        trace.language += language_start.elapsed();
+
+        let acoustic_start = Instant::now();
+        let initial_noise = deterministic_noise(
+            options.seed,
+            frame_idx,
+            config.multimodal.audio_model_args.n_acoustic_codebook,
+            dtype,
+            device,
+        )?;
+        let frame_codes = candle(modules.acoustic.predict_frame_codes_from_noise(
+            config,
+            &last_hidden,
+            &initial_noise,
+            &timesteps,
+            options.cfg_alpha,
+        ))?;
+        trace.acoustic += acoustic_start.elapsed();
+        trace
+            .first_frame
+            .get_or_insert_with(|| loop_start.elapsed());
+
+        let frame = candle(frame_codes.to_vec2::<u32>())?.remove(0);
+        if frame[0] == 1 {
+            ended = true;
+            break;
+        }
+        frame_history.push(frame.clone());
+
+        maybe_emit_streaming_chunk(
+            config,
+            modules,
+            device,
+            streaming,
+            false,
+            &frame_history,
+            &mut emitted_frames,
+            &mut emitted_samples,
+            &mut trace,
+            total_start,
+            &mut on_chunk,
+        )?;
+
+        let next_embedding = candle(
+            modules
+                .embeddings
+                .audio_codes_embedding(config, &frame_codes),
+        )?;
+        let next_embedding = candle(next_embedding.unsqueeze(1))?;
+        if language_cache.is_some() {
+            decode_input = next_embedding;
+        } else {
+            decode_embeddings = candle(Tensor::cat(&[decode_embeddings, next_embedding], 1))?;
+        }
+    }
+    trace.decode_loop = loop_start.elapsed();
+
+    if frame_history.is_empty() {
+        return Err(VoxtralError::Unsupported(
+            "generation produced no audio frames".into(),
+        ));
+    }
+
+    maybe_emit_streaming_chunk(
+        config,
+        modules,
+        device,
+        streaming,
+        true,
+        &frame_history,
+        &mut emitted_frames,
+        &mut emitted_samples,
+        &mut trace,
+        total_start,
+        &mut on_chunk,
+    )?;
+
+    trace.total = total_start.elapsed();
+
+    Ok((
+        VoxtralGeneratedAudio {
+            samples: emitted_samples,
+            sample_rate: config.sample_rate(),
+            frames: emitted_frames,
+            ended,
+        },
+        trace,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn maybe_emit_streaming_chunk<F>(
+    config: &crate::VoxtralConfig,
+    modules: &VoxtralInferenceModules,
+    device: &Device,
+    streaming: VoxtralStreamingConfig,
+    finished: bool,
+    frame_history: &[Vec<u32>],
+    emitted_frames: &mut usize,
+    emitted_samples: &mut Vec<f32>,
+    trace: &mut VoxtralGenerationTrace,
+    total_start: Instant,
+    on_chunk: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&VoxtralGeneratedAudioChunk) -> Result<()>,
+{
+    let Some(chunk) = plan_codec_chunk(frame_history, streaming, finished)? else {
+        return Ok(());
+    };
+    if chunk.chunk_frames == 0 || *emitted_frames >= frame_history.len() {
+        return Ok(());
+    }
+    let new_frames = frame_history.len() - *emitted_frames;
+    if chunk.chunk_frames != new_frames {
+        return Err(VoxtralError::Unsupported(format!(
+            "streaming codec chunk mismatch: planned {} new frames but {} remain",
+            chunk.chunk_frames, new_frames
+        )));
+    }
+
+    let codec_start = Instant::now();
+    let samples = decode_codec_chunk_samples(config, modules, device, &chunk)?;
+    trace.codec += codec_start.elapsed();
+    trace.codec_chunks += 1;
+    trace.first_audio_chunk.get_or_insert(total_start.elapsed());
+
+    let audio_chunk = VoxtralGeneratedAudioChunk {
+        samples,
+        sample_rate: config.sample_rate(),
+        chunk_index: trace.codec_chunks - 1,
+        context_frames: chunk.context_frames,
+        chunk_frames: chunk.chunk_frames,
+        generated_frames: frame_history.len(),
+        finished: chunk.finished,
+    };
+    on_chunk(&audio_chunk)?;
+    emitted_samples.extend_from_slice(&audio_chunk.samples);
+    *emitted_frames += audio_chunk.chunk_frames;
+    Ok(())
+}
+
+fn decode_codec_chunk_samples(
+    config: &crate::VoxtralConfig,
+    modules: &VoxtralInferenceModules,
+    device: &Device,
+    chunk: &VoxtralCodecChunk,
+) -> Result<Vec<f32>> {
+    let num_codebooks = config.num_codebooks();
+    if chunk.frames.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut code_frames = Vec::with_capacity(chunk.frames.len() * num_codebooks);
+    for frame in &chunk.frames {
+        if frame.len() != num_codebooks {
+            return Err(VoxtralError::InvalidConfig(format!(
+                "codec frame has {} codebooks but config expects {num_codebooks}",
+                frame.len()
+            )));
+        }
+        code_frames.extend_from_slice(frame);
+    }
+
+    let codes = candle(Tensor::from_vec(
+        code_frames,
+        (chunk.frames.len(), num_codebooks),
+        device,
+    ))?;
+    let codes = candle(codes.transpose(0, 1))?;
+    let codes = candle(codes.unsqueeze(0))?;
+    let waveform = candle(modules.codec.decode_codes_to_waveform(&codes))?;
+    let samples = candle(waveform.to_dtype(DType::F32))?
+        .to_vec3::<f32>()
+        .map_err(|e| VoxtralError::Candle(e.to_string()))?[0][0]
+        .clone();
+
+    if samples.is_empty() {
+        return Ok(samples);
+    }
+    if samples.len() % chunk.frames.len() != 0 {
+        return Err(VoxtralError::Unsupported(format!(
+            "codec chunk produced {} samples for {} frames",
+            samples.len(),
+            chunk.frames.len()
+        )));
+    }
+    let samples_per_frame = samples.len() / chunk.frames.len();
+    let start = chunk.context_frames * samples_per_frame;
+    let len = chunk.chunk_frames * samples_per_frame;
+    let end = start + len;
+    if end > samples.len() {
+        return Err(VoxtralError::Unsupported(format!(
+            "codec chunk sample window {start}..{end} exceeds {} samples",
+            samples.len()
+        )));
+    }
+    Ok(samples[start..end].to_vec())
 }
 
 fn flow_timesteps(steps: usize) -> Result<Vec<f32>> {

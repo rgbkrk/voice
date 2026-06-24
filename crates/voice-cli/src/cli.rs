@@ -1500,6 +1500,7 @@ struct TtsBenchRunReport {
     ended: Option<bool>,
     voxtral_language_cache: Option<bool>,
     voxtral_voice_cache_hit: Option<bool>,
+    voxtral_codec_chunks: Option<usize>,
     voxtral_prompt_ms: Option<f64>,
     voxtral_language_ms: Option<f64>,
     voxtral_acoustic_ms: Option<f64>,
@@ -1648,6 +1649,7 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
             ended: None,
             voxtral_language_cache: None,
             voxtral_voice_cache_hit: None,
+            voxtral_codec_chunks: None,
             voxtral_prompt_ms: None,
             voxtral_language_ms: None,
             voxtral_acoustic_ms: None,
@@ -1685,8 +1687,9 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         let text_prep = text_prep_start.elapsed();
 
         let synth_start = Instant::now();
+        let mut streamed_samples = 0usize;
         let (audio, trace) = runtime
-            .generate_audio_with_trace(
+            .generate_audio_streaming_with_trace(
                 &prepared,
                 &args.voxtral_voice,
                 voxtral_generation_options(
@@ -1694,9 +1697,15 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
                     args.voxtral_flow_steps,
                     args.voxtral_kv_cache,
                 ),
+                voice_voxtral::VoxtralStreamingConfig::default(),
+                |chunk| {
+                    streamed_samples += chunk.samples.len();
+                    Ok(())
+                },
             )
             .map_err(|e| format!("voxtral synthesis failed: {e}"))?;
         let synth = synth_start.elapsed();
+        debug_assert_eq!(streamed_samples, audio.samples.len());
         let total = total_start.elapsed();
         let output_wav = maybe_write_bench_wav(
             &args.output_dir,
@@ -1714,7 +1723,7 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             voice_load_ms: Some(duration_ms(trace.voice_load)),
             synth_ms: duration_ms(synth),
             first_code_frame_ms: trace.first_frame.map(duration_ms),
-            first_audio_ms: duration_ms(total),
+            first_audio_ms: duration_ms(trace.first_audio_chunk.unwrap_or(total)),
             total_ms: duration_ms(total),
             audio_duration_ms: audio_duration_ms(audio.samples.len(), audio.sample_rate),
             samples: audio.samples.len(),
@@ -1724,6 +1733,7 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             ended: Some(audio.ended),
             voxtral_language_cache: Some(trace.language_cache),
             voxtral_voice_cache_hit: Some(trace.voice_cache_hit),
+            voxtral_codec_chunks: Some(trace.codec_chunks),
             voxtral_prompt_ms: Some(duration_ms(trace.prompt)),
             voxtral_language_ms: Some(duration_ms(trace.language)),
             voxtral_acoustic_ms: Some(duration_ms(trace.acoustic)),
@@ -1854,7 +1864,7 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
         );
         for run in &engine.runs {
             println!(
-                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} phoneme_ms={} first_code_frame_ms={} output_wav={}",
+                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} phoneme_ms={} first_code_frame_ms={} voxtral_codec_chunks={} output_wav={}",
                 engine.engine,
                 run.run,
                 run.first_audio_ms,
@@ -1866,6 +1876,9 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
                     .unwrap_or_else(|| "-".to_string()),
                 run.first_code_frame_ms
                     .map(|value| format!("{value:.1}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_codec_chunks
+                    .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
                 run.output_wav.as_deref().unwrap_or("")
             );

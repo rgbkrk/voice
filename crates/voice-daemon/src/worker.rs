@@ -18,7 +18,7 @@ use voice_stream::{
     TtsStreamEvent,
 };
 use voice_tts::KokoroModel;
-use voice_voxtral::{VoxtralGenerationOptions, VoxtralTtsRuntime};
+use voice_voxtral::{VoxtralGenerationOptions, VoxtralStreamingConfig, VoxtralTtsRuntime};
 
 use crate::audio_recorder;
 
@@ -793,31 +793,9 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
     let started = Instant::now();
 
     if resolved.engine == VOXTRAL_ENGINE {
-        let audio = {
-            let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
-            generate_voxtral_audio(
-                &mut state,
-                &text,
-                &resolved.voice,
-                &resolved.voxtral_model,
-                resolved.voxtral_options.clone(),
-            )
-        };
-        let audio = match audio {
-            Ok(audio) => audio,
-            Err(e) => {
-                let _ = send_stream_event(
-                    &event_tx,
-                    TtsStreamEvent::error(stream_id.clone(), e.clone()),
-                    &cancelled,
-                );
-                return Err(e);
-            }
-        };
-
         let output_sample_rate = sample_rate.max(1);
         let frame_ms = frame_ms.max(1);
-        let source_sample_rate = audio.sample_rate;
+        let source_sample_rate = voice_voxtral::SAMPLE_RATE;
         let metadata = StreamMetadata {
             stream_id: stream_id.clone(),
             sample_rate: output_sample_rate,
@@ -832,14 +810,45 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
         send_stream_event(&event_tx, TtsStreamEvent::Started { metadata }, &cancelled)?;
 
         let mut packetizer = Packetizer::new(stream_id.clone(), output_sample_rate, frame_ms);
-        let samples = if output_sample_rate == source_sample_rate {
-            audio.samples
-        } else {
-            resample_linear(&audio.samples, source_sample_rate, output_sample_rate)
+        let generation = {
+            let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
+            let runtime = state.get_voxtral_runtime(&resolved.voxtral_model)?;
+            runtime.generate_audio_streaming_with_trace(
+                &text,
+                &resolved.voice,
+                resolved.voxtral_options.clone(),
+                VoxtralStreamingConfig::default(),
+                |chunk| {
+                    if cancelled.load(Ordering::SeqCst) {
+                        return Err(voice_voxtral::VoxtralError::Unsupported(
+                            "Cancelled by user".to_string(),
+                        ));
+                    }
+                    let samples = if output_sample_rate == chunk.sample_rate {
+                        chunk.samples.clone()
+                    } else {
+                        resample_linear(&chunk.samples, chunk.sample_rate, output_sample_rate)
+                    };
+                    for frame in packetizer.push_samples(chunk.chunk_index as u32, &samples) {
+                        send_stream_event(&event_tx, TtsStreamEvent::Audio { frame }, &cancelled)
+                            .map_err(voice_voxtral::VoxtralError::Unsupported)?;
+                    }
+                    Ok(())
+                },
+            )
         };
-        for frame in packetizer.push_samples(0, &samples) {
-            send_stream_event(&event_tx, TtsStreamEvent::Audio { frame }, &cancelled)?;
-        }
+        let (audio, trace) = match generation {
+            Ok(result) => result,
+            Err(e) => {
+                let msg = format!("generate Voxtral audio: {e}");
+                let _ = send_stream_event(
+                    &event_tx,
+                    TtsStreamEvent::error(stream_id.clone(), msg.clone()),
+                    &cancelled,
+                );
+                return Err(msg);
+            }
+        };
         if let Some(frame) = packetizer.finish(0) {
             send_stream_event(&event_tx, TtsStreamEvent::Audio { frame }, &cancelled)?;
         }
@@ -860,7 +869,7 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
             "engine": resolved.engine,
             "duration_ms": duration_ms,
             "elapsed_ms": started.elapsed().as_millis() as u64,
-            "chunks": 1,
+            "chunks": trace.codec_chunks,
             "frames": packetizer.frames_emitted(),
             "samples": samples,
             "sample_rate": output_sample_rate,
@@ -868,6 +877,10 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
             "frame_ms": frame_ms,
             "voice": resolved.voice,
             "speed": resolved.speed,
+            "voxtral_frames": audio.frames,
+            "voxtral_ended": audio.ended,
+            "first_code_frame_ms": trace.first_frame.map(|duration| duration.as_millis() as u64),
+            "first_audio_chunk_ms": trace.first_audio_chunk.map(|duration| duration.as_millis() as u64),
         })
         .to_string());
     }

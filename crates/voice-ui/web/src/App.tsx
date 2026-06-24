@@ -24,11 +24,14 @@ export default function App() {
       }
 
       setMessages(daemonMessages);
-      setCurrentId((value) =>
-        daemonMessages.some((message) => message.id === value)
-          ? value
-          : daemonMessages[0].id,
-      );
+      setCurrentId((value) => {
+        const currentMessage = daemonMessages.find((message) => message.id === value);
+        const nextMessage = currentMessage ?? daemonMessages[0];
+        if (!currentMessage) {
+          setPosition(nextMessage.positionSeconds);
+        }
+        return nextMessage.id;
+      });
       return true;
     }
 

@@ -185,6 +185,7 @@ struct AudioDiagnostics {
     active_duration_seconds: f64,
     active_span_seconds: f64,
     active_ratio: Option<f64>,
+    first_active_seconds: Option<f64>,
     active_segment_count: usize,
     long_gap_count: usize,
     longest_internal_gap_seconds: f64,
@@ -268,6 +269,7 @@ struct VoxtralMatrixRow {
     flow_steps: usize,
     first_code_frame_ms: Option<f64>,
     first_audio_ms: Option<f64>,
+    first_active_audio_ms: Option<f64>,
     total_ms: f64,
     audio_duration_ms: f64,
     realtime_factor: Option<f64>,
@@ -562,6 +564,10 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 let semantic_best_eos_rank = trace.semantic_eos_ranks.iter().copied().min();
                 let semantic_best_eos_margin =
                     trace.semantic_eos_margins.iter().copied().reduce(f32::min);
+                let first_code_frame_ms = trace.first_frame.map(duration_ms);
+                let first_audio_ms = trace.first_audio_chunk.map(duration_ms);
+                let first_active_audio_ms =
+                    first_active_audio_ms(first_audio_ms, &audio_diagnostics);
 
                 rows.push(VoxtralMatrixRow {
                     text_index,
@@ -569,8 +575,9 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                     synthesis_text: case.synthesis_text.clone(),
                     max_frames,
                     flow_steps,
-                    first_code_frame_ms: trace.first_frame.map(duration_ms),
-                    first_audio_ms: trace.first_audio_chunk.map(duration_ms),
+                    first_code_frame_ms,
+                    first_audio_ms,
+                    first_active_audio_ms,
                     total_ms,
                     audio_duration_ms,
                     realtime_factor: ratio_ms(total_ms, audio_duration_ms),
@@ -896,6 +903,7 @@ fn analyze_audio(samples: &[f32], sample_rate: u32) -> AudioDiagnostics {
             active_duration_seconds: 0.0,
             active_span_seconds: 0.0,
             active_ratio: None,
+            first_active_seconds: None,
             active_segment_count: 0,
             long_gap_count: 0,
             longest_internal_gap_seconds: 0.0,
@@ -975,6 +983,7 @@ fn analyze_audio(samples: &[f32], sample_rate: u32) -> AudioDiagnostics {
     };
     let active_ratio =
         (active_span_seconds > 0.0).then_some(active_duration_seconds / active_span_seconds);
+    let first_active_seconds = segments.first().map(|segment| segment.start_seconds);
     let gap_seconds: Vec<f64> = segments
         .windows(2)
         .map(|pair| pair[1].start_seconds - pair[0].end_seconds)
@@ -1013,6 +1022,7 @@ fn analyze_audio(samples: &[f32], sample_rate: u32) -> AudioDiagnostics {
         active_duration_seconds,
         active_span_seconds,
         active_ratio,
+        first_active_seconds,
         active_segment_count: segments.len(),
         long_gap_count,
         longest_internal_gap_seconds,
@@ -1115,7 +1125,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
             concat!(
                 "voxtral_matrix.row text_index={} max_frames={} flow_steps={} ",
                 "reference_text={:?} synthesis_text={:?} ",
-                "first_audio_ms={} total_ms={:.1} audio_ms={:.1} rtf={} ",
+                "first_audio_ms={} first_active_audio_ms={} total_ms={:.1} audio_ms={:.1} rtf={} ",
                 "wer={} errors={}/{} frames={} ended={} chunks={} ",
                 "eos_frame={} semantic_count={} semantic_tail={:?} ",
                 "semantic_tail_unique={} semantic_tail_repeat={} ",
@@ -1130,6 +1140,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
             row.text,
             row.synthesis_text,
             format_optional_f64(row.first_audio_ms),
+            format_optional_f64(row.first_active_audio_ms),
             row.total_ms,
             row.audio_duration_ms,
             format_optional_f64(row.realtime_factor),
@@ -1174,6 +1185,17 @@ fn audio_duration_ms(samples: usize, sample_rate: u32) -> f64 {
 
 fn ratio_ms(numerator_ms: f64, denominator_ms: f64) -> Option<f64> {
     (denominator_ms > 0.0).then_some(numerator_ms / denominator_ms)
+}
+
+fn first_active_audio_ms(
+    first_audio_ms: Option<f64>,
+    diagnostics: &AudioDiagnostics,
+) -> Option<f64> {
+    if diagnostics.active_segment_count == 0 {
+        return None;
+    }
+    first_audio_ms
+        .map(|first_audio_ms| first_audio_ms + diagnostics.leading_silence_seconds * 1_000.0)
 }
 
 fn per_unit(total_ms: f64, units: usize) -> Option<f64> {
@@ -1264,7 +1286,7 @@ fn print_text_report(report: &EvalReport) {
         concat!(
             "audio diagnostics: peak={:.1} dBFS rms={:.1} dBFS threshold={:.1} dBFS ",
             "segments={} active_ratio={} long_gaps={} longest_gap_s={:.3} ",
-            "leading_silence_s={:.3} trailing_silence_s={:.3} ",
+            "first_active_s={} leading_silence_s={:.3} trailing_silence_s={:.3} ",
             "lead_frag_s={} trail_frag_s={}"
         ),
         report.audio_diagnostics.peak_dbfs,
@@ -1274,6 +1296,7 @@ fn print_text_report(report: &EvalReport) {
         format_optional_f64(report.audio_diagnostics.active_ratio),
         report.audio_diagnostics.long_gap_count,
         report.audio_diagnostics.longest_internal_gap_seconds,
+        format_optional_f64(report.audio_diagnostics.first_active_seconds),
         report.audio_diagnostics.leading_silence_seconds,
         report.audio_diagnostics.trailing_silence_seconds,
         format_optional_f64(report.audio_diagnostics.leading_fragment_seconds),
@@ -1909,8 +1932,29 @@ mod tests {
         assert_eq!(diagnostics.active_segment_count, 1);
         assert_eq!(diagnostics.long_gap_count, 0);
         assert!(diagnostics.longest_internal_gap_seconds < 0.01);
+        assert!(diagnostics.first_active_seconds.unwrap_or(1.0) < 0.01);
         assert!(diagnostics.leading_fragment_seconds.is_none());
         assert!(diagnostics.trailing_fragment_seconds.is_none());
+    }
+
+    #[test]
+    fn audio_diagnostics_report_first_active_sample_after_leading_silence() {
+        let sample_rate = 1_000;
+        let mut samples = silence_samples(sample_rate, 0.25);
+        samples.extend(tone_samples(sample_rate, 0.50, 0.5));
+
+        let diagnostics = analyze_audio(&samples, sample_rate);
+
+        let first_active_seconds = diagnostics.first_active_seconds.unwrap();
+        assert_eq!(diagnostics.active_segment_count, 1);
+        assert!((0.23..=0.26).contains(&first_active_seconds));
+        assert_eq!(first_active_seconds, diagnostics.leading_silence_seconds);
+        assert_eq!(
+            first_active_audio_ms(Some(120.0), &diagnostics)
+                .unwrap()
+                .round(),
+            (120.0 + first_active_seconds * 1_000.0).round()
+        );
     }
 
     #[test]

@@ -180,6 +180,10 @@ struct SayArgs {
     #[arg(long = "voxtral-kv-cache")]
     voxtral_kv_cache: bool,
 
+    /// Override Voxtral's initial streaming codec chunk size for daemon playback
+    #[arg(long = "voxtral-stream-begin-frames")]
+    voxtral_stream_begin_frames: Option<usize>,
+
     /// Write audio to file instead of playing
     #[arg(short, long)]
     output: Option<PathBuf>,
@@ -427,6 +431,10 @@ struct StreamArgs {
     #[arg(long = "voxtral-kv-cache")]
     voxtral_kv_cache: bool,
 
+    /// Override Voxtral's initial streaming codec chunk size
+    #[arg(long = "voxtral-stream-begin-frames")]
+    voxtral_stream_begin_frames: Option<usize>,
+
     /// Speech speed factor (1.0 = normal)
     #[arg(short, long, default_value = "1.0")]
     speed: f32,
@@ -521,6 +529,10 @@ struct ConverseArgs {
     /// Enable Voxtral language KV cache (off by default)
     #[arg(long = "voxtral-kv-cache")]
     voxtral_kv_cache: bool,
+
+    /// Override Voxtral's initial streaming codec chunk size for daemon playback
+    #[arg(long = "voxtral-stream-begin-frames")]
+    voxtral_stream_begin_frames: Option<usize>,
 
     /// Speech speed factor (1.0 = normal)
     #[arg(short, long, default_value = "1.0")]
@@ -1230,6 +1242,7 @@ fn main() {
                     voxtral_max_frames: 256,
                     voxtral_flow_steps: 7,
                     voxtral_kv_cache: false,
+                    voxtral_stream_begin_frames: None,
                     output: None,
                     format: None,
                     speed: 1.0,
@@ -1556,8 +1569,8 @@ fn run_bench_tts(args: BenchTtsArgs) {
         eprintln!("Error: --voxtral-flow-steps must be greater than zero");
         std::process::exit(1);
     }
-    if args.voxtral_stream_begin_frames == Some(0) {
-        eprintln!("Error: --voxtral-stream-begin-frames must be greater than zero");
+    if let Err(message) = validate_voxtral_stream_begin_frames(args.voxtral_stream_begin_frames) {
+        eprintln!("Error: {message}");
         std::process::exit(1);
     }
     if args.daemon {
@@ -2307,6 +2320,11 @@ fn run_say(say_args: SayArgs) {
         eprintln!("{message}");
         std::process::exit(1);
     }
+    if let Err(message) = validate_voxtral_stream_begin_frames(say_args.voxtral_stream_begin_frames)
+    {
+        eprintln!("Error: {message}");
+        std::process::exit(1);
+    }
 
     // If the daemon is running, delegate normal playback and file synthesis to it.
     // `--phonemes` stays local because the daemon RPC accepts text and runs its
@@ -2339,7 +2357,7 @@ fn run_say(say_args: SayArgs) {
                     &say_args.voxtral_model,
                     say_args.voxtral_max_frames,
                     say_args.voxtral_flow_steps,
-                    None,
+                    say_args.voxtral_stream_begin_frames,
                     say_args.voxtral_kv_cache,
                 );
 
@@ -2607,6 +2625,12 @@ fn run_stream(stream_args: StreamArgs) {
             std::process::exit(1);
         },
     );
+    if let Err(message) =
+        validate_voxtral_stream_begin_frames(stream_args.voxtral_stream_begin_frames)
+    {
+        eprintln!("voice stream: {message}");
+        std::process::exit(1);
+    }
 
     let raw_to_stdout = stream_args
         .raw_output
@@ -2688,7 +2712,7 @@ fn run_stream(stream_args: StreamArgs) {
                 &stream_args.voxtral_model,
                 stream_args.voxtral_max_frames,
                 stream_args.voxtral_flow_steps,
-                None,
+                stream_args.voxtral_stream_begin_frames,
                 stream_args.voxtral_kv_cache,
             ),
         },
@@ -3002,6 +3026,13 @@ fn validate_stream_frame_params(sample_rate: u32, frame_ms: u32) -> Result<(), S
     Ok(())
 }
 
+fn validate_voxtral_stream_begin_frames(value: Option<usize>) -> Result<(), String> {
+    if value == Some(0) {
+        return Err("--voxtral-stream-begin-frames must be greater than zero".to_string());
+    }
+    Ok(())
+}
+
 fn resolve_stream_output_format(
     path: &Path,
     explicit: Option<StreamOutputFormat>,
@@ -3035,6 +3066,10 @@ fn run_converse(args: ConverseArgs) {
     let voice = selected_voice(args.engine, &args.voice);
     if let Err(message) = validate_voice_for_engine(args.engine, &voice) {
         eprintln!("{message}");
+        std::process::exit(1);
+    }
+    if let Err(message) = validate_voxtral_stream_begin_frames(args.voxtral_stream_begin_frames) {
+        eprintln!("Error: {message}");
         std::process::exit(1);
     }
 
@@ -3074,7 +3109,7 @@ fn run_converse(args: ConverseArgs) {
                     &args.voxtral_model,
                     args.voxtral_max_frames,
                     args.voxtral_flow_steps,
-                    None,
+                    args.voxtral_stream_begin_frames,
                     args.voxtral_kv_cache,
                 ),
                 true,
@@ -3715,6 +3750,13 @@ mod tests {
         assert!(validate_stream_frame_params(0, 20).is_err());
         assert!(validate_stream_frame_params(48_000, 0).is_err());
         assert!(validate_stream_frame_params(48_000, 20).is_ok());
+    }
+
+    #[test]
+    fn validate_voxtral_stream_begin_frames_rejects_zero() {
+        assert!(validate_voxtral_stream_begin_frames(Some(0)).is_err());
+        assert!(validate_voxtral_stream_begin_frames(Some(2)).is_ok());
+        assert!(validate_voxtral_stream_begin_frames(None).is_ok());
     }
 
     #[test]

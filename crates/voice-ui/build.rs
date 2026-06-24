@@ -72,7 +72,10 @@ fn collect_dir(root: &Path, dir: &Path, assets: &mut Vec<Asset>) -> io::Result<(
 }
 
 fn mime_for(path: &str) -> &'static str {
-    match Path::new(path).extension().and_then(|extension| extension.to_str()) {
+    match Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
         Some("html") => "text/html; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("js") => "text/javascript; charset=utf-8",

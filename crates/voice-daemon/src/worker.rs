@@ -3,7 +3,7 @@
 //! Owns the TTS and STT models and audio hardware. Runs blocking GPU
 //! inference and audio I/O on dedicated threads via spawn_blocking.
 
-use crate::queue::{RequestQueue, VoiceRequest};
+use crate::queue::{RequestQueue, TtsOptions, VoiceRequest};
 use candle_core::Tensor;
 use rodio::microphone::MicrophoneBuilder;
 use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
@@ -18,21 +18,24 @@ use voice_stream::{
     TtsStreamEvent,
 };
 use voice_tts::KokoroModel;
+use voice_voxtral::{VoxtralGenerationOptions, VoxtralTtsRuntime};
 
 use crate::audio_recorder;
 
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
 const STT_REPO: &str = "distil-whisper/distil-large-v3";
+const KOKORO_ENGINE: &str = "kokoro";
+const VOXTRAL_ENGINE: &str = "voxtral";
+const KOKORO_DEFAULT_VOICE: &str = "af_heart";
 
 // -- TTS state ---------------------------------------------------------------
 
 struct TtsState {
     model: KokoroModel,
-    default_voice: Tensor,
     #[allow(dead_code)]
     default_voice_name: String,
     voice_cache: HashMap<String, Tensor>,
-    speed: f32,
+    voxtral_runtimes: HashMap<String, VoxtralTtsRuntime>,
     sample_rate: u32,
     repo_id: String,
 }
@@ -40,8 +43,7 @@ struct TtsState {
 struct StreamSpeakJob {
     text: String,
     stream_id: String,
-    voice_name: Option<String>,
-    speed: Option<f64>,
+    resolved: ResolvedTtsRequest,
     sample_rate: u32,
     frame_ms: u32,
     event_tx: tokio::sync::mpsc::Sender<TtsStreamEvent>,
@@ -58,6 +60,21 @@ impl TtsState {
             self.voice_cache.insert(name.to_string(), v);
         }
         Ok(&self.voice_cache[name])
+    }
+
+    fn get_voxtral_runtime(&mut self, model: &str) -> Result<&mut VoxtralTtsRuntime, String> {
+        if !self.voxtral_runtimes.contains_key(model) {
+            eprintln!("voice daemon: loading Voxtral TTS model ({model})...");
+            let start = Instant::now();
+            let runtime = VoxtralTtsRuntime::load_default(model)
+                .map_err(|e| format!("load Voxtral model {model}: {e}"))?;
+            eprintln!(
+                "voice daemon: Voxtral TTS model loaded in {:.1}s",
+                start.elapsed().as_secs_f32()
+            );
+            self.voxtral_runtimes.insert(model.to_string(), runtime);
+        }
+        Ok(self.voxtral_runtimes.get_mut(model).unwrap())
     }
 }
 
@@ -152,24 +169,29 @@ pub async fn run(
             );
 
             match &entry.request {
-                VoiceRequest::Speak { text, voice, speed } => {
+                VoiceRequest::Speak {
+                    text,
+                    voice,
+                    speed,
+                    options,
+                } => {
                     let text = text.clone();
-                    // Use daemon config defaults when request doesn't specify
-                    let voice = voice.clone().or_else(|| Some(config.get_voice_name()));
-                    let speed = speed.or_else(|| Some(config.get_speed() as f64));
+                    let resolved =
+                        match resolve_tts_request(&config, voice.as_deref(), *speed, options) {
+                            Ok(resolved) => resolved,
+                            Err(e) => {
+                                eprintln!("voice daemon: speak error: {}", e);
+                                queue.fail(e).await;
+                                sync_automerge(&queue, &automerge).await;
+                                continue;
+                            }
+                        };
                     let tts = tts.clone();
                     let queue_id = entry.id.clone();
                     let cancelled = entry.cancelled.clone();
 
                     let result = tokio::task::spawn_blocking(move || {
-                        speak(
-                            &tts,
-                            &text,
-                            voice.as_deref(),
-                            speed,
-                            Some(&queue_id),
-                            &cancelled,
-                        )
+                        speak(&tts, &text, resolved, Some(&queue_id), &cancelled)
                     })
                     .await;
 
@@ -196,12 +218,21 @@ pub async fn run(
                     output_format,
                     voice,
                     speed,
+                    options,
                 } => {
                     let text = text.clone();
                     let output_path = output_path.clone();
                     let output_format = *output_format;
-                    let voice = voice.clone().or_else(|| Some(config.get_voice_name()));
-                    let speed = speed.or_else(|| Some(config.get_speed() as f64));
+                    let resolved =
+                        match resolve_tts_request(&config, voice.as_deref(), *speed, options) {
+                            Ok(resolved) => resolved,
+                            Err(e) => {
+                                eprintln!("voice daemon: synthesize error: {}", e);
+                                queue.fail(e).await;
+                                sync_automerge(&queue, &automerge).await;
+                                continue;
+                            }
+                        };
                     let tts = tts.clone();
                     let cancelled = entry.cancelled.clone();
 
@@ -211,8 +242,7 @@ pub async fn run(
                             &text,
                             &output_path,
                             output_format,
-                            voice.as_deref(),
-                            speed,
+                            resolved,
                             &cancelled,
                         )
                     })
@@ -236,14 +266,28 @@ pub async fn run(
                     }
                 }
                 VoiceRequest::StreamSpeak(request) => {
+                    let resolved = match resolve_tts_request(
+                        &config,
+                        request.voice.as_deref(),
+                        request.speed,
+                        &request.options,
+                    ) {
+                        Ok(resolved) => resolved,
+                        Err(e) => {
+                            eprintln!("voice daemon: stream_speak error: {}", e);
+                            let _ = request.event_tx.try_send(TtsStreamEvent::error(
+                                request.stream_id.clone(),
+                                e.clone(),
+                            ));
+                            queue.fail(e).await;
+                            sync_automerge(&queue, &automerge).await;
+                            continue;
+                        }
+                    };
                     let job = StreamSpeakJob {
                         text: request.text.clone(),
                         stream_id: request.stream_id.clone(),
-                        voice_name: request
-                            .voice
-                            .clone()
-                            .or_else(|| Some(config.get_voice_name())),
-                        speed: request.speed.or_else(|| Some(config.get_speed() as f64)),
+                        resolved,
                         sample_rate: request.sample_rate,
                         frame_ms: request.frame_ms,
                         event_tx: request.event_tx.clone(),
@@ -328,10 +372,19 @@ pub async fn run(
                     text,
                     voice,
                     max_duration_ms,
+                    options,
                 } => {
                     let text = text.clone();
-                    let voice = voice.clone().or_else(|| Some(config.get_voice_name()));
-                    let default_speed = Some(config.get_speed() as f64);
+                    let resolved =
+                        match resolve_tts_request(&config, voice.as_deref(), None, options) {
+                            Ok(resolved) => resolved,
+                            Err(e) => {
+                                eprintln!("voice daemon: converse error: {}", e);
+                                queue.fail(e).await;
+                                sync_automerge(&queue, &automerge).await;
+                                continue;
+                            }
+                        };
                     let max_duration_ms = *max_duration_ms;
                     let tts = tts.clone();
                     let stt = stt.clone();
@@ -340,14 +393,7 @@ pub async fn run(
 
                     // Speak then listen, return combined JSON
                     let speak_result = tokio::task::spawn_blocking(move || {
-                        let spoke_json = speak(
-                            &tts,
-                            &text,
-                            voice.as_deref(),
-                            default_speed,
-                            Some(&queue_id),
-                            &cancelled,
-                        )?;
+                        let spoke_json = speak(&tts, &text, resolved, Some(&queue_id), &cancelled)?;
                         let heard_json = listen(&stt, max_duration_ms, Some(&queue_id))?; // Pass queue_id for answer recording
                                                                                           // Parse both results and combine into the converse format
                         let spoke: serde_json::Value =
@@ -392,7 +438,7 @@ fn init_tts() -> Result<TtsState, String> {
     let model = voice_tts::load_model(MODEL_REPO).map_err(|e| format!("load_model: {}", e))?;
     let sample_rate = model.sample_rate;
 
-    let default_voice_name = "af_heart".to_string();
+    let default_voice_name = KOKORO_DEFAULT_VOICE.to_string();
     let voice = model
         .load_voice(&default_voice_name, Some(MODEL_REPO))
         .map_err(|e| e.to_string())?;
@@ -402,23 +448,153 @@ fn init_tts() -> Result<TtsState, String> {
 
     Ok(TtsState {
         model,
-        default_voice: voice,
         default_voice_name,
         voice_cache,
-        speed: 1.0,
+        voxtral_runtimes: HashMap::new(),
         sample_rate,
         repo_id: MODEL_REPO.to_string(),
     })
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedTtsRequest {
+    engine: String,
+    voice: String,
+    speed: f32,
+    voxtral_model: String,
+    voxtral_options: VoxtralGenerationOptions,
+}
+
+fn resolve_tts_request(
+    config: &crate::config::DaemonConfig,
+    voice_name: Option<&str>,
+    speed: Option<f64>,
+    options: &TtsOptions,
+) -> Result<ResolvedTtsRequest, String> {
+    let engine = options
+        .engine
+        .clone()
+        .unwrap_or_else(|| config.get_engine());
+    if engine != KOKORO_ENGINE && engine != VOXTRAL_ENGINE {
+        return Err(format!(
+            "Unknown TTS engine: {engine}. Expected 'kokoro' or 'voxtral'"
+        ));
+    }
+
+    let voice = voice_name
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| config.get_voice_name_for_engine(&engine));
+    validate_voice_for_engine(&engine, &voice)?;
+
+    let mut voxtral_options = VoxtralGenerationOptions::default();
+    if let Some(max_frames) = options.voxtral_max_frames {
+        voxtral_options.max_frames = max_frames;
+    }
+    if let Some(flow_steps) = options.voxtral_flow_steps {
+        voxtral_options.flow_steps = flow_steps;
+    }
+    voxtral_options.use_kv_cache = options.voxtral_kv_cache;
+
+    Ok(ResolvedTtsRequest {
+        engine,
+        voice,
+        speed: speed
+            .map(|s| s as f32)
+            .unwrap_or_else(|| config.get_speed()),
+        voxtral_model: options
+            .voxtral_model
+            .clone()
+            .unwrap_or_else(|| config.get_voxtral_model()),
+        voxtral_options,
+    })
+}
+
+fn validate_voice_for_engine(engine: &str, voice: &str) -> Result<(), String> {
+    let known = if engine == VOXTRAL_ENGINE {
+        voice_voxtral::get_preset_voice(voice).is_some()
+    } else {
+        voice_tts::catalog::ALL_VOICES.iter().any(|v| v.id == voice)
+    };
+    if known {
+        Ok(())
+    } else {
+        Err(format!("Unknown {engine} voice: {voice}"))
+    }
+}
+
+fn generate_voxtral_audio(
+    state: &mut TtsState,
+    text: &str,
+    voice: &str,
+    model: &str,
+    options: VoxtralGenerationOptions,
+) -> Result<voice_voxtral::VoxtralGeneratedAudio, String> {
+    state
+        .get_voxtral_runtime(model)?
+        .generate_audio(text, voice, options)
+        .map_err(|e| format!("generate Voxtral audio: {e}"))
+}
+
 fn speak(
     tts: &Arc<Mutex<TtsState>>,
     text: &str,
-    voice_name: Option<&str>,
-    speed: Option<f64>,
+    resolved: ResolvedTtsRequest,
     queue_id: Option<&str>,
     cancelled: &Arc<AtomicBool>,
 ) -> Result<String, String> {
+    if resolved.engine == VOXTRAL_ENGINE {
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Cancelled by user".to_string());
+        }
+
+        let started = Instant::now();
+        let audio = {
+            let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
+            generate_voxtral_audio(
+                &mut state,
+                text,
+                &resolved.voice,
+                &resolved.voxtral_model,
+                resolved.voxtral_options.clone(),
+            )?
+        };
+
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Cancelled by user".to_string());
+        }
+
+        let mut stream =
+            DeviceSinkBuilder::open_default_sink().map_err(|e| format!("audio: {}", e))?;
+        stream.log_on_drop(false);
+        let player = Player::connect_new(stream.mixer());
+        let channels = NonZero::new(1u16).unwrap();
+        let rate = NonZero::new(audio.sample_rate).unwrap();
+        player.append(SamplesBuffer::new(channels, rate, audio.samples.clone()));
+
+        while !player.empty() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        if let Some(qid) = queue_id {
+            if !audio.samples.is_empty() {
+                let path = audio_recorder::question_path(qid);
+                audio_recorder::save_wav(&path, &audio.samples, audio.sample_rate)?;
+            }
+        }
+
+        return Ok(serde_json::json!({
+            "engine": resolved.engine,
+            "voice": resolved.voice,
+            "duration_ms": started.elapsed().as_millis() as u64,
+            "chunks": 1,
+            "samples": audio.samples.len(),
+            "sample_rate": audio.sample_rate,
+            "frames": audio.frames,
+            "ended": audio.ended,
+        })
+        .to_string());
+    }
+
     let chunks =
         voice_g2p::text_to_phoneme_chunks(text).map_err(|e| format!("G2P error: {}", e))?;
 
@@ -436,7 +612,7 @@ fn speak(
 
     {
         let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
-        let speed = speed.map(|s| s as f32).unwrap_or(state.speed);
+        let speed = resolved.speed;
         sample_rate = state.sample_rate;
         let channels = NonZero::new(1u16).unwrap();
         let rate = NonZero::new(sample_rate).unwrap();
@@ -449,11 +625,7 @@ fn speak(
                 continue;
             }
 
-            let voice = if let Some(name) = voice_name {
-                state.get_voice(name)?.clone()
-            } else {
-                state.default_voice.clone()
-            };
+            let voice = state.get_voice(&resolved.voice)?.clone();
 
             match voice_tts::generate(&mut state.model, phonemes, &voice, speed) {
                 Ok(audio) => {
@@ -487,6 +659,8 @@ fn speak(
 
     let duration_ms = started.elapsed().as_millis() as u64;
     Ok(serde_json::json!({
+        "engine": resolved.engine,
+        "voice": resolved.voice,
         "duration_ms": duration_ms,
         "chunks": chunks.len(),
     })
@@ -498,10 +672,51 @@ fn synthesize_to_file(
     text: &str,
     output_path: &str,
     output_format: Option<AudioOutputFormat>,
-    voice_name: Option<&str>,
-    speed: Option<f64>,
+    resolved: ResolvedTtsRequest,
     cancelled: &Arc<AtomicBool>,
 ) -> Result<String, String> {
+    if resolved.engine == VOXTRAL_ENGINE {
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Cancelled by user".to_string());
+        }
+
+        let started = Instant::now();
+        let audio = {
+            let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
+            generate_voxtral_audio(
+                &mut state,
+                text,
+                &resolved.voice,
+                &resolved.voxtral_model,
+                resolved.voxtral_options.clone(),
+            )?
+        };
+
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Cancelled by user".to_string());
+        }
+
+        let path = std::path::Path::new(output_path);
+        let output_format = voice_audio::resolve_output_format(path, output_format)?;
+        voice_audio::save_audio(&audio.samples, path, audio.sample_rate, output_format)?;
+
+        return Ok(serde_json::json!({
+            "engine": resolved.engine,
+            "output_path": output_path,
+            "format": output_format.as_str(),
+            "mime_type": output_format.mime_type(),
+            "duration_ms": started.elapsed().as_millis() as u64,
+            "chunks": 1,
+            "samples": audio.samples.len(),
+            "sample_rate": audio.sample_rate,
+            "voice": resolved.voice,
+            "speed": resolved.speed,
+            "frames": audio.frames,
+            "ended": audio.ended,
+        })
+        .to_string());
+    }
+
     let chunks =
         voice_g2p::text_to_phoneme_chunks(text).map_err(|e| format!("G2P error: {}", e))?;
 
@@ -512,7 +727,7 @@ fn synthesize_to_file(
 
     {
         let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
-        speed_used = speed.map(|s| s as f32).unwrap_or(state.speed);
+        speed_used = resolved.speed;
         sample_rate = state.sample_rate;
 
         for (i, phonemes) in chunks.iter().enumerate() {
@@ -523,11 +738,7 @@ fn synthesize_to_file(
                 continue;
             }
 
-            let voice = if let Some(name) = voice_name {
-                state.get_voice(name)?.clone()
-            } else {
-                state.default_voice.clone()
-            };
+            let voice = state.get_voice(&resolved.voice)?.clone();
 
             match voice_tts::generate(&mut state.model, phonemes, &voice, speed_used) {
                 Ok(audio) => {
@@ -554,6 +765,7 @@ fn synthesize_to_file(
     voice_audio::save_audio(&all_samples, path, sample_rate, output_format)?;
 
     Ok(serde_json::json!({
+        "engine": resolved.engine,
         "output_path": output_path,
         "format": output_format.as_str(),
         "mime_type": output_format.mime_type(),
@@ -561,7 +773,7 @@ fn synthesize_to_file(
         "chunks": chunks.len(),
         "samples": all_samples.len(),
         "sample_rate": sample_rate,
-        "voice": voice_name,
+        "voice": resolved.voice,
         "speed": speed_used,
     })
     .to_string())
@@ -571,8 +783,7 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
     let StreamSpeakJob {
         text,
         stream_id,
-        voice_name,
-        speed,
+        resolved,
         sample_rate,
         frame_ms,
         event_tx,
@@ -580,6 +791,87 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
     } = job;
 
     let started = Instant::now();
+
+    if resolved.engine == VOXTRAL_ENGINE {
+        let audio = {
+            let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
+            generate_voxtral_audio(
+                &mut state,
+                &text,
+                &resolved.voice,
+                &resolved.voxtral_model,
+                resolved.voxtral_options.clone(),
+            )
+        };
+        let audio = match audio {
+            Ok(audio) => audio,
+            Err(e) => {
+                let _ = send_stream_event(
+                    &event_tx,
+                    TtsStreamEvent::error(stream_id.clone(), e.clone()),
+                    &cancelled,
+                );
+                return Err(e);
+            }
+        };
+
+        let output_sample_rate = sample_rate.max(1);
+        let frame_ms = frame_ms.max(1);
+        let source_sample_rate = audio.sample_rate;
+        let metadata = StreamMetadata {
+            stream_id: stream_id.clone(),
+            sample_rate: output_sample_rate,
+            source_sample_rate,
+            channels: 1,
+            encoding: AudioEncoding::PcmS16Le,
+            frame_ms,
+            voice: Some(resolved.voice.clone()),
+            speed: resolved.speed,
+            total_phoneme_chunks: 1,
+        };
+        send_stream_event(&event_tx, TtsStreamEvent::Started { metadata }, &cancelled)?;
+
+        let mut packetizer = Packetizer::new(stream_id.clone(), output_sample_rate, frame_ms);
+        let samples = if output_sample_rate == source_sample_rate {
+            audio.samples
+        } else {
+            resample_linear(&audio.samples, source_sample_rate, output_sample_rate)
+        };
+        for frame in packetizer.push_samples(0, &samples) {
+            send_stream_event(&event_tx, TtsStreamEvent::Audio { frame }, &cancelled)?;
+        }
+        if let Some(frame) = packetizer.finish(0) {
+            send_stream_event(&event_tx, TtsStreamEvent::Audio { frame }, &cancelled)?;
+        }
+
+        let samples = packetizer.samples_emitted();
+        let duration_ms = samples.saturating_mul(1_000) / output_sample_rate as u64;
+        let ended = StreamEnded {
+            stream_id: stream_id.clone(),
+            frames: packetizer.frames_emitted(),
+            samples,
+            duration_ms,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        };
+        send_stream_event(&event_tx, TtsStreamEvent::Ended(ended), &cancelled)?;
+
+        return Ok(serde_json::json!({
+            "stream_id": stream_id,
+            "engine": resolved.engine,
+            "duration_ms": duration_ms,
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+            "chunks": 1,
+            "frames": packetizer.frames_emitted(),
+            "samples": samples,
+            "sample_rate": output_sample_rate,
+            "source_sample_rate": source_sample_rate,
+            "frame_ms": frame_ms,
+            "voice": resolved.voice,
+            "speed": resolved.speed,
+        })
+        .to_string());
+    }
+
     let chunks = match voice_g2p::text_to_phoneme_chunks(&text) {
         Ok(chunks) => chunks,
         Err(e) => {
@@ -595,18 +887,12 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
 
     let init_result: Result<(Tensor, u32, f32, Option<String>), String> = {
         let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
-        let voice_tensor = if let Some(name) = voice_name.as_deref() {
-            state.get_voice(name)?.clone()
-        } else {
-            state.default_voice.clone()
-        };
+        let voice_tensor = state.get_voice(&resolved.voice)?.clone();
         Ok((
             voice_tensor,
             state.sample_rate,
-            speed.map(|s| s as f32).unwrap_or(state.speed),
-            voice_name
-                .clone()
-                .or_else(|| Some(state.default_voice_name.clone())),
+            resolved.speed,
+            Some(resolved.voice.clone()),
         ))
     };
     let (voice_tensor, source_sample_rate, speed_used, resolved_voice) = match init_result {
@@ -709,6 +995,7 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
 
     Ok(serde_json::json!({
         "stream_id": stream_id,
+        "engine": resolved.engine,
         "duration_ms": duration_ms,
         "elapsed_ms": started.elapsed().as_millis() as u64,
         "chunks": chunks.len(),
@@ -1216,6 +1503,7 @@ mod tests {
                     output_format: None,
                     voice: None,
                     speed: None,
+                    options: TtsOptions::default(),
                 },
             )
             .await;
@@ -1264,6 +1552,7 @@ mod tests {
                     output_format: Some(AudioOutputFormat::OggOpus),
                     voice: None,
                     speed: None,
+                    options: TtsOptions::default(),
                 },
             )
             .await;
@@ -1303,6 +1592,7 @@ mod tests {
                     stream_id: stream_id.clone(),
                     voice: None,
                     speed: None,
+                    options: TtsOptions::default(),
                     sample_rate: 48_000,
                     frame_ms: 20,
                     event_tx,

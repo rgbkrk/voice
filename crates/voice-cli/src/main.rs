@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
+const DEFAULT_VOXTRAL_MODEL: &str = voice_voxtral::DEFAULT_REPO;
+const KOKORO_DEFAULT_VOICE: &str = "af_heart";
+const VOXTRAL_DEFAULT_VOICE: &str = "casual_male";
 
 static QUIET: AtomicBool = AtomicBool::new(false);
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -144,9 +147,29 @@ struct SayArgs {
     #[arg(long)]
     phonemes: Option<String>,
 
-    /// Voice name (e.g. af_heart, am_adam)
-    #[arg(short, long, default_value = "af_heart")]
-    voice: String,
+    /// TTS engine to use
+    #[arg(long, value_enum, default_value_t = TtsEngine::Kokoro)]
+    engine: TtsEngine,
+
+    /// Voice name. Defaults to af_heart for Kokoro, casual_male for Voxtral
+    #[arg(short, long)]
+    voice: Option<String>,
+
+    /// Voxtral model path or HuggingFace repo
+    #[arg(long = "voxtral-model", default_value = DEFAULT_VOXTRAL_MODEL)]
+    voxtral_model: String,
+
+    /// Maximum Voxtral audio frames to generate
+    #[arg(long = "voxtral-max-frames", default_value_t = 256)]
+    voxtral_max_frames: usize,
+
+    /// Voxtral flow-matching steps per frame
+    #[arg(long = "voxtral-flow-steps", default_value_t = 7)]
+    voxtral_flow_steps: usize,
+
+    /// Enable Voxtral language KV cache (off by default)
+    #[arg(long = "voxtral-kv-cache")]
+    voxtral_kv_cache: bool,
 
     /// Write audio to file instead of playing
     #[arg(short, long)]
@@ -206,6 +229,97 @@ impl From<StreamOutputFormat> for voice_audio::AudioOutputFormat {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TtsEngine {
+    Kokoro,
+    Voxtral,
+}
+
+impl TtsEngine {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Kokoro => "kokoro",
+            Self::Voxtral => "voxtral",
+        }
+    }
+}
+
+fn default_voice_for_engine(engine: TtsEngine) -> &'static str {
+    match engine {
+        TtsEngine::Kokoro => KOKORO_DEFAULT_VOICE,
+        TtsEngine::Voxtral => VOXTRAL_DEFAULT_VOICE,
+    }
+}
+
+fn selected_voice(engine: TtsEngine, voice: &Option<String>) -> String {
+    voice
+        .clone()
+        .unwrap_or_else(|| default_voice_for_engine(engine).to_string())
+}
+
+fn validate_voice_for_engine(engine: TtsEngine, voice: &str) -> Result<(), String> {
+    let known = match engine {
+        TtsEngine::Kokoro => voice_tts::catalog::ALL_VOICES
+            .iter()
+            .any(|candidate| candidate.id == voice),
+        TtsEngine::Voxtral => voice_voxtral::get_preset_voice(voice).is_some(),
+    };
+    if known {
+        Ok(())
+    } else {
+        Err(format!("Unknown {} voice: {}", engine.as_str(), voice))
+    }
+}
+
+fn daemon_tts_options<'a>(
+    engine: TtsEngine,
+    voxtral_model: &'a str,
+    max_frames: usize,
+    flow_steps: usize,
+    kv_cache: bool,
+) -> voice_protocol::client::TtsRequestOptions<'a> {
+    voice_protocol::client::TtsRequestOptions {
+        engine: Some(engine.as_str()),
+        voxtral_model: (engine == TtsEngine::Voxtral).then_some(voxtral_model),
+        voxtral_max_frames: (engine == TtsEngine::Voxtral).then_some(max_frames),
+        voxtral_flow_steps: (engine == TtsEngine::Voxtral).then_some(flow_steps),
+        voxtral_kv_cache: engine == TtsEngine::Voxtral && kv_cache,
+    }
+}
+
+fn daemon_supports_engine(
+    daemon: &mut voice_protocol::client::DaemonClient,
+    engine: TtsEngine,
+) -> bool {
+    if engine == TtsEngine::Kokoro {
+        return true;
+    }
+    daemon
+        .list_voices()
+        .ok()
+        .and_then(|response| response.result)
+        .and_then(|result| result.get("voices").cloned())
+        .and_then(|voices| voices.as_array().cloned())
+        .is_some_and(|voices| {
+            voices.iter().any(|voice| {
+                voice.get("engine").and_then(|value| value.as_str()) == Some(engine.as_str())
+            })
+        })
+}
+
+fn voxtral_generation_options(
+    max_frames: usize,
+    flow_steps: usize,
+    kv_cache: bool,
+) -> voice_voxtral::VoxtralGenerationOptions {
+    voice_voxtral::VoxtralGenerationOptions {
+        max_frames,
+        flow_steps,
+        use_kv_cache: kv_cache,
+        ..Default::default()
+    }
+}
+
 #[derive(clap::Args, Debug)]
 struct StreamArgs {
     /// Text to stream
@@ -216,9 +330,29 @@ struct StreamArgs {
     #[arg(short = 'f', long = "input-file")]
     input_file: Option<PathBuf>,
 
-    /// Voice name (e.g. af_heart, am_adam)
-    #[arg(short, long, default_value = "af_heart")]
-    voice: String,
+    /// TTS engine to use
+    #[arg(long, value_enum, default_value_t = TtsEngine::Kokoro)]
+    engine: TtsEngine,
+
+    /// Voice name. Defaults to af_heart for Kokoro, casual_male for Voxtral
+    #[arg(short, long)]
+    voice: Option<String>,
+
+    /// Voxtral model path or HuggingFace repo
+    #[arg(long = "voxtral-model", default_value = DEFAULT_VOXTRAL_MODEL)]
+    voxtral_model: String,
+
+    /// Maximum Voxtral audio frames to generate
+    #[arg(long = "voxtral-max-frames", default_value_t = 256)]
+    voxtral_max_frames: usize,
+
+    /// Voxtral flow-matching steps per frame
+    #[arg(long = "voxtral-flow-steps", default_value_t = 7)]
+    voxtral_flow_steps: usize,
+
+    /// Enable Voxtral language KV cache (off by default)
+    #[arg(long = "voxtral-kv-cache")]
+    voxtral_kv_cache: bool,
 
     /// Speech speed factor (1.0 = normal)
     #[arg(short, long, default_value = "1.0")]
@@ -291,9 +425,29 @@ struct ConverseArgs {
     #[arg(trailing_var_arg = true)]
     text: Vec<String>,
 
-    /// Voice name (e.g. af_heart, am_adam)
-    #[arg(short, long, default_value = "af_heart")]
-    voice: String,
+    /// TTS engine to use
+    #[arg(long, value_enum, default_value_t = TtsEngine::Kokoro)]
+    engine: TtsEngine,
+
+    /// Voice name. Defaults to af_heart for Kokoro, casual_male for Voxtral
+    #[arg(short, long)]
+    voice: Option<String>,
+
+    /// Voxtral model path or HuggingFace repo
+    #[arg(long = "voxtral-model", default_value = DEFAULT_VOXTRAL_MODEL)]
+    voxtral_model: String,
+
+    /// Maximum Voxtral audio frames to generate
+    #[arg(long = "voxtral-max-frames", default_value_t = 256)]
+    voxtral_max_frames: usize,
+
+    /// Voxtral flow-matching steps per frame
+    #[arg(long = "voxtral-flow-steps", default_value_t = 7)]
+    voxtral_flow_steps: usize,
+
+    /// Enable Voxtral language KV cache (off by default)
+    #[arg(long = "voxtral-kv-cache")]
+    voxtral_kv_cache: bool,
 
     /// Speech speed factor (1.0 = normal)
     #[arg(short, long, default_value = "1.0")]
@@ -380,8 +534,23 @@ enum DaemonCommand {
 
     /// Set the daemon default voice
     SetVoice {
+        /// TTS engine whose default voice should be changed
+        #[arg(long, value_enum, default_value_t = TtsEngine::Kokoro)]
+        engine: TtsEngine,
+
         /// Voice name, e.g. af_heart or am_adam
         voice: String,
+    },
+
+    /// Set the daemon default TTS engine
+    SetEngine {
+        /// TTS engine to use for requests that do not specify --engine
+        #[arg(value_enum)]
+        engine: TtsEngine,
+
+        /// Voxtral model path or HuggingFace repo
+        #[arg(long = "voxtral-model")]
+        voxtral_model: Option<String>,
     },
 
     /// Set the daemon default speech speed
@@ -878,7 +1047,12 @@ fn main() {
                     text: args.text,
                     input_file: None,
                     phonemes: None,
-                    voice: "af_heart".to_string(),
+                    engine: TtsEngine::Kokoro,
+                    voice: None,
+                    voxtral_model: DEFAULT_VOXTRAL_MODEL.to_string(),
+                    voxtral_max_frames: 256,
+                    voxtral_flow_steps: 7,
+                    voxtral_kv_cache: false,
                     output: None,
                     format: None,
                     speed: 1.0,
@@ -925,14 +1099,49 @@ fn run_daemon(args: DaemonArgs) {
                 print_daemon_voices(&result);
             }
         }
-        DaemonCommand::SetVoice { voice } => {
+        DaemonCommand::SetVoice { engine, voice } => {
             let mut daemon = connect_daemon_or_exit();
-            let result = daemon_response_or_exit(daemon.set_voice(&voice));
+            if let Err(message) = validate_voice_for_engine(engine, &voice) {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+            let result =
+                daemon_response_or_exit(daemon.set_voice_for_engine(engine.as_str(), &voice));
+            let engine = result
+                .get("engine")
+                .and_then(|v| v.as_str())
+                .unwrap_or(engine.as_str());
             let voice = result
                 .get("voice")
                 .and_then(|v| v.as_str())
                 .unwrap_or(&voice);
+            println!("engine: {engine}");
             println!("voice: {voice}");
+        }
+        DaemonCommand::SetEngine {
+            engine,
+            voxtral_model,
+        } => {
+            let mut daemon = connect_daemon_or_exit();
+            let result = daemon_response_or_exit(
+                daemon.set_engine(engine.as_str(), voxtral_model.as_deref()),
+            );
+            let engine = result
+                .get("engine")
+                .and_then(|v| v.as_str())
+                .unwrap_or(engine.as_str());
+            let voice = result.get("voice").and_then(|v| v.as_str()).unwrap_or("");
+            let voxtral_model = result
+                .get("voxtral_model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            println!("engine: {engine}");
+            if !voice.is_empty() {
+                println!("voice: {voice}");
+            }
+            if !voxtral_model.is_empty() {
+                println!("voxtral_model: {voxtral_model}");
+            }
         }
         DaemonCommand::SetSpeed { speed } => {
             let mut daemon = connect_daemon_or_exit();
@@ -1065,6 +1274,10 @@ fn print_daemon_voices(result: &serde_json::Value) {
         .unwrap_or(&[]);
 
     for voice in voices {
+        let engine = voice
+            .get("engine")
+            .and_then(|v| v.as_str())
+            .unwrap_or("kokoro");
         let id = voice.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let name = voice.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let language = voice.get("language").and_then(|v| v.as_str()).unwrap_or("");
@@ -1072,10 +1285,24 @@ fn print_daemon_voices(result: &serde_json::Value) {
             .get("builtin")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let marker = if id == current { "*" } else { " " };
-        let source = if builtin { "builtin" } else { "download" };
+        let current_engine = result
+            .get("engine")
+            .and_then(|v| v.as_str())
+            .unwrap_or("kokoro");
+        let marker = if id == current && engine == current_engine {
+            "*"
+        } else {
+            " "
+        };
+        let source = if engine == "voxtral" {
+            "preset"
+        } else if builtin {
+            "builtin"
+        } else {
+            "download"
+        };
 
-        println!("{marker} {id:<14} {name:<24} {language:<12} {source}");
+        println!("{marker} {engine:<8} {id:<16} {name:<24} {language:<12} {source}");
     }
 }
 
@@ -1196,6 +1423,12 @@ fn run_say(say_args: SayArgs) {
         None => None,
     };
 
+    let voice = selected_voice(say_args.engine, &say_args.voice);
+    if let Err(message) = validate_voice_for_engine(say_args.engine, &voice) {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
+
     // If the daemon is running, delegate normal playback and file synthesis to it.
     // `--phonemes` stays local because the daemon RPC accepts text and runs its
     // own G2P pipeline.
@@ -1203,64 +1436,89 @@ fn run_say(say_args: SayArgs) {
     // synthesis-mode selection yet.
     if say_args.phonemes.is_none() && !say_args.deterministic {
         if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
-            let text = match resolve_text(&say_args) {
-                Ok(t) => t,
-                Err(msg) => {
-                    eprintln!("Error: {msg}");
-                    std::process::exit(1);
-                }
-            };
-            let text = preprocess_daemon_text(
-                text,
-                say_args.markdown,
-                &say_args.subs,
-                say_args.sub_file.clone(),
-            );
-
-            let daemon_result = if let Some(output_path) = &say_args.output {
-                daemon.synthesize_with_format(
-                    &text,
-                    &output_path.to_string_lossy(),
-                    output_format.map(|format| format.as_str()),
-                    Some(&say_args.voice),
-                    Some(say_args.speed as f64),
-                )
+            if !daemon_supports_engine(&mut daemon, say_args.engine) {
+                eprintln!(
+                    "Daemon does not advertise {} support, falling back to local",
+                    say_args.engine.as_str()
+                );
             } else {
-                daemon.speak(&text, Some(&say_args.voice), Some(say_args.speed as f64))
-            };
+                let text = match resolve_text(&say_args) {
+                    Ok(t) => t,
+                    Err(msg) => {
+                        eprintln!("Error: {msg}");
+                        std::process::exit(1);
+                    }
+                };
+                let text = preprocess_daemon_text(
+                    text,
+                    say_args.markdown,
+                    &say_args.subs,
+                    say_args.sub_file.clone(),
+                );
+                let tts_options = daemon_tts_options(
+                    say_args.engine,
+                    &say_args.voxtral_model,
+                    say_args.voxtral_max_frames,
+                    say_args.voxtral_flow_steps,
+                    say_args.voxtral_kv_cache,
+                );
 
-            match daemon_result {
-                Ok(resp) if resp.error.is_none() => {
-                    let failed = resp
-                        .result
-                        .as_ref()
-                        .and_then(|r| r.get("status"))
-                        .and_then(|s| s.as_str())
-                        == Some("failed");
-                    if failed {
-                        eprintln!("Daemon synthesis failed, falling back to local");
-                    } else if output_format == Some(voice_audio::AudioOutputFormat::OggOpus) {
-                        if let Some(output_path) = &say_args.output {
-                            if voice_audio::is_ogg_opus_file(output_path) {
-                                return;
+                let daemon_result = if let Some(output_path) = &say_args.output {
+                    daemon.synthesize_with_format_and_options(
+                        &text,
+                        &output_path.to_string_lossy(),
+                        output_format.map(|format| format.as_str()),
+                        Some(&voice),
+                        Some(say_args.speed as f64),
+                        tts_options,
+                    )
+                } else {
+                    daemon.speak_with_options(
+                        &text,
+                        Some(&voice),
+                        Some(say_args.speed as f64),
+                        tts_options,
+                    )
+                };
+
+                match daemon_result {
+                    Ok(resp) if resp.error.is_none() => {
+                        let failed = resp
+                            .result
+                            .as_ref()
+                            .and_then(|r| r.get("status"))
+                            .and_then(|s| s.as_str())
+                            == Some("failed");
+                        if failed {
+                            eprintln!("Daemon synthesis failed, falling back to local");
+                        } else if output_format == Some(voice_audio::AudioOutputFormat::OggOpus) {
+                            if let Some(output_path) = &say_args.output {
+                                if voice_audio::is_ogg_opus_file(output_path) {
+                                    return;
+                                }
+                                let _ = std::fs::remove_file(output_path);
+                                eprintln!("Daemon output was not Ogg/Opus, falling back to local");
                             }
-                            let _ = std::fs::remove_file(output_path);
-                            eprintln!("Daemon output was not Ogg/Opus, falling back to local");
+                        } else {
+                            return;
                         }
-                    } else {
-                        return;
                     }
-                }
-                Ok(resp) => {
-                    if let Some(err) = resp.error {
-                        eprintln!("Daemon error: {}, falling back to local", err.message);
+                    Ok(resp) => {
+                        if let Some(err) = resp.error {
+                            eprintln!("Daemon error: {}, falling back to local", err.message);
+                        }
                     }
-                }
-                Err(e) => {
-                    eprintln!("Daemon error: {e}, falling back to local");
+                    Err(e) => {
+                        eprintln!("Daemon error: {e}, falling back to local");
+                    }
                 }
             }
         }
+    }
+
+    if say_args.engine == TtsEngine::Voxtral {
+        run_voxtral_say(say_args, &voice, output_format);
+        return;
     }
 
     // Start model loading in a background thread immediately — this is the
@@ -1326,10 +1584,10 @@ fn run_say(say_args: SayArgs) {
 
     // Load voice (fast for builtins — embedded in binary, ~5ms).
     // Must happen after model is loaded so we can share its Metal device.
-    let voice = match model.load_voice(&say_args.voice, Some(MODEL_REPO)) {
+    let voice_tensor = match model.load_voice(&voice, Some(MODEL_REPO)) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Failed to load voice '{}': {e}", say_args.voice);
+            eprintln!("Failed to load voice '{}': {e}", voice);
             eprintln!("Available voices include: af_heart, af_bella, af_nicole, af_sarah, af_sky,");
             eprintln!("  am_adam, am_michael, bf_emma, bf_isabella, bm_george, bm_lewis");
             std::process::exit(1);
@@ -1339,7 +1597,7 @@ fn run_say(say_args: SayArgs) {
     if let Some(output_path) = &say_args.output {
         if let Err(e) = generate_to_file(
             &mut model,
-            &voice,
+            &voice_tensor,
             &phoneme_chunks,
             say_args.speed,
             sample_rate,
@@ -1355,12 +1613,83 @@ fn run_say(say_args: SayArgs) {
     } else {
         stream_playback(
             &mut model,
-            &voice,
+            &voice_tensor,
             &phoneme_chunks,
             say_args.speed,
             sample_rate,
             synthesis_mode,
         );
+    }
+}
+
+fn run_voxtral_say(
+    say_args: SayArgs,
+    voice: &str,
+    output_format: Option<voice_audio::AudioOutputFormat>,
+) {
+    if say_args.phonemes.is_some() {
+        eprintln!("Error: --phonemes is only supported with --engine kokoro");
+        std::process::exit(1);
+    }
+
+    let text = match resolve_text(&say_args) {
+        Ok(text) => text,
+        Err(msg) => {
+            eprintln!("Error: {msg}");
+            std::process::exit(1);
+        }
+    };
+    let text = preprocess_daemon_text(
+        text,
+        say_args.markdown,
+        &say_args.subs,
+        say_args.sub_file.clone(),
+    );
+
+    if (say_args.speed - 1.0).abs() > f32::EPSILON {
+        info!("Voxtral does not support --speed yet; generating at model speed");
+    }
+
+    info!("Loading Voxtral TTS model ({})...", say_args.voxtral_model);
+    let mut runtime = match voice_voxtral::VoxtralTtsRuntime::load_default(&say_args.voxtral_model)
+    {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!(
+                "Failed to load Voxtral model '{}': {e}",
+                say_args.voxtral_model
+            );
+            std::process::exit(1);
+        }
+    };
+    info!("Generating Voxtral audio with voice {}...", voice);
+    let audio = match runtime.generate_audio(
+        &text,
+        voice,
+        voxtral_generation_options(
+            say_args.voxtral_max_frames,
+            say_args.voxtral_flow_steps,
+            say_args.voxtral_kv_cache,
+        ),
+    ) {
+        Ok(audio) => audio,
+        Err(e) => {
+            eprintln!("Voxtral synthesis failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Some(output_path) = &say_args.output {
+        let format = output_format.expect("output format resolved when output path is set");
+        if let Err(e) =
+            voice_audio::save_audio(&audio.samples, output_path, audio.sample_rate, format)
+        {
+            eprintln!("Failed to write audio: {e}");
+            std::process::exit(1);
+        }
+    } else if let Err(e) = play_samples(&audio.samples, audio.sample_rate) {
+        eprintln!("Audio playback failed: {e}");
+        std::process::exit(1);
     }
 }
 
@@ -1372,6 +1701,12 @@ fn resolve_say_output_format(
 }
 
 fn run_stream(stream_args: StreamArgs) {
+    let voice = selected_voice(stream_args.engine, &stream_args.voice);
+    if let Err(message) = validate_voice_for_engine(stream_args.engine, &voice) {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
+
     let text = match resolve_stream_text(&stream_args) {
         Ok(t) => t,
         Err(msg) => {
@@ -1449,17 +1784,31 @@ fn run_stream(stream_args: StreamArgs) {
     };
 
     let mut daemon = connect_daemon_or_exit();
+    if !daemon_supports_engine(&mut daemon, stream_args.engine) {
+        eprintln!(
+            "voice daemon does not advertise {} support",
+            stream_args.engine.as_str()
+        );
+        std::process::exit(1);
+    }
     let mut terminal_error: Option<String> = None;
     let mut frame_count = 0u64;
     let emit_summaries =
         should_emit_stream_summaries(stream_args.json, QUIET.load(Ordering::Relaxed));
 
-    let result = daemon.stream_speak(
+    let result = daemon.stream_speak_with_options(
         &text,
-        Some(&stream_args.voice),
+        Some(&voice),
         Some(stream_args.speed as f64),
         Some(stream_args.sample_rate),
         Some(stream_args.frame_ms),
+        daemon_tts_options(
+            stream_args.engine,
+            &stream_args.voxtral_model,
+            stream_args.voxtral_max_frames,
+            stream_args.voxtral_flow_steps,
+            stream_args.voxtral_kv_cache,
+        ),
         |event| {
             if stream_args.json {
                 println!("{}", serde_json::to_string(&event).unwrap());
@@ -1800,44 +2149,66 @@ fn run_converse(args: ConverseArgs) {
         std::process::exit(1);
     }
 
+    let voice = selected_voice(args.engine, &args.voice);
+    if let Err(message) = validate_voice_for_engine(args.engine, &voice) {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
+
     let text = args.text.join(" ");
 
     // Delegate to daemon if available
     if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
-        match daemon.converse_with_duration(&text, Some(&args.voice), Some(args.duration * 1_000)) {
-            Ok(resp) => {
-                if interrupted() {
-                    std::process::exit(130);
-                }
-                // Extract and print the heard text from the worker's JSON result.
-                if let Some(result) = resp.result {
-                    if let Some(r) = result.get("result").and_then(|v| v.as_str()) {
-                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(r) {
-                            if let Some(text) = value
-                                .get("heard")
-                                .and_then(|heard| heard.get("text"))
-                                .and_then(|text| text.as_str())
-                            {
-                                println!("{text}");
+        if !daemon_supports_engine(&mut daemon, args.engine) {
+            eprintln!(
+                "Daemon does not advertise {} support, falling back to local",
+                args.engine.as_str()
+            );
+        } else {
+            match daemon.converse_with_options_and_duration(
+                &text,
+                Some(&voice),
+                daemon_tts_options(
+                    args.engine,
+                    &args.voxtral_model,
+                    args.voxtral_max_frames,
+                    args.voxtral_flow_steps,
+                    args.voxtral_kv_cache,
+                ),
+                Some(args.duration * 1_000),
+            ) {
+                Ok(resp) => {
+                    if interrupted() {
+                        std::process::exit(130);
+                    }
+                    // Extract and print the heard text from the worker's JSON result.
+                    if let Some(result) = resp.result {
+                        if let Some(r) = result.get("result").and_then(|v| v.as_str()) {
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(r) {
+                                if let Some(text) = value
+                                    .get("heard")
+                                    .and_then(|heard| heard.get("text"))
+                                    .and_then(|text| text.as_str())
+                                {
+                                    println!("{text}");
+                                } else {
+                                    println!("{r}");
+                                }
                             } else {
                                 println!("{r}");
                             }
-                        } else {
-                            println!("{r}");
                         }
+                    } else if let Some(err) = resp.error {
+                        eprintln!("Daemon error: {}", err.message);
                     }
-                } else if let Some(err) = resp.error {
-                    eprintln!("Daemon error: {}", err.message);
+                    return;
                 }
-                return;
-            }
-            Err(e) => {
-                eprintln!("Daemon error: {e}, falling back to local");
+                Err(e) => {
+                    eprintln!("Daemon error: {e}, falling back to local");
+                }
             }
         }
     }
-
-    let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
 
     let sub_file = args.sub_file.clone().or_else(find_sub_file);
     let (subs, phoneme_overrides) = collect_subs(&args.subs, sub_file.as_deref());
@@ -1853,6 +2224,48 @@ fn run_converse(args: ConverseArgs) {
     } else {
         apply_substitutions(&text, &subs)
     };
+
+    if args.engine == TtsEngine::Voxtral {
+        if (args.speed - 1.0).abs() > f32::EPSILON {
+            info!("Voxtral does not support --speed yet; generating at model speed");
+        }
+        let stt_handle = std::thread::spawn(listen::load_stt);
+        info!("Loading Voxtral TTS model ({})...", args.voxtral_model);
+        let mut runtime = match voice_voxtral::VoxtralTtsRuntime::load_default(&args.voxtral_model)
+        {
+            Ok(runtime) => runtime,
+            Err(e) => {
+                eprintln!("Failed to load Voxtral model '{}': {e}", args.voxtral_model);
+                std::process::exit(1);
+            }
+        };
+        let audio = match runtime.generate_audio(
+            &text,
+            &voice,
+            voxtral_generation_options(
+                args.voxtral_max_frames,
+                args.voxtral_flow_steps,
+                args.voxtral_kv_cache,
+            ),
+        ) {
+            Ok(audio) => audio,
+            Err(e) => {
+                eprintln!("Voxtral synthesis failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = play_samples(&audio.samples, audio.sample_rate) {
+            eprintln!("Audio playback failed: {e}");
+            std::process::exit(1);
+        }
+        if interrupted() {
+            std::process::exit(130);
+        }
+        finish_converse_listen(stt_handle, args.duration);
+        return;
+    }
+
+    let model_handle = std::thread::spawn(|| voice_tts::load_model(MODEL_REPO));
 
     info!("Converting text to phonemes...");
     let phoneme_chunks = if phoneme_overrides.is_empty() {
@@ -1876,10 +2289,10 @@ fn run_converse(args: ConverseArgs) {
     let mut model = load_tts_model(model_handle);
     let sample_rate = model.sample_rate;
 
-    let voice = match model.load_voice(&args.voice, Some(MODEL_REPO)) {
+    let voice_tensor = match model.load_voice(&voice, Some(MODEL_REPO)) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Failed to load voice '{}': {e}", args.voice);
+            eprintln!("Failed to load voice '{}': {e}", voice);
             std::process::exit(1);
         }
     };
@@ -1889,7 +2302,7 @@ fn run_converse(args: ConverseArgs) {
 
     stream_playback(
         &mut model,
-        &voice,
+        &voice_tensor,
         &phoneme_chunks,
         args.speed,
         sample_rate,
@@ -1900,17 +2313,24 @@ fn run_converse(args: ConverseArgs) {
         std::process::exit(130);
     }
 
+    finish_converse_listen(stt_handle, args.duration);
+}
+
+fn finish_converse_listen(
+    stt_handle: std::thread::JoinHandle<voice_stt::WhisperModel>,
+    duration: u64,
+) {
     // STT should be loaded by now (TTS playback took seconds)
     let mut stt_model = stt_handle.join().expect("STT load panicked");
 
     // Listen for response (VAD auto-stop — no Enter key needed)
     if let Some(result) = listen::listen_and_transcribe_vad(
         &mut stt_model,
-        args.duration * 1_000, // max_duration_ms
-        1_500,                 // silence_timeout_ms
-        0.01,                  // silence_threshold
-        3.0,                   // noise_multiplier
-        300,                   // calibration_ms
+        duration * 1_000, // max_duration_ms
+        1_500,            // silence_timeout_ms
+        0.01,             // silence_threshold
+        3.0,              // noise_multiplier
+        300,              // calibration_ms
     ) {
         println!("{}", result.text);
         if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1990,6 +2410,29 @@ fn generate_to_file(
 /// Each chunk is appended to the player as soon as it's generated. rodio
 /// plays them sequentially on its audio thread, so the first chunk starts
 /// playing while subsequent chunks are still being generated.
+fn play_samples(samples: &[f32], sample_rate: u32) -> Result<(), String> {
+    use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
+    use std::num::NonZero;
+
+    let mut stream =
+        DeviceSinkBuilder::open_default_sink().map_err(|e| format!("open audio output: {e}"))?;
+    stream.log_on_drop(false);
+    let player = Player::connect_new(stream.mixer());
+    let channels = NonZero::new(1u16).unwrap();
+    let rate = NonZero::new(sample_rate).unwrap();
+    player.append(SamplesBuffer::new(channels, rate, samples.to_vec()));
+
+    while !player.empty() {
+        if interrupted() {
+            player.stop();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    Ok(())
+}
+
 fn stream_playback(
     model: &mut voice_tts::KokoroModel,
     voice: &candle_core::Tensor,

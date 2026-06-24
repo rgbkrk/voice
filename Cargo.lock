@@ -7080,6 +7080,7 @@ dependencies = [
  "voice-stream",
  "voice-stt",
  "voice-tts",
+ "voice-voxtral",
 ]
 
 [[package]]
@@ -7109,6 +7110,7 @@ dependencies = [
  "voice-stream",
  "voice-stt",
  "voice-tts",
+ "voice-voxtral",
 ]
 
 [[package]]

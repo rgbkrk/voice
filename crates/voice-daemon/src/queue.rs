@@ -11,6 +11,16 @@ use voice_stream::TtsStreamEvent;
 
 const CANCELLED_MESSAGE: &str = "Cancelled by user";
 
+/// Optional TTS engine controls carried with daemon requests.
+#[derive(Debug, Clone, Default)]
+pub struct TtsOptions {
+    pub engine: Option<String>,
+    pub voxtral_model: Option<String>,
+    pub voxtral_max_frames: Option<usize>,
+    pub voxtral_flow_steps: Option<usize>,
+    pub voxtral_kv_cache: bool,
+}
+
 /// Parameters for a daemon TTS stream request.
 #[derive(Debug, Clone)]
 pub struct StreamSpeakRequest {
@@ -18,6 +28,7 @@ pub struct StreamSpeakRequest {
     pub stream_id: String,
     pub voice: Option<String>,
     pub speed: Option<f64>,
+    pub options: TtsOptions,
     pub sample_rate: u32,
     pub frame_ms: u32,
     pub event_tx: mpsc::Sender<TtsStreamEvent>,
@@ -38,6 +49,7 @@ pub enum VoiceRequest {
         text: String,
         voice: Option<String>,
         speed: Option<f64>,
+        options: TtsOptions,
     },
     /// Generate speech audio into a file without opening audio output.
     Synthesize {
@@ -46,6 +58,7 @@ pub enum VoiceRequest {
         output_format: Option<AudioOutputFormat>,
         voice: Option<String>,
         speed: Option<f64>,
+        options: TtsOptions,
     },
     /// Generate speech audio as ordered stream events.
     StreamSpeak(StreamSpeakRequest),
@@ -58,6 +71,7 @@ pub enum VoiceRequest {
         text: String,
         voice: Option<String>,
         max_duration_ms: Option<u64>,
+        options: TtsOptions,
     },
 }
 
@@ -169,9 +183,18 @@ impl RequestQueue {
         text: String,
         voice: Option<String>,
         speed: Option<f64>,
+        options: TtsOptions,
     ) -> String {
-        self.enqueue(client_id, VoiceRequest::Speak { text, voice, speed })
-            .await
+        self.enqueue(
+            client_id,
+            VoiceRequest::Speak {
+                text,
+                voice,
+                speed,
+                options,
+            },
+        )
+        .await
     }
 
     pub async fn enqueue_synthesize(
@@ -182,6 +205,7 @@ impl RequestQueue {
         output_format: Option<AudioOutputFormat>,
         voice: Option<String>,
         speed: Option<f64>,
+        options: TtsOptions,
     ) -> String {
         self.enqueue(
             client_id,
@@ -191,6 +215,7 @@ impl RequestQueue {
                 output_format,
                 voice,
                 speed,
+                options,
             },
         )
         .await
@@ -216,6 +241,7 @@ impl RequestQueue {
         text: String,
         voice: Option<String>,
         max_duration_ms: Option<u64>,
+        options: TtsOptions,
     ) -> String {
         self.enqueue(
             client_id,
@@ -223,6 +249,7 @@ impl RequestQueue {
                 text,
                 voice,
                 max_duration_ms,
+                options,
             },
         )
         .await
@@ -499,6 +526,7 @@ mod tests {
                     text: "hello".to_string(),
                     voice: None,
                     speed: None,
+                    options: TtsOptions::default(),
                 },
             )
             .await;
@@ -545,6 +573,7 @@ mod tests {
                     text: "hello".to_string(),
                     voice: None,
                     speed: None,
+                    options: TtsOptions::default(),
                 },
             )
             .await;

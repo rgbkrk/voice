@@ -4,7 +4,9 @@
 //! instead of newline-delimited JSON.
 
 use crate::config::DaemonConfig;
-use crate::queue::{RequestQueue, StreamSpeakRequest, StreamTranscribeRequest, VoiceRequest};
+use crate::queue::{
+    RequestQueue, StreamSpeakRequest, StreamTranscribeRequest, TtsOptions, VoiceRequest,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -187,6 +189,11 @@ async fn dispatch_stream_speak(
         Ok(speed) => speed,
         Err(resp) => return write_response(writer, &resp).await,
     };
+    let default_engine = config.get_engine();
+    let options = match optional_tts_options(&req, &default_engine) {
+        Ok(options) => options,
+        Err(resp) => return write_response(writer, &resp).await,
+    };
     let sample_rate = match optional_u32_param(&req, "sample_rate", 8_000, 96_000) {
         Ok(rate) => rate.unwrap_or(24_000),
         Err(resp) => return write_response(writer, &resp).await,
@@ -204,8 +211,9 @@ async fn dispatch_stream_speak(
             StreamSpeakRequest {
                 text,
                 stream_id: stream_id.clone(),
-                voice: voice.or_else(|| Some(config.get_voice_name())),
+                voice,
                 speed: speed.or_else(|| Some(config.get_speed() as f64)),
+                options,
                 sample_rate,
                 frame_ms,
                 event_tx,
@@ -481,7 +489,17 @@ async fn dispatch(
                 Ok(speed) => speed,
                 Err(resp) => return resp,
             };
-            VoiceRequest::Speak { text, voice, speed }
+            let default_engine = config.get_engine();
+            let options = match optional_tts_options(&req, &default_engine) {
+                Ok(options) => options,
+                Err(resp) => return resp,
+            };
+            VoiceRequest::Speak {
+                text,
+                voice,
+                speed,
+                options,
+            }
         }
         "synthesize" => {
             let text = match required_string_param(&req, "text") {
@@ -504,12 +522,18 @@ async fn dispatch(
                 Ok(output_format) => output_format,
                 Err(resp) => return resp,
             };
+            let default_engine = config.get_engine();
+            let options = match optional_tts_options(&req, &default_engine) {
+                Ok(options) => options,
+                Err(resp) => return resp,
+            };
             VoiceRequest::Synthesize {
                 text,
                 output_path,
                 output_format,
                 voice,
                 speed,
+                options,
             }
         }
         "listen" => {
@@ -528,6 +552,11 @@ async fn dispatch(
                 Ok(voice) => voice,
                 Err(resp) => return resp,
             };
+            let default_engine = config.get_engine();
+            let options = match optional_tts_options(&req, &default_engine) {
+                Ok(options) => options,
+                Err(resp) => return resp,
+            };
             let max_duration_ms = match optional_duration_param(&req, "max_duration_ms") {
                 Ok(duration) => duration,
                 Err(resp) => return resp,
@@ -536,6 +565,7 @@ async fn dispatch(
                 text,
                 voice,
                 max_duration_ms,
+                options,
             }
         }
         "replay_audio" => {
@@ -636,8 +666,43 @@ async fn dispatch(
                 Ok(voice) => voice,
                 Err(resp) => return resp,
             };
-            config.set_voice_name(voice.clone());
-            return Response::success(req.id, serde_json::json!({ "voice": voice }));
+            let engine = match optional_engine_param(&req) {
+                Ok(engine) => engine.unwrap_or_else(|| config.get_engine()),
+                Err(resp) => return resp,
+            };
+            if let Err(message) = validate_voice_for_engine(&engine, &voice) {
+                return Response::error(req.id, rpc::INVALID_PARAMS, message);
+            }
+            config.set_voice_name_for_engine(&engine, voice.clone());
+            return Response::success(
+                req.id,
+                serde_json::json!({ "engine": engine, "voice": voice }),
+            );
+        }
+        "set_engine" => {
+            let engine = match required_engine_param(&req) {
+                Ok(engine) => engine,
+                Err(resp) => return resp,
+            };
+            if let Some(model) = req.params.get("voxtral_model").and_then(|v| v.as_str()) {
+                if model.trim().is_empty() {
+                    return Response::error(
+                        req.id,
+                        rpc::INVALID_PARAMS,
+                        "param 'voxtral_model' must be a non-empty string",
+                    );
+                }
+                config.set_voxtral_model(model.to_string());
+            }
+            config.set_engine(engine.clone());
+            return Response::success(
+                req.id,
+                serde_json::json!({
+                    "engine": engine,
+                    "voice": config.get_voice_name_for_engine(&config.get_engine()),
+                    "voxtral_model": config.get_voxtral_model(),
+                }),
+            );
         }
         "set_speed" => {
             let speed = match required_speed_param(&req) {
@@ -648,11 +713,12 @@ async fn dispatch(
             return Response::success(req.id, serde_json::json!({ "speed": speed }));
         }
         "list_voices" => {
-            let voices: Vec<serde_json::Value> = voice_tts::catalog::ALL_VOICES
+            let mut voices: Vec<serde_json::Value> = voice_tts::catalog::ALL_VOICES
                 .iter()
                 .map(|v| {
                     let builtin = voice_tts::catalog::is_builtin(v.id);
                     serde_json::json!({
+                        "engine": "kokoro",
                         "id": v.id,
                         "name": v.name,
                         "language": v.language,
@@ -662,10 +728,32 @@ async fn dispatch(
                     })
                 })
                 .collect();
-            let current = config.get_voice_name();
+            voices.extend(voice_voxtral::VOXTRAL_PRESET_VOICES.iter().map(|v| {
+                serde_json::json!({
+                    "engine": "voxtral",
+                    "id": v.id,
+                    "name": v.display_name,
+                    "language": v.language,
+                    "gender": v.gender,
+                    "traits": [],
+                    "builtin": false,
+                    "preset": true,
+                })
+            }));
+            let engine = config.get_engine();
+            let current = config.get_voice_name_for_engine(&engine);
             return Response::success(
                 req.id,
-                serde_json::json!({ "voices": voices, "current": current }),
+                serde_json::json!({
+                    "voices": voices,
+                    "current": current,
+                    "engine": engine,
+                    "defaults": {
+                        "kokoro": config.get_voice_name_for_engine("kokoro"),
+                        "voxtral": config.get_voice_name_for_engine("voxtral"),
+                        "voxtral_model": config.get_voxtral_model(),
+                    }
+                }),
             );
         }
         _ => {
@@ -680,9 +768,14 @@ async fn dispatch(
     if !wait {
         // Fire-and-forget: enqueue and return immediately
         let queue_id = match voice_req {
-            VoiceRequest::Speak { text, voice, speed } => {
+            VoiceRequest::Speak {
+                text,
+                voice,
+                speed,
+                options,
+            } => {
                 queue
-                    .enqueue_speak(client_id.to_string(), text, voice, speed)
+                    .enqueue_speak(client_id.to_string(), text, voice, speed, options)
                     .await
             }
             VoiceRequest::Synthesize {
@@ -691,6 +784,7 @@ async fn dispatch(
                 output_format,
                 voice,
                 speed,
+                options,
             } => {
                 queue
                     .enqueue_synthesize(
@@ -700,6 +794,7 @@ async fn dispatch(
                         output_format,
                         voice,
                         speed,
+                        options,
                     )
                     .await
             }
@@ -718,9 +813,10 @@ async fn dispatch(
                 text,
                 voice,
                 max_duration_ms,
+                options,
             } => {
                 queue
-                    .enqueue_converse(client_id.to_string(), text, voice, max_duration_ms)
+                    .enqueue_converse(client_id.to_string(), text, voice, max_duration_ms, options)
                     .await
             }
         };
@@ -788,29 +884,121 @@ fn required_string_param(req: &rpc::Request, name: &str) -> Result<String, Respo
 
 fn required_voice_param(req: &rpc::Request) -> Result<String, Response> {
     let voice = required_string_param(req, "voice")?;
-    validate_voice(req, voice)
+    Ok(voice)
 }
 
 fn optional_voice_param(req: &rpc::Request) -> Result<Option<String>, Response> {
     if req.params.get("voice").is_none() {
         return Ok(None);
     }
-    required_voice_param(req).map(Some)
+    Ok(Some(required_voice_param(req)?))
 }
 
-fn validate_voice(req: &rpc::Request, voice: String) -> Result<String, Response> {
-    if voice_tts::catalog::ALL_VOICES
-        .iter()
-        .any(|v| v.id == voice.as_str())
-    {
-        Ok(voice)
-    } else {
-        Err(Response::error(
+fn required_engine_param(req: &rpc::Request) -> Result<String, Response> {
+    match req.params.get("engine") {
+        Some(value) => match value.as_str() {
+            Some(engine) => validate_engine(req, engine.to_string()),
+            None => Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                "param 'engine' must be a string",
+            )),
+        },
+        None => Err(Response::error(
             req.id.clone(),
             rpc::INVALID_PARAMS,
-            format!("Unknown voice: {}", voice),
-        ))
+            "Missing param: engine",
+        )),
     }
+}
+
+fn optional_engine_param(req: &rpc::Request) -> Result<Option<String>, Response> {
+    if req.params.get("engine").is_none() {
+        return Ok(None);
+    }
+    required_engine_param(req).map(Some)
+}
+
+fn validate_engine(req: &rpc::Request, engine: String) -> Result<String, Response> {
+    match engine.as_str() {
+        "kokoro" | "voxtral" => Ok(engine),
+        _ => Err(Response::error(
+            req.id.clone(),
+            rpc::INVALID_PARAMS,
+            format!("Unknown TTS engine: {engine}. Expected 'kokoro' or 'voxtral'"),
+        )),
+    }
+}
+
+fn validate_voice_for_engine(engine: &str, voice: &str) -> Result<(), String> {
+    let known = if engine == "voxtral" {
+        voice_voxtral::get_preset_voice(voice).is_some()
+    } else {
+        voice_tts::catalog::ALL_VOICES.iter().any(|v| v.id == voice)
+    };
+    if known {
+        Ok(())
+    } else {
+        Err(format!("Unknown {engine} voice: {voice}"))
+    }
+}
+
+fn optional_tts_options(req: &rpc::Request, default_engine: &str) -> Result<TtsOptions, Response> {
+    let engine = optional_engine_param(req)?;
+    let voxtral_model = match req.params.get("voxtral_model") {
+        Some(value) => match value.as_str() {
+            Some(model) if !model.trim().is_empty() => Some(model.to_string()),
+            Some(_) => {
+                return Err(Response::error(
+                    req.id.clone(),
+                    rpc::INVALID_PARAMS,
+                    "param 'voxtral_model' must be non-empty",
+                ));
+            }
+            None => {
+                return Err(Response::error(
+                    req.id.clone(),
+                    rpc::INVALID_PARAMS,
+                    "param 'voxtral_model' must be a string",
+                ));
+            }
+        },
+        None => None,
+    };
+
+    let voxtral_max_frames =
+        optional_usize_param(req, "voxtral_max_frames", 1, 16_384)?.map(|value| value as usize);
+    let voxtral_flow_steps =
+        optional_usize_param(req, "voxtral_flow_steps", 1, 256)?.map(|value| value as usize);
+    let voxtral_kv_cache = match req.params.get("voxtral_kv_cache") {
+        Some(value) => value.as_bool().ok_or_else(|| {
+            Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                "param 'voxtral_kv_cache' must be a boolean",
+            )
+        })?,
+        None => false,
+    };
+
+    if let Some(voice) = req.params.get("voice").and_then(|v| v.as_str()) {
+        let engine_for_validation = engine.as_deref().unwrap_or(default_engine);
+        if let Err(message) = validate_voice_for_engine(engine_for_validation, voice) {
+            return Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                message,
+            ));
+        }
+    }
+
+    Ok(TtsOptions {
+        engine,
+        voxtral_model,
+        voxtral_max_frames,
+        voxtral_flow_steps,
+        voxtral_kv_cache,
+    })
 }
 
 fn required_speed_param(req: &rpc::Request) -> Result<f64, Response> {
@@ -906,6 +1094,30 @@ fn optional_u32_param(
     match req.params.get(name) {
         Some(value) => match value.as_u64() {
             Some(raw) if raw >= min as u64 && raw <= max as u64 => Ok(Some(raw as u32)),
+            Some(_) => Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                format!("param '{}' must be between {} and {}", name, min, max),
+            )),
+            None => Err(Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                format!("param '{}' must be an unsigned integer", name),
+            )),
+        },
+        None => Ok(None),
+    }
+}
+
+fn optional_usize_param(
+    req: &rpc::Request,
+    name: &str,
+    min: usize,
+    max: usize,
+) -> Result<Option<usize>, Response> {
+    match req.params.get(name) {
+        Some(value) => match value.as_u64() {
+            Some(raw) if raw >= min as u64 && raw <= max as u64 => Ok(Some(raw as usize)),
             Some(_) => Err(Response::error(
                 req.id.clone(),
                 rpc::INVALID_PARAMS,

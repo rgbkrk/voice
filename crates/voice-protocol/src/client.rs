@@ -15,6 +15,16 @@ const SOCKET_ENV: &str = "VOICE_DAEMON_SOCKET";
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(120);
 const DURATION_CALL_TIMEOUT_PAD: Duration = Duration::from_secs(120);
 
+/// Optional TTS engine controls for daemon requests.
+#[derive(Debug, Clone, Default)]
+pub struct TtsRequestOptions<'a> {
+    pub engine: Option<&'a str>,
+    pub voxtral_model: Option<&'a str>,
+    pub voxtral_max_frames: Option<usize>,
+    pub voxtral_flow_steps: Option<usize>,
+    pub voxtral_kv_cache: bool,
+}
+
 /// A synchronous client connection to the voice daemon.
 pub struct DaemonClient {
     stream: UnixStream,
@@ -110,6 +120,17 @@ impl DaemonClient {
         voice: Option<&str>,
         speed: Option<f64>,
     ) -> Result<Response, String> {
+        self.speak_with_options(text, voice, speed, TtsRequestOptions::default())
+    }
+
+    /// Convenience: send a speak request with explicit TTS engine controls.
+    pub fn speak_with_options(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        speed: Option<f64>,
+        options: TtsRequestOptions<'_>,
+    ) -> Result<Response, String> {
         let mut params = serde_json::json!({"text": text, "wait": false});
         if let Some(v) = voice {
             params["voice"] = Value::String(v.to_string());
@@ -117,6 +138,7 @@ impl DaemonClient {
         if let Some(s) = speed {
             params["speed"] = serde_json::json!(s);
         }
+        insert_tts_options(&mut params, options);
         self.call("speak", params)
     }
 
@@ -143,6 +165,26 @@ impl DaemonClient {
         voice: Option<&str>,
         speed: Option<f64>,
     ) -> Result<Response, String> {
+        self.synthesize_with_format_and_options(
+            text,
+            output_path,
+            output_format,
+            voice,
+            speed,
+            TtsRequestOptions::default(),
+        )
+    }
+
+    /// Convenience: synthesize with explicit TTS engine controls.
+    pub fn synthesize_with_format_and_options(
+        &mut self,
+        text: &str,
+        output_path: &str,
+        output_format: Option<&str>,
+        voice: Option<&str>,
+        speed: Option<f64>,
+        options: TtsRequestOptions<'_>,
+    ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "text": text,
             "output_path": output_path,
@@ -157,6 +199,7 @@ impl DaemonClient {
         if let Some(s) = speed {
             params["speed"] = serde_json::json!(s);
         }
+        insert_tts_options(&mut params, options);
         self.call("synthesize", params)
     }
 
@@ -172,6 +215,31 @@ impl DaemonClient {
         speed: Option<f64>,
         sample_rate: Option<u32>,
         frame_ms: Option<u32>,
+        on_event: F,
+    ) -> Result<Response, String>
+    where
+        F: FnMut(TtsStreamEvent) -> Result<(), String>,
+    {
+        self.stream_speak_with_options(
+            text,
+            voice,
+            speed,
+            sample_rate,
+            frame_ms,
+            TtsRequestOptions::default(),
+            on_event,
+        )
+    }
+
+    /// Stream TTS audio from the daemon with explicit TTS engine controls.
+    pub fn stream_speak_with_options<F>(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        speed: Option<f64>,
+        sample_rate: Option<u32>,
+        frame_ms: Option<u32>,
+        options: TtsRequestOptions<'_>,
         mut on_event: F,
     ) -> Result<Response, String>
     where
@@ -190,6 +258,7 @@ impl DaemonClient {
         if let Some(ms) = frame_ms {
             params["frame_ms"] = serde_json::json!(ms);
         }
+        insert_tts_options(&mut params, options);
 
         let req = rpc::Request::new("stream_speak", params).with_id(1);
         let json = serde_json::to_vec(&req).map_err(|e| format!("serialize: {}", e))?;
@@ -369,6 +438,32 @@ impl DaemonClient {
         voice: Option<&str>,
         max_duration_ms: Option<u64>,
     ) -> Result<Response, String> {
+        self.converse_with_options_and_duration(
+            text,
+            voice,
+            TtsRequestOptions::default(),
+            max_duration_ms,
+        )
+    }
+
+    /// Convenience: send a converse request with explicit TTS engine controls.
+    pub fn converse_with_options(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        options: TtsRequestOptions<'_>,
+    ) -> Result<Response, String> {
+        self.converse_with_options_and_duration(text, voice, options, None)
+    }
+
+    /// Convenience: send a converse request with explicit TTS engine controls and listen duration.
+    pub fn converse_with_options_and_duration(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        options: TtsRequestOptions<'_>,
+        max_duration_ms: Option<u64>,
+    ) -> Result<Response, String> {
         let mut params = serde_json::json!({"text": text, "wait": true});
         if let Some(v) = voice {
             params["voice"] = Value::String(v.to_string());
@@ -376,6 +471,7 @@ impl DaemonClient {
         if let Some(ms) = max_duration_ms {
             params["max_duration_ms"] = serde_json::json!(ms);
         }
+        insert_tts_options(&mut params, options);
         self.call_with_read_timeout(
             "converse",
             params,
@@ -396,6 +492,27 @@ impl DaemonClient {
     /// Convenience: set daemon default voice.
     pub fn set_voice(&mut self, voice: &str) -> Result<Response, String> {
         self.call("set_voice", serde_json::json!({ "voice": voice }))
+    }
+
+    /// Convenience: set a default voice for a specific TTS engine.
+    pub fn set_voice_for_engine(&mut self, engine: &str, voice: &str) -> Result<Response, String> {
+        self.call(
+            "set_voice",
+            serde_json::json!({ "engine": engine, "voice": voice }),
+        )
+    }
+
+    /// Convenience: set the daemon default TTS engine.
+    pub fn set_engine(
+        &mut self,
+        engine: &str,
+        voxtral_model: Option<&str>,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({ "engine": engine });
+        if let Some(model) = voxtral_model {
+            params["voxtral_model"] = Value::String(model.to_string());
+        }
+        self.call("set_engine", params)
     }
 
     /// Convenience: set daemon default speed.
@@ -424,6 +541,24 @@ impl DaemonClient {
 
 fn read_timeout_for_max_duration(max_duration_ms: u64) -> Duration {
     Duration::from_millis(max_duration_ms).saturating_add(DURATION_CALL_TIMEOUT_PAD)
+}
+
+fn insert_tts_options(params: &mut Value, options: TtsRequestOptions<'_>) {
+    if let Some(engine) = options.engine {
+        params["engine"] = Value::String(engine.to_string());
+    }
+    if let Some(model) = options.voxtral_model {
+        params["voxtral_model"] = Value::String(model.to_string());
+    }
+    if let Some(max_frames) = options.voxtral_max_frames {
+        params["voxtral_max_frames"] = serde_json::json!(max_frames);
+    }
+    if let Some(flow_steps) = options.voxtral_flow_steps {
+        params["voxtral_flow_steps"] = serde_json::json!(flow_steps);
+    }
+    if options.voxtral_kv_cache {
+        params["voxtral_kv_cache"] = Value::Bool(true);
+    }
 }
 
 #[cfg(test)]

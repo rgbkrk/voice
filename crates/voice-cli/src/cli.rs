@@ -1527,6 +1527,8 @@ struct TtsBenchRunReport {
     first_audio_ms: f64,
     total_ms: f64,
     audio_duration_ms: f64,
+    realtime_factor: Option<f64>,
+    first_audio_realtime_factor: Option<f64>,
     samples: usize,
     sample_rate: u32,
     chunks: Option<usize>,
@@ -1536,6 +1538,7 @@ struct TtsBenchRunReport {
     voxtral_stream_begin_frames: Option<usize>,
     voxtral_voice_cache_hit: Option<bool>,
     voxtral_codec_chunks: Option<usize>,
+    voxtral_codec_chunks_per_second: Option<f64>,
     voxtral_prompt_ms: Option<f64>,
     voxtral_language_ms: Option<f64>,
     voxtral_acoustic_ms: Option<f64>,
@@ -1680,6 +1683,9 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
         }
         let synth = synth_start.elapsed();
         let total = total_start.elapsed();
+        let total_ms = duration_ms(total);
+        let first_audio_ms = duration_ms(first_audio.unwrap_or(total));
+        let generated_audio_ms = audio_duration_ms(samples.len(), sample_rate);
         let output_wav = maybe_write_bench_wav(
             &args.output_dir,
             TtsEngine::Kokoro,
@@ -1696,9 +1702,11 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
             voice_load_ms: Some(duration_ms(voice_load)),
             synth_ms: duration_ms(synth),
             first_code_frame_ms: None,
-            first_audio_ms: duration_ms(first_audio.unwrap_or(total)),
-            total_ms: duration_ms(total),
-            audio_duration_ms: audio_duration_ms(samples.len(), sample_rate),
+            first_audio_ms,
+            total_ms,
+            audio_duration_ms: generated_audio_ms,
+            realtime_factor: ratio_ms(total_ms, generated_audio_ms),
+            first_audio_realtime_factor: ratio_ms(first_audio_ms, generated_audio_ms),
             samples: samples.len(),
             sample_rate,
             chunks: Some(phoneme_chunks.len()),
@@ -1708,6 +1716,7 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
             voxtral_stream_begin_frames: None,
             voxtral_voice_cache_hit: None,
             voxtral_codec_chunks: None,
+            voxtral_codec_chunks_per_second: None,
             voxtral_prompt_ms: None,
             voxtral_language_ms: None,
             voxtral_acoustic_ms: None,
@@ -1771,6 +1780,9 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         let synth = synth_start.elapsed();
         debug_assert_eq!(streamed_samples, audio.samples.len());
         let total = total_start.elapsed();
+        let total_ms = duration_ms(total);
+        let first_audio_ms = duration_ms(trace.first_audio_chunk.unwrap_or(total));
+        let generated_audio_ms = audio_duration_ms(audio.samples.len(), audio.sample_rate);
         let output_wav = maybe_write_bench_wav(
             &args.output_dir,
             TtsEngine::Voxtral,
@@ -1787,9 +1799,11 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             voice_load_ms: Some(duration_ms(trace.voice_load)),
             synth_ms: duration_ms(synth),
             first_code_frame_ms: trace.first_frame.map(duration_ms),
-            first_audio_ms: duration_ms(trace.first_audio_chunk.unwrap_or(total)),
-            total_ms: duration_ms(total),
-            audio_duration_ms: audio_duration_ms(audio.samples.len(), audio.sample_rate),
+            first_audio_ms,
+            total_ms,
+            audio_duration_ms: generated_audio_ms,
+            realtime_factor: ratio_ms(total_ms, generated_audio_ms),
+            first_audio_realtime_factor: ratio_ms(first_audio_ms, generated_audio_ms),
             samples: audio.samples.len(),
             sample_rate: audio.sample_rate,
             chunks: None,
@@ -1801,6 +1815,7 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             ),
             voxtral_voice_cache_hit: Some(trace.voice_cache_hit),
             voxtral_codec_chunks: Some(trace.codec_chunks),
+            voxtral_codec_chunks_per_second: per_second(trace.codec_chunks, total_ms),
             voxtral_prompt_ms: Some(duration_ms(trace.prompt)),
             voxtral_language_ms: Some(duration_ms(trace.language)),
             voxtral_acoustic_ms: Some(duration_ms(trace.acoustic)),
@@ -1949,6 +1964,9 @@ fn bench_daemon_tts(
 
         let total = total_start.elapsed();
         let first_audio = first_pcm_at.unwrap_or(total);
+        let total_ms = duration_ms(total);
+        let first_audio_ms = duration_ms(first_audio);
+        let generated_audio_ms = stream_duration_ms as f64;
         runs.push(TtsBenchRunReport {
             run: run_idx + 1,
             text_prep_ms: duration_ms(text_prep),
@@ -1956,9 +1974,11 @@ fn bench_daemon_tts(
             voice_load_ms: None,
             synth_ms: duration_ms(stream_started.elapsed()),
             first_code_frame_ms,
-            first_audio_ms: duration_ms(first_audio),
-            total_ms: duration_ms(total),
-            audio_duration_ms: stream_duration_ms as f64,
+            first_audio_ms,
+            total_ms,
+            audio_duration_ms: generated_audio_ms,
+            realtime_factor: ratio_ms(total_ms, generated_audio_ms),
+            first_audio_realtime_factor: ratio_ms(first_audio_ms, generated_audio_ms),
             samples,
             sample_rate: args.stream_sample_rate,
             chunks: None,
@@ -1969,6 +1989,8 @@ fn bench_daemon_tts(
                 .then_some(voxtral_streaming_config(args).chunk_frames_at_begin),
             voxtral_voice_cache_hit: None,
             voxtral_codec_chunks,
+            voxtral_codec_chunks_per_second: voxtral_codec_chunks
+                .and_then(|chunks| per_second(chunks, total_ms)),
             voxtral_prompt_ms: None,
             voxtral_language_ms: None,
             voxtral_acoustic_ms: None,
@@ -2137,6 +2159,14 @@ fn audio_duration_ms(samples: usize, sample_rate: u32) -> f64 {
     samples as f64 / sample_rate as f64 * 1_000.0
 }
 
+fn ratio_ms(numerator_ms: f64, denominator_ms: f64) -> Option<f64> {
+    (denominator_ms > 0.0).then_some(numerator_ms / denominator_ms)
+}
+
+fn per_second(count: usize, elapsed_ms: f64) -> Option<f64> {
+    (elapsed_ms > 0.0).then_some(count as f64 / (elapsed_ms / 1_000.0))
+}
+
 fn print_tts_bench_report(report: &TtsBenchReport) {
     println!("tts_bench.text={}", report.text);
     println!("tts_bench.mode={}", report.mode);
@@ -2156,13 +2186,19 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
         );
         for run in &engine.runs {
             let mut line = format!(
-                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} phoneme_ms={} first_code_frame_ms={} voxtral_stream_begin_frames={} voxtral_codec_chunks={} output_wav={}",
+                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} realtime_factor={} first_audio_realtime_factor={} phoneme_ms={} first_code_frame_ms={} voxtral_stream_begin_frames={} voxtral_codec_chunks={} voxtral_codec_chunks_per_second={} output_wav={}",
                 engine.engine,
                 run.run,
                 run.first_audio_ms,
                 run.total_ms,
                 run.synth_ms,
                 run.audio_duration_ms,
+                run.realtime_factor
+                    .map(|value| format!("{value:.3}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                run.first_audio_realtime_factor
+                    .map(|value| format!("{value:.3}"))
+                    .unwrap_or_else(|| "-".to_string()),
                 run.phoneme_ms
                     .map(|value| format!("{value:.1}"))
                     .unwrap_or_else(|| "-".to_string()),
@@ -2174,6 +2210,9 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
                     .unwrap_or_else(|| "-".to_string()),
                 run.voxtral_codec_chunks
                     .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_codec_chunks_per_second
+                    .map(|value| format!("{value:.2}"))
                     .unwrap_or_else(|| "-".to_string()),
                 run.output_wav.as_deref().unwrap_or("")
             );

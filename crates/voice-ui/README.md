@@ -11,6 +11,9 @@ npm install
 npm run dev
 ```
 
+The dev app uses mock queue data unless `/api/daemon/status` returns the
+daemon status JSON shape from `voice daemon status --json`.
+
 ## Build Web Assets
 
 ```bash

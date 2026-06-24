@@ -32,3 +32,25 @@ export interface VoiceMessage {
   durationSeconds: number;
   positionSeconds: number;
 }
+
+export type DaemonItemStatus = "queued" | "processing" | "completed" | "failed";
+
+export interface DaemonQueueItem {
+  id: string;
+  client_id: string;
+  method: string;
+  status: DaemonItemStatus;
+  created_at: number;
+  text_preview?: string;
+  result?: string;
+  repo?: string;
+  completed_at?: number;
+  auto_clear_at?: number;
+}
+
+export interface DaemonState {
+  status: string;
+  current?: DaemonQueueItem | null;
+  pending: DaemonQueueItem[];
+  recent: DaemonQueueItem[];
+}

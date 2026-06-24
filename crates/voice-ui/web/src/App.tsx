@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { voiceMessages } from "@/data";
+import { fetchDaemonMessages } from "@/lib/daemon";
 import type { VoiceMessage } from "@/types";
 import { MiniTransport } from "@/components/voice/mini-transport";
 import { NowPlaying } from "@/components/voice/now-playing";
@@ -11,6 +12,32 @@ export default function App() {
   const [currentId, setCurrentId] = useState(voiceMessages[0].id);
   const [paused, setPaused] = useState(false);
   const [position, setPosition] = useState(voiceMessages[0].positionSeconds);
+
+  useEffect(() => {
+    let active = true;
+
+    async function refreshDaemonState() {
+      const daemonMessages = await fetchDaemonMessages();
+      if (!active || !daemonMessages) {
+        return;
+      }
+
+      setMessages(daemonMessages);
+      setCurrentId((value) =>
+        daemonMessages.some((message) => message.id === value)
+          ? value
+          : daemonMessages[0].id,
+      );
+    }
+
+    void refreshDaemonState();
+    const timer = window.setInterval(refreshDaemonState, 2_000);
+
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const current = useMemo(
     () => messages.find((message) => message.id === currentId) ?? messages[0],

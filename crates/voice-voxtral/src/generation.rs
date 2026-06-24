@@ -17,6 +17,7 @@ pub struct VoxtralGenerationOptions {
     pub flow_steps: usize,
     pub cfg_alpha: f32,
     pub use_kv_cache: bool,
+    pub synchronize_trace: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +78,7 @@ impl Default for VoxtralGenerationOptions {
             flow_steps: 7,
             cfg_alpha: 1.2,
             use_kv_cache: false,
+            synchronize_trace: false,
         }
     }
 }
@@ -407,6 +409,7 @@ fn generate_audio_inner(
                 .narrow(1, last_pos, 1)
                 .and_then(|hidden| hidden.reshape((1, config.dim))),
         )?;
+        sync_trace(device, options.synchronize_trace)?;
         trace.language += language_start.elapsed();
 
         let acoustic_start = Instant::now();
@@ -424,6 +427,7 @@ fn generate_audio_inner(
             &timesteps,
             options.cfg_alpha,
         ))?;
+        sync_trace(device, options.synchronize_trace)?;
         trace.acoustic += acoustic_start.elapsed();
         trace
             .first_frame
@@ -466,6 +470,7 @@ fn generate_audio_inner(
     let codes = candle(codes.transpose(0, 1))?;
     let codes = candle(codes.unsqueeze(0))?;
     let waveform = candle(modules.codec.decode_codes_to_waveform(&codes))?;
+    sync_trace(device, options.synchronize_trace)?;
     let samples = candle(waveform.to_dtype(DType::F32))?
         .to_vec3::<f32>()
         .map_err(|e| VoxtralError::Candle(e.to_string()))?[0][0]
@@ -569,6 +574,7 @@ where
                 .narrow(1, last_pos, 1)
                 .and_then(|hidden| hidden.reshape((1, config.dim))),
         )?;
+        sync_trace(device, options.synchronize_trace)?;
         trace.language += language_start.elapsed();
 
         let acoustic_start = Instant::now();
@@ -586,6 +592,7 @@ where
             &timesteps,
             options.cfg_alpha,
         ))?;
+        sync_trace(device, options.synchronize_trace)?;
         trace.acoustic += acoustic_start.elapsed();
         trace
             .first_frame
@@ -608,6 +615,7 @@ where
             &mut emitted_frames,
             &mut emitted_samples,
             &mut trace,
+            options.synchronize_trace,
             total_start,
             &mut on_chunk,
         )?;
@@ -642,6 +650,7 @@ where
         &mut emitted_frames,
         &mut emitted_samples,
         &mut trace,
+        options.synchronize_trace,
         total_start,
         &mut on_chunk,
     )?;
@@ -670,6 +679,7 @@ fn maybe_emit_streaming_chunk<F>(
     emitted_frames: &mut usize,
     emitted_samples: &mut Vec<f32>,
     trace: &mut VoxtralGenerationTrace,
+    synchronize_trace: bool,
     total_start: Instant,
     on_chunk: &mut F,
 ) -> Result<()>
@@ -692,6 +702,7 @@ where
 
     let codec_start = Instant::now();
     let samples = decode_codec_chunk_samples(config, modules, device, &chunk)?;
+    sync_trace(device, synchronize_trace)?;
     trace.codec += codec_start.elapsed();
     trace.codec_chunks += 1;
     trace.first_audio_chunk.get_or_insert(total_start.elapsed());
@@ -799,6 +810,13 @@ fn deterministic_noise(
     }
     let noise = candle(Tensor::from_vec(values, (1, len), device))?;
     candle(noise.to_dtype(dtype))
+}
+
+fn sync_trace(device: &Device, synchronize_trace: bool) -> Result<()> {
+    if synchronize_trace {
+        candle(device.synchronize())?;
+    }
+    Ok(())
 }
 
 struct XorShift64 {

@@ -478,11 +478,13 @@ fn voxtral_generation_options(
     max_frames: usize,
     flow_steps: usize,
     kv_cache: bool,
+    synchronize_trace: bool,
 ) -> voice_voxtral::VoxtralGenerationOptions {
     voice_voxtral::VoxtralGenerationOptions {
         max_frames,
         flow_steps,
         use_kv_cache: kv_cache,
+        synchronize_trace,
         ..Default::default()
     }
 }
@@ -749,6 +751,10 @@ struct BenchTtsArgs {
     /// Use the current opt-in low-latency Voxtral preset
     #[arg(long = "voxtral-realtime")]
     voxtral_realtime: bool,
+
+    /// Synchronize Metal around Voxtral trace sections for local benchmark profiling
+    #[arg(long = "voxtral-sync-trace")]
+    voxtral_sync_trace: bool,
 
     /// Override Voxtral's initial streaming codec chunk size for benchmarking
     #[arg(long = "voxtral-stream-begin-frames")]
@@ -1640,6 +1646,7 @@ struct TtsBenchRunReport {
     voxtral_max_frames: Option<usize>,
     voxtral_flow_steps: Option<usize>,
     voxtral_realtime: Option<bool>,
+    voxtral_sync_trace: Option<bool>,
     voxtral_language_cache: Option<bool>,
     voxtral_stream_begin_frames: Option<usize>,
     voxtral_voice_cache_hit: Option<bool>,
@@ -1818,6 +1825,7 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
             voxtral_max_frames: None,
             voxtral_flow_steps: None,
             voxtral_realtime: None,
+            voxtral_sync_trace: None,
             voxtral_language_cache: None,
             voxtral_stream_begin_frames: None,
             voxtral_voice_cache_hit: None,
@@ -1881,6 +1889,7 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
                     voxtral.max_frames,
                     voxtral.flow_steps,
                     voxtral.kv_cache,
+                    args.voxtral_sync_trace,
                 ),
                 voxtral_streaming_config(voxtral),
                 |chunk| {
@@ -1928,6 +1937,7 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             voxtral_max_frames: Some(voxtral.max_frames),
             voxtral_flow_steps: Some(voxtral.flow_steps),
             voxtral_realtime: Some(args.voxtral_realtime),
+            voxtral_sync_trace: Some(args.voxtral_sync_trace),
             voxtral_language_cache: Some(trace.language_cache),
             voxtral_stream_begin_frames: Some(voxtral_streaming_config(voxtral).chunk_frames_at_begin),
             voxtral_voice_cache_hit: Some(trace.voice_cache_hit),
@@ -2107,6 +2117,7 @@ fn bench_daemon_tts(
             voxtral_max_frames: (engine == TtsEngine::Voxtral).then_some(voxtral.max_frames),
             voxtral_flow_steps: (engine == TtsEngine::Voxtral).then_some(voxtral.flow_steps),
             voxtral_realtime: (engine == TtsEngine::Voxtral).then_some(args.voxtral_realtime),
+            voxtral_sync_trace: (engine == TtsEngine::Voxtral).then_some(false),
             voxtral_language_cache: (engine == TtsEngine::Voxtral).then_some(voxtral.kv_cache),
             voxtral_stream_begin_frames: (engine == TtsEngine::Voxtral)
                 .then_some(voxtral_streaming_config(voxtral).chunk_frames_at_begin),
@@ -2326,7 +2337,7 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
         );
         for run in &engine.runs {
             let mut line = format!(
-                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} realtime_factor={} first_audio_realtime_factor={} phoneme_ms={} first_code_frame_ms={} voxtral_realtime={} voxtral_max_frames={} voxtral_flow_steps={} voxtral_stream_begin_frames={} voxtral_audio_frames={} voxtral_codec_chunks={} voxtral_codec_chunks_per_second={} voxtral_language_ms_per_frame={} voxtral_acoustic_ms_per_frame={} voxtral_decode_loop_ms_per_frame={} voxtral_codec_ms_per_chunk={} output_wav={}",
+                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} realtime_factor={} first_audio_realtime_factor={} phoneme_ms={} first_code_frame_ms={} voxtral_realtime={} voxtral_sync_trace={} voxtral_max_frames={} voxtral_flow_steps={} voxtral_stream_begin_frames={} voxtral_audio_frames={} voxtral_codec_chunks={} voxtral_codec_chunks_per_second={} voxtral_language_ms_per_frame={} voxtral_acoustic_ms_per_frame={} voxtral_decode_loop_ms_per_frame={} voxtral_codec_ms_per_chunk={} output_wav={}",
                 engine.engine,
                 run.run,
                 run.first_audio_ms,
@@ -2346,6 +2357,9 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
                     .map(|value| format!("{value:.1}"))
                     .unwrap_or_else(|| "-".to_string()),
                 run.voxtral_realtime
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_sync_trace
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
                 run.voxtral_max_frames
@@ -2762,7 +2776,7 @@ fn run_voxtral_say(
     let audio = match runtime.generate_audio(
         &text,
         voice,
-        voxtral_generation_options(voxtral.max_frames, voxtral.flow_steps, voxtral.kv_cache),
+        voxtral_generation_options(voxtral.max_frames, voxtral.flow_steps, voxtral.kv_cache, false),
     ) {
         Ok(audio) => audio,
         Err(e) => {
@@ -3346,7 +3360,7 @@ fn run_converse(args: ConverseArgs) {
         let audio = match runtime.generate_audio(
             &text,
             &voice,
-            voxtral_generation_options(voxtral.max_frames, voxtral.flow_steps, voxtral.kv_cache),
+            voxtral_generation_options(voxtral.max_frames, voxtral.flow_steps, voxtral.kv_cache, false),
         ) {
             Ok(audio) => audio,
             Err(e) => {

@@ -102,6 +102,10 @@ struct Args {
     #[arg(long = "voxtral-kv-cache")]
     voxtral_kv_cache: bool,
 
+    /// Normalize compact Voxtral numeric synthesis text forms such as versions and times.
+    #[arg(long = "voxtral-normalize-text")]
+    voxtral_normalize_text: bool,
+
     /// Initial streaming codec chunk size for Voxtral matrix timing.
     #[arg(long = "voxtral-stream-begin-frames", default_value_t = 2)]
     voxtral_stream_begin_frames: usize,
@@ -179,6 +183,7 @@ struct EvalReport {
     stt_backend: String,
     stt_model: String,
     synthesis_mode: &'static str,
+    voxtral_text_normalization: bool,
     sample_rate: u32,
     sample_count: usize,
     duration_seconds: f32,
@@ -209,6 +214,7 @@ struct VoxtralMatrixReport {
     stream_begin_frames: usize,
     kv_cache: bool,
     sync_trace: bool,
+    text_normalization: bool,
     seed: u64,
     output_dir: Option<PathBuf>,
     spectrogram_dir: Option<PathBuf>,
@@ -264,6 +270,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.input_wav.is_some() && args.synthesis_text.is_some() {
         return Err("--synthesis-text cannot be used with --input-wav".into());
     }
+    if args.input_wav.is_some() && args.voxtral_normalize_text {
+        return Err("--voxtral-normalize-text cannot be used with --input-wav".into());
+    }
     let reference_text = args
         .expected_text
         .clone()
@@ -272,6 +281,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .synthesis_text
         .clone()
         .unwrap_or_else(|| args.text.clone());
+    let synthesis_text = maybe_normalize_voxtral_text(&args, synthesis_text);
     let (samples, sample_rate, phoneme_chunks, synthesis_mode) = if let Some(input_wav) =
         &args.input_wav
     {
@@ -346,6 +356,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stt_backend: stt_backend.as_str().to_string(),
         stt_model: stt_model_path,
         synthesis_mode,
+        voxtral_text_normalization: args.tts_backend == "voxtral" && args.voxtral_normalize_text,
         sample_rate,
         sample_count: samples.len(),
         duration_seconds,
@@ -532,6 +543,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         stream_begin_frames: args.voxtral_stream_begin_frames,
         kv_cache: args.voxtral_kv_cache,
         sync_trace: args.voxtral_sync_trace,
+        text_normalization: args.voxtral_normalize_text,
         seed: args.seed,
         output_dir: args.output_dir.clone(),
         spectrogram_dir: args.spectrogram_dir.clone(),
@@ -603,9 +615,17 @@ fn matrix_cases(args: &Args) -> Result<Vec<MatrixCase>, Box<dyn std::error::Erro
         .zip(synthesis_texts)
         .map(|(reference_text, synthesis_text)| MatrixCase {
             reference_text,
-            synthesis_text,
+            synthesis_text: maybe_normalize_voxtral_text(args, synthesis_text),
         })
         .collect())
+}
+
+fn maybe_normalize_voxtral_text(args: &Args, text: String) -> String {
+    if args.tts_backend == "voxtral" && args.voxtral_normalize_text {
+        voice_voxtral::normalize_tts_text(&text)
+    } else {
+        text
+    }
 }
 
 fn synthesize_kokoro(
@@ -960,12 +980,13 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
     );
     println!("voxtral_matrix.model_load_ms={:.1}", report.model_load_ms);
     println!(
-        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={}",
+        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={}",
         report.matrix_max_frames,
         report.matrix_flow_steps,
         report.stream_begin_frames,
         report.kv_cache,
-        report.sync_trace
+        report.sync_trace,
+        report.text_normalization
     );
     if let Some(output_dir) = &report.output_dir {
         println!("voxtral_matrix.output_dir={}", output_dir.display());
@@ -1054,6 +1075,9 @@ fn print_text_report(report: &EvalReport) {
     println!("reference: {}", report.text);
     if report.synthesis_text != report.text {
         println!("synthesis text: {}", report.synthesis_text);
+    }
+    if report.voxtral_text_normalization {
+        println!("voxtral text normalization: enabled");
     }
     println!("hypothesis: {}", report.transcription);
     println!("normalized reference: {}", report.normalized_reference);
@@ -1220,6 +1244,7 @@ mod tests {
             "Voxtral should sound clear.",
             "--synthesis-text",
             "Vox trahl should sound clear.",
+            "--voxtral-normalize-text",
         ])
         .unwrap();
 
@@ -1228,6 +1253,7 @@ mod tests {
             args.synthesis_text.as_deref(),
             Some("Vox trahl should sound clear.")
         );
+        assert!(args.voxtral_normalize_text);
     }
 
     #[test]
@@ -1333,6 +1359,8 @@ mod tests {
     fn matrix_cases_pair_reference_and_synthesis_texts() {
         let args = Args::try_parse_from([
             "voice-eval",
+            "--tts-backend",
+            "voxtral",
             "--voxtral-matrix",
             "--matrix-text",
             "Voxtral sounds clear.",
@@ -1357,6 +1385,30 @@ mod tests {
                     synthesis_text: "Read ticket A seventeen.".to_string(),
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn matrix_cases_apply_opt_in_voxtral_text_normalization() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--tts-backend",
+            "voxtral",
+            "--voxtral-matrix",
+            "--voxtral-normalize-text",
+            "--matrix-text",
+            "Read ticket A17, version 2.4.1, at 9:30 PM.",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            matrix_cases(&args).unwrap(),
+            vec![MatrixCase {
+                reference_text: "Read ticket A17, version 2.4.1, at 9:30 PM.".to_string(),
+                synthesis_text:
+                    "Read ticket A seventeen, version two point four point one, at nine thirty PM."
+                        .to_string(),
+            }]
         );
     }
 

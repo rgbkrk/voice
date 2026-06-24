@@ -711,7 +711,7 @@ fn maybe_normalize_voxtral_text(args: &Args, text: String) -> String {
 
 fn effective_voxtral_max_frames(args: &Args, synthesis_text: &str, configured: usize) -> usize {
     if args.voxtral_auto_max_frames {
-        voice_voxtral::suggest_max_frames_for_text(synthesis_text)
+        configured.max(voice_voxtral::suggest_max_frames_for_text(synthesis_text))
     } else {
         configured
     }
@@ -1610,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_voxtral_max_frames_uses_synthesis_text_estimate() {
+    fn auto_voxtral_max_frames_uses_synthesis_text_estimate_without_lowering_explicit_caps() {
         let args = Args::try_parse_from([
             "voice-eval",
             "--tts-backend",
@@ -1628,6 +1628,20 @@ mod tests {
                 args.max_frames,
             ),
             56
+        );
+
+        let explicit_high = Args::try_parse_from([
+            "voice-eval",
+            "--tts-backend",
+            "voxtral",
+            "--voxtral-auto-max-frames",
+            "--max-frames",
+            "200",
+        ])
+        .unwrap();
+        assert_eq!(
+            effective_voxtral_max_frames(&explicit_high, "hello world", explicit_high.max_frames),
+            200
         );
 
         let fixed = Args::try_parse_from([

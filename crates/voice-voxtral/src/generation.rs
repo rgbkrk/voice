@@ -676,7 +676,7 @@ fn maybe_emit_streaming_chunk<F>(
 where
     F: FnMut(&VoxtralGeneratedAudioChunk) -> Result<()>,
 {
-    let Some(chunk) = plan_codec_chunk(frame_history, streaming, finished)? else {
+    let Some(chunk) = plan_codec_chunk(frame_history, *emitted_frames, streaming, finished)? else {
         return Ok(());
     };
     if chunk.chunk_frames == 0 || *emitted_frames >= frame_history.len() {

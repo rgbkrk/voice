@@ -971,6 +971,8 @@ fn optional_tts_options(req: &rpc::Request, default_engine: &str) -> Result<TtsO
 
     let voxtral_max_frames = optional_usize_param(req, "voxtral_max_frames", 1, 16_384)?;
     let voxtral_flow_steps = optional_usize_param(req, "voxtral_flow_steps", 1, 256)?;
+    let voxtral_stream_begin_frames =
+        optional_usize_param(req, "voxtral_stream_begin_frames", 1, 1_024)?;
     let voxtral_kv_cache = match req.params.get("voxtral_kv_cache") {
         Some(value) => value.as_bool().ok_or_else(|| {
             Response::error(
@@ -998,6 +1000,7 @@ fn optional_tts_options(req: &rpc::Request, default_engine: &str) -> Result<TtsO
         voxtral_model,
         voxtral_max_frames,
         voxtral_flow_steps,
+        voxtral_stream_begin_frames,
         voxtral_kv_cache,
     })
 }

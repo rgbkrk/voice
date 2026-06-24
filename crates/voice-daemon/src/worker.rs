@@ -481,6 +481,7 @@ struct ResolvedTtsRequest {
     speed: f32,
     voxtral_model: String,
     voxtral_options: VoxtralGenerationOptions,
+    voxtral_streaming: VoxtralStreamingConfig,
 }
 
 fn resolve_tts_request(
@@ -512,6 +513,10 @@ fn resolve_tts_request(
         voxtral_options.flow_steps = flow_steps;
     }
     voxtral_options.use_kv_cache = options.voxtral_kv_cache;
+    let mut voxtral_streaming = VoxtralStreamingConfig::default();
+    if let Some(stream_begin_frames) = options.voxtral_stream_begin_frames {
+        voxtral_streaming.chunk_frames_at_begin = stream_begin_frames;
+    }
 
     Ok(ResolvedTtsRequest {
         engine,
@@ -524,6 +529,7 @@ fn resolve_tts_request(
             .clone()
             .unwrap_or_else(|| config.get_voxtral_model()),
         voxtral_options,
+        voxtral_streaming,
     })
 }
 
@@ -581,7 +587,7 @@ fn speak(
                     text,
                     &resolved.voice,
                     resolved.voxtral_options.clone(),
-                    VoxtralStreamingConfig::default(),
+                    resolved.voxtral_streaming,
                     |chunk| {
                         if cancelled.load(Ordering::SeqCst) {
                             return Err(voice_voxtral::VoxtralError::Unsupported(
@@ -844,7 +850,7 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
                 &text,
                 &resolved.voice,
                 resolved.voxtral_options.clone(),
-                VoxtralStreamingConfig::default(),
+                resolved.voxtral_streaming,
                 |chunk| {
                     if cancelled.load(Ordering::SeqCst) {
                         return Err(voice_voxtral::VoxtralError::Unsupported(

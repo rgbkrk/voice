@@ -18,6 +18,7 @@ pub struct TtsOptions {
     pub voxtral_model: Option<String>,
     pub voxtral_max_frames: Option<usize>,
     pub voxtral_flow_steps: Option<usize>,
+    pub voxtral_stream_begin_frames: Option<usize>,
     pub voxtral_kv_cache: bool,
 }
 

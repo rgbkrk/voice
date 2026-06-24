@@ -23,6 +23,7 @@ pub struct TtsRequestOptions<'a> {
     pub voxtral_model: Option<&'a str>,
     pub voxtral_max_frames: Option<usize>,
     pub voxtral_flow_steps: Option<usize>,
+    pub voxtral_stream_begin_frames: Option<usize>,
     pub voxtral_kv_cache: bool,
 }
 
@@ -619,6 +620,9 @@ fn insert_tts_options(params: &mut Value, options: TtsRequestOptions<'_>) {
     if let Some(flow_steps) = options.voxtral_flow_steps {
         params["voxtral_flow_steps"] = serde_json::json!(flow_steps);
     }
+    if let Some(stream_begin_frames) = options.voxtral_stream_begin_frames {
+        params["voxtral_stream_begin_frames"] = serde_json::json!(stream_begin_frames);
+    }
     if options.voxtral_kv_cache {
         params["voxtral_kv_cache"] = Value::Bool(true);
     }
@@ -789,6 +793,7 @@ mod tests {
             assert_eq!(request.params["wait"], true);
             assert_eq!(request.params["engine"], "voxtral");
             assert_eq!(request.params["voxtral_kv_cache"], true);
+            assert_eq!(request.params["voxtral_stream_begin_frames"], 3);
 
             let response = Response::success(
                 Some(1.into()),
@@ -816,6 +821,7 @@ mod tests {
                 Some(1.0),
                 TtsRequestOptions {
                     engine: Some("voxtral"),
+                    voxtral_stream_begin_frames: Some(3),
                     voxtral_kv_cache: true,
                     ..TtsRequestOptions::default()
                 },

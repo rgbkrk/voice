@@ -44,14 +44,6 @@ impl VoxtralStreamingConfig {
         }
         Ok(())
     }
-
-    fn current_chunk_frames(&self, generated_frames: usize) -> usize {
-        if generated_frames <= self.chunk_frames {
-            self.chunk_frames_at_begin
-        } else {
-            self.chunk_frames
-        }
-    }
 }
 
 /// One generator-to-codec streaming payload.
@@ -88,12 +80,18 @@ impl VoxtralCodecChunk {
 /// finished chunk when the request ends before producing audio frames.
 pub fn plan_codec_chunk(
     frames: &[Vec<u32>],
+    emitted_frames: usize,
     config: VoxtralStreamingConfig,
     finished: bool,
 ) -> Result<Option<VoxtralCodecChunk>> {
     config.validate()?;
 
     let generated_frames = frames.len();
+    if emitted_frames > generated_frames {
+        return Err(VoxtralError::InvalidConfig(format!(
+            "emitted_frames {emitted_frames} exceeds generated_frames {generated_frames}"
+        )));
+    }
     if generated_frames == 0 {
         if finished {
             return Ok(Some(VoxtralCodecChunk {
@@ -105,26 +103,33 @@ pub fn plan_codec_chunk(
         }
         return Ok(None);
     }
-
-    let chunk_frames = config.current_chunk_frames(generated_frames);
-    let partial_chunk_frames = generated_frames % chunk_frames;
-    if partial_chunk_frames != 0 && !finished {
+    if emitted_frames == generated_frames {
         return Ok(None);
     }
 
-    let current_chunk_frames = if partial_chunk_frames == 0 {
-        chunk_frames
+    let chunk_frames = if emitted_frames < config.chunk_frames {
+        let remaining_initial_frames = config.chunk_frames - emitted_frames;
+        config
+            .chunk_frames_at_begin
+            .min(remaining_initial_frames)
+            .max(1)
     } else {
-        partial_chunk_frames
+        config.chunk_frames
     };
-    let window_frames = generated_frames.min(config.left_context_frames + current_chunk_frames);
-    let context_frames = window_frames.saturating_sub(current_chunk_frames);
-    let start = generated_frames - window_frames;
+    let available_frames = generated_frames - emitted_frames;
+    if available_frames < chunk_frames && !finished {
+        return Ok(None);
+    }
+
+    let current_chunk_frames = available_frames.min(chunk_frames);
+    let end = emitted_frames + current_chunk_frames;
+    let start = emitted_frames.saturating_sub(config.left_context_frames);
+    let context_frames = emitted_frames - start;
 
     Ok(Some(VoxtralCodecChunk {
         context_frames,
         chunk_frames: current_chunk_frames,
-        frames: frames[start..].to_vec(),
+        frames: frames[start..end].to_vec(),
         finished,
     }))
 }
@@ -143,9 +148,12 @@ mod tests {
     fn waits_for_the_first_streaming_boundary() {
         let config = VoxtralStreamingConfig::default();
 
-        assert_eq!(plan_codec_chunk(&frames(4), config, false).unwrap(), None);
+        assert_eq!(
+            plan_codec_chunk(&frames(4), 0, config, false).unwrap(),
+            None
+        );
 
-        let chunk = plan_codec_chunk(&frames(5), config, false)
+        let chunk = plan_codec_chunk(&frames(5), 0, config, false)
             .unwrap()
             .unwrap();
         assert_eq!(chunk.context_frames, 0);
@@ -157,7 +165,7 @@ mod tests {
     fn includes_left_context_for_followup_chunks() {
         let config = VoxtralStreamingConfig::default();
 
-        let chunk = plan_codec_chunk(&frames(50), config, false)
+        let chunk = plan_codec_chunk(&frames(50), 25, config, false)
             .unwrap()
             .unwrap();
 
@@ -172,7 +180,9 @@ mod tests {
     fn flushes_partial_final_chunks_with_context() {
         let config = VoxtralStreamingConfig::default();
 
-        let chunk = plan_codec_chunk(&frames(7), config, true).unwrap().unwrap();
+        let chunk = plan_codec_chunk(&frames(7), 5, config, true)
+            .unwrap()
+            .unwrap();
 
         assert_eq!(chunk.context_frames, 5);
         assert_eq!(chunk.chunk_frames, 2);
@@ -184,7 +194,7 @@ mod tests {
     fn emits_empty_finished_marker() {
         let config = VoxtralStreamingConfig::default();
 
-        let chunk = plan_codec_chunk(&[], config, true).unwrap().unwrap();
+        let chunk = plan_codec_chunk(&[], 0, config, true).unwrap().unwrap();
 
         assert_eq!(chunk.context_frames, 0);
         assert_eq!(chunk.chunk_frames, 0);
@@ -195,7 +205,7 @@ mod tests {
     #[test]
     fn flattens_prompt_codes_with_header() {
         let config = VoxtralStreamingConfig::default();
-        let chunk = plan_codec_chunk(&frames(5), config, false)
+        let chunk = plan_codec_chunk(&frames(5), 0, config, false)
             .unwrap()
             .unwrap();
 
@@ -212,6 +222,40 @@ mod tests {
             ..VoxtralStreamingConfig::default()
         };
 
-        assert!(plan_codec_chunk(&frames(1), config, false).is_err());
+        assert!(plan_codec_chunk(&frames(1), 0, config, false).is_err());
+    }
+
+    #[test]
+    fn finishes_non_divisor_begin_chunks_at_normal_boundary() {
+        let config = VoxtralStreamingConfig {
+            chunk_frames_at_begin: 3,
+            ..VoxtralStreamingConfig::default()
+        };
+
+        let chunk = plan_codec_chunk(&frames(25), 24, config, false)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(chunk.context_frames, 24);
+        assert_eq!(chunk.chunk_frames, 1);
+        assert_eq!(chunk.frames.len(), 25);
+        assert!(!chunk.finished);
+    }
+
+    #[test]
+    fn flushes_final_non_divisor_begin_chunk_without_mismatch() {
+        let config = VoxtralStreamingConfig {
+            chunk_frames_at_begin: 3,
+            ..VoxtralStreamingConfig::default()
+        };
+
+        let chunk = plan_codec_chunk(&frames(40), 25, config, true)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(chunk.context_frames, 25);
+        assert_eq!(chunk.chunk_frames, 15);
+        assert_eq!(chunk.frames.len(), 40);
+        assert!(chunk.finished);
     }
 }

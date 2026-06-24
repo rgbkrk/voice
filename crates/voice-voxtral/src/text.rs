@@ -1,6 +1,41 @@
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VoxtralTextNormalizationOptions {
+    /// Expand compact numeric forms that Voxtral currently handles poorly.
+    pub numeric: bool,
+    /// Rewrite known hard-to-pronounce project names into pronounceable hints.
+    pub pronunciation_aliases: bool,
+}
+
 /// Normalize numeric text forms that Voxtral currently handles poorly when
 /// they are left as compact written forms.
 pub fn normalize_tts_text(text: &str) -> String {
+    normalize_tts_text_with_options(
+        text,
+        VoxtralTextNormalizationOptions {
+            numeric: true,
+            pronunciation_aliases: false,
+        },
+    )
+}
+
+pub fn normalize_tts_text_with_options(
+    text: &str,
+    options: VoxtralTextNormalizationOptions,
+) -> String {
+    let text = if options.numeric {
+        normalize_numeric_tts_text(text)
+    } else {
+        text.to_string()
+    };
+
+    if options.pronunciation_aliases {
+        apply_pronunciation_aliases(&text)
+    } else {
+        text
+    }
+}
+
+fn normalize_numeric_tts_text(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
     let mut index = 0;
     let bytes = text.as_bytes();
@@ -41,6 +76,45 @@ pub fn normalize_tts_text(text: &str) -> String {
     }
 
     output
+}
+
+fn apply_pronunciation_aliases(text: &str) -> String {
+    replace_ascii_word(text, "Voxtral", "Vox trell")
+}
+
+fn replace_ascii_word(text: &str, word: &str, replacement: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut index = 0;
+
+    while index < text.len() {
+        let candidate_end = index.saturating_add(word.len());
+        if candidate_end <= text.len()
+            && text[index..candidate_end].eq_ignore_ascii_case(word)
+            && is_word_boundary(text, index, candidate_end)
+        {
+            output.push_str(replacement);
+            index = candidate_end;
+            continue;
+        }
+
+        let ch = text[index..]
+            .chars()
+            .next()
+            .expect("index is inside a valid UTF-8 string");
+        output.push(ch);
+        index += ch.len_utf8();
+    }
+
+    output
+}
+
+fn is_word_boundary(text: &str, start: usize, end: usize) -> bool {
+    let bytes = text.as_bytes();
+    let before = start == 0 || !is_ascii_alphanumeric(bytes[start - 1]);
+    let after = bytes
+        .get(end)
+        .is_none_or(|byte| !is_ascii_alphanumeric(*byte));
+    before && after
 }
 
 fn parse_time(text: &str, start: usize) -> Option<(String, usize)> {
@@ -247,7 +321,9 @@ fn tens_word(tens: u32) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_tts_text;
+    use super::{
+        normalize_tts_text, normalize_tts_text_with_options, VoxtralTextNormalizationOptions,
+    };
 
     #[test]
     fn leaves_plain_prompt_unchanged() {
@@ -287,6 +363,54 @@ mod tests {
         assert_eq!(
             normalize_tts_text("Use code 007."),
             "Use code zero zero seven."
+        );
+    }
+
+    #[test]
+    fn pronunciation_aliases_are_opt_in_and_word_bounded() {
+        assert_eq!(
+            normalize_tts_text_with_options(
+                "Voxtral should say voxtral clearly.",
+                VoxtralTextNormalizationOptions {
+                    numeric: false,
+                    pronunciation_aliases: false,
+                }
+            ),
+            "Voxtral should say voxtral clearly."
+        );
+        assert_eq!(
+            normalize_tts_text_with_options(
+                "Voxtral should say voxtral clearly.",
+                VoxtralTextNormalizationOptions {
+                    numeric: false,
+                    pronunciation_aliases: true,
+                }
+            ),
+            "Vox trell should say Vox trell clearly."
+        );
+        assert_eq!(
+            normalize_tts_text_with_options(
+                "Voxtralized text should not change.",
+                VoxtralTextNormalizationOptions {
+                    numeric: false,
+                    pronunciation_aliases: true,
+                }
+            ),
+            "Voxtralized text should not change."
+        );
+    }
+
+    #[test]
+    fn text_normalization_options_can_combine_numeric_and_pronunciation_rewrites() {
+        assert_eq!(
+            normalize_tts_text_with_options(
+                "Voxtral reads A17 at 9:30 PM.",
+                VoxtralTextNormalizationOptions {
+                    numeric: true,
+                    pronunciation_aliases: true,
+                }
+            ),
+            "Vox trell reads A seventeen at nine thirty PM."
         );
     }
 }

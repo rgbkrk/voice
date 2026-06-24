@@ -191,6 +191,10 @@ struct SayArgs {
     #[arg(long = "voxtral-normalize-text")]
     voxtral_normalize_text: bool,
 
+    /// Apply known Voxtral pronunciation aliases before synthesis
+    #[arg(long = "voxtral-pronunciation-aliases")]
+    voxtral_pronunciation_aliases: bool,
+
     /// Override Voxtral's initial streaming codec chunk size for daemon playback
     #[arg(long = "voxtral-stream-begin-frames")]
     voxtral_stream_begin_frames: Option<usize>,
@@ -535,6 +539,10 @@ struct StreamArgs {
     #[arg(long = "voxtral-normalize-text")]
     voxtral_normalize_text: bool,
 
+    /// Apply known Voxtral pronunciation aliases before synthesis
+    #[arg(long = "voxtral-pronunciation-aliases")]
+    voxtral_pronunciation_aliases: bool,
+
     /// Override Voxtral's initial streaming codec chunk size
     #[arg(long = "voxtral-stream-begin-frames")]
     voxtral_stream_begin_frames: Option<usize>,
@@ -771,6 +779,10 @@ struct BenchTtsArgs {
     /// Normalize compact Voxtral numeric forms such as versions and times before synthesis
     #[arg(long = "voxtral-normalize-text")]
     voxtral_normalize_text: bool,
+
+    /// Apply known Voxtral pronunciation aliases before synthesis
+    #[arg(long = "voxtral-pronunciation-aliases")]
+    voxtral_pronunciation_aliases: bool,
 
     /// Override Voxtral's initial streaming codec chunk size for benchmarking
     #[arg(long = "voxtral-stream-begin-frames")]
@@ -1258,6 +1270,7 @@ fn preprocess_daemon_text(
     cli_subs: &[String],
     sub_file: Option<PathBuf>,
     voxtral_normalize_text: bool,
+    voxtral_pronunciation_aliases: bool,
 ) -> String {
     let text = if markdown {
         strip_markdown(&text)
@@ -1272,8 +1285,30 @@ fn preprocess_daemon_text(
     } else {
         apply_substitutions(&text, &subs)
     };
-    if engine == TtsEngine::Voxtral && voxtral_normalize_text {
-        voice_voxtral::normalize_tts_text(&text)
+    if engine == TtsEngine::Voxtral {
+        apply_voxtral_text_options(
+            text,
+            voxtral_normalize_text,
+            voxtral_pronunciation_aliases,
+        )
+    } else {
+        text
+    }
+}
+
+fn apply_voxtral_text_options(
+    text: String,
+    normalize_numbers: bool,
+    pronunciation_aliases: bool,
+) -> String {
+    if normalize_numbers || pronunciation_aliases {
+        voice_voxtral::normalize_tts_text_with_options(
+            &text,
+            voice_voxtral::VoxtralTextNormalizationOptions {
+                numeric: normalize_numbers,
+                pronunciation_aliases,
+            },
+        )
     } else {
         text
     }
@@ -1375,6 +1410,7 @@ fn main() {
                     voxtral_kv_cache: false,
                     voxtral_realtime: false,
                     voxtral_normalize_text: false,
+                    voxtral_pronunciation_aliases: false,
                     voxtral_stream_begin_frames: None,
                     output: None,
                     format: None,
@@ -2287,8 +2323,12 @@ fn prepare_bench_text(
     } else {
         apply_substitutions(&text, &subs)
     };
-    let text = if engine == TtsEngine::Voxtral && args.voxtral_normalize_text {
-        voice_voxtral::normalize_tts_text(&text)
+    let text = if engine == TtsEngine::Voxtral {
+        apply_voxtral_text_options(
+            text,
+            args.voxtral_normalize_text,
+            args.voxtral_pronunciation_aliases,
+        )
     } else {
         text
     };
@@ -2603,6 +2643,7 @@ fn run_say(say_args: SayArgs) {
                     &say_args.subs,
                     say_args.sub_file.clone(),
                     say_args.voxtral_normalize_text,
+                    say_args.voxtral_pronunciation_aliases,
                 );
                 let tts_options =
                     daemon_tts_options(say_args.engine, &say_args.voxtral_model, voxtral);
@@ -2790,6 +2831,7 @@ fn run_voxtral_say(
         &say_args.subs,
         say_args.sub_file.clone(),
         say_args.voxtral_normalize_text,
+        say_args.voxtral_pronunciation_aliases,
     );
 
     if (say_args.speed - 1.0).abs() > f32::EPSILON {
@@ -2865,6 +2907,7 @@ fn run_stream(stream_args: StreamArgs) {
         &stream_args.subs,
         stream_args.sub_file.clone(),
         stream_args.voxtral_normalize_text,
+        stream_args.voxtral_pronunciation_aliases,
     );
 
     validate_stream_frame_params(stream_args.sample_rate, stream_args.frame_ms).unwrap_or_else(
@@ -4111,17 +4154,21 @@ mod tests {
     }
 
     #[test]
-    fn parses_voxtral_text_normalization_for_say_stream_and_bench() {
+    fn parses_voxtral_text_options_for_say_stream_and_bench() {
         let say = Args::parse_from([
             "voice",
             "say",
             "--engine",
             "voxtral",
             "--voxtral-normalize-text",
+            "--voxtral-pronunciation-aliases",
             "Read ticket A17.",
         ]);
         match say.command {
-            Some(Command::Say(args)) => assert!(args.voxtral_normalize_text),
+            Some(Command::Say(args)) => {
+                assert!(args.voxtral_normalize_text);
+                assert!(args.voxtral_pronunciation_aliases);
+            }
             other => panic!("expected say command, got {other:?}"),
         }
 
@@ -4131,10 +4178,14 @@ mod tests {
             "--engine",
             "voxtral",
             "--voxtral-normalize-text",
+            "--voxtral-pronunciation-aliases",
             "Read ticket A17.",
         ]);
         match stream.command {
-            Some(Command::Stream(args)) => assert!(args.voxtral_normalize_text),
+            Some(Command::Stream(args)) => {
+                assert!(args.voxtral_normalize_text);
+                assert!(args.voxtral_pronunciation_aliases);
+            }
             other => panic!("expected stream command, got {other:?}"),
         }
 
@@ -4145,12 +4196,16 @@ mod tests {
             "--engine",
             "voxtral",
             "--voxtral-normalize-text",
+            "--voxtral-pronunciation-aliases",
             "Read ticket A17.",
         ]);
         match bench.command {
             Some(Command::Bench(BenchArgs {
                 command: BenchCommand::Tts(args),
-            })) => assert!(args.voxtral_normalize_text),
+            })) => {
+                assert!(args.voxtral_normalize_text);
+                assert!(args.voxtral_pronunciation_aliases);
+            }
             other => panic!("expected bench tts command, got {other:?}"),
         }
     }
@@ -4166,6 +4221,7 @@ mod tests {
                 false,
                 &[],
                 None,
+                false,
                 false
             ),
             text
@@ -4177,13 +4233,27 @@ mod tests {
                 false,
                 &[],
                 None,
+                true,
                 true
             ),
             text
         );
         assert_eq!(
-            preprocess_daemon_text(text, TtsEngine::Voxtral, false, &[], None, true),
+            preprocess_daemon_text(text, TtsEngine::Voxtral, false, &[], None, true, false),
             "Read ticket A seventeen, version two point four point one, at nine thirty PM."
+        );
+
+        assert_eq!(
+            preprocess_daemon_text(
+                "Voxtral reads A17.".to_string(),
+                TtsEngine::Voxtral,
+                false,
+                &[],
+                None,
+                true,
+                true
+            ),
+            "Vox trell reads A seventeen."
         );
     }
 
@@ -4202,6 +4272,7 @@ mod tests {
             voxtral_realtime: false,
             voxtral_sync_trace: false,
             voxtral_normalize_text: true,
+            voxtral_pronunciation_aliases: false,
             voxtral_stream_begin_frames: None,
             daemon: false,
             stream_sample_rate: 24_000,

@@ -81,7 +81,9 @@ pub use streaming::{
     plan_codec_chunk, VoxtralCodecChunk, VoxtralStreamingConfig, DEFAULT_CODEC_CHUNK_FRAMES,
     DEFAULT_CODEC_CHUNK_FRAMES_AT_BEGIN, DEFAULT_CODEC_LEFT_CONTEXT_FRAMES,
 };
-pub use text::normalize_tts_text;
+pub use text::{
+    normalize_tts_text, normalize_tts_text_with_options, VoxtralTextNormalizationOptions,
+};
 pub use tokenizer::{
     TekkenAudioEncodingConfig, TekkenAudioMetadata, TekkenConfig, TekkenSpecialToken,
     TekkenVocabToken, VoxtralTekkenDecoder, VoxtralTekkenEncoder, VoxtralTokenizerMetadata,

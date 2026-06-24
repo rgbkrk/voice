@@ -106,6 +106,10 @@ struct Args {
     #[arg(long = "voxtral-normalize-text")]
     voxtral_normalize_text: bool,
 
+    /// Apply known Voxtral pronunciation aliases before synthesis.
+    #[arg(long = "voxtral-pronunciation-aliases")]
+    voxtral_pronunciation_aliases: bool,
+
     /// Initial streaming codec chunk size for Voxtral matrix timing.
     #[arg(long = "voxtral-stream-begin-frames", default_value_t = 2)]
     voxtral_stream_begin_frames: usize,
@@ -200,6 +204,7 @@ struct EvalReport {
     stt_model: String,
     synthesis_mode: &'static str,
     voxtral_text_normalization: bool,
+    voxtral_pronunciation_aliases: bool,
     sample_rate: u32,
     sample_count: usize,
     duration_seconds: f32,
@@ -231,6 +236,7 @@ struct VoxtralMatrixReport {
     kv_cache: bool,
     sync_trace: bool,
     text_normalization: bool,
+    pronunciation_aliases: bool,
     eos_scores: bool,
     eos_guard_frames: usize,
     eos_guard_max_rank: usize,
@@ -386,6 +392,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stt_model: stt_model_path,
         synthesis_mode,
         voxtral_text_normalization: args.tts_backend == "voxtral" && args.voxtral_normalize_text,
+        voxtral_pronunciation_aliases: args.tts_backend == "voxtral"
+            && args.voxtral_pronunciation_aliases,
         sample_rate,
         sample_count: samples.len(),
         duration_seconds,
@@ -594,6 +602,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         kv_cache: args.voxtral_kv_cache,
         sync_trace: args.voxtral_sync_trace,
         text_normalization: args.voxtral_normalize_text,
+        pronunciation_aliases: args.voxtral_pronunciation_aliases,
         eos_scores: args.voxtral_eos_scores,
         eos_guard_frames: args.voxtral_eos_guard_frames,
         eos_guard_max_rank: args.voxtral_eos_guard_rank,
@@ -675,8 +684,16 @@ fn matrix_cases(args: &Args) -> Result<Vec<MatrixCase>, Box<dyn std::error::Erro
 }
 
 fn maybe_normalize_voxtral_text(args: &Args, text: String) -> String {
-    if args.tts_backend == "voxtral" && args.voxtral_normalize_text {
-        voice_voxtral::normalize_tts_text(&text)
+    if args.tts_backend == "voxtral"
+        && (args.voxtral_normalize_text || args.voxtral_pronunciation_aliases)
+    {
+        voice_voxtral::normalize_tts_text_with_options(
+            &text,
+            voice_voxtral::VoxtralTextNormalizationOptions {
+                numeric: args.voxtral_normalize_text,
+                pronunciation_aliases: args.voxtral_pronunciation_aliases,
+            },
+        )
     } else {
         text
     }
@@ -1038,13 +1055,14 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
     );
     println!("voxtral_matrix.model_load_ms={:.1}", report.model_load_ms);
     println!(
-        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} eos_scores={} eos_guard_frames={} eos_guard_max_rank={} eos_guard_max_margin={:.3}",
+        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} pronunciation_aliases={} eos_scores={} eos_guard_frames={} eos_guard_max_rank={} eos_guard_max_margin={:.3}",
         report.matrix_max_frames,
         report.matrix_flow_steps,
         report.stream_begin_frames,
         report.kv_cache,
         report.sync_trace,
         report.text_normalization,
+        report.pronunciation_aliases,
         report.eos_scores,
         report.eos_guard_frames,
         report.eos_guard_max_rank,
@@ -1183,6 +1201,9 @@ fn print_text_report(report: &EvalReport) {
     }
     if report.voxtral_text_normalization {
         println!("voxtral text normalization: enabled");
+    }
+    if report.voxtral_pronunciation_aliases {
+        println!("voxtral pronunciation aliases: enabled");
     }
     println!("hypothesis: {}", report.transcription);
     println!("normalized reference: {}", report.normalized_reference);
@@ -1350,6 +1371,7 @@ mod tests {
             "--synthesis-text",
             "Vox trahl should sound clear.",
             "--voxtral-normalize-text",
+            "--voxtral-pronunciation-aliases",
         ])
         .unwrap();
 
@@ -1359,6 +1381,7 @@ mod tests {
             Some("Vox trahl should sound clear.")
         );
         assert!(args.voxtral_normalize_text);
+        assert!(args.voxtral_pronunciation_aliases);
     }
 
     #[test]
@@ -1381,6 +1404,7 @@ mod tests {
             "--matrix-flow-steps",
             "5,6,7",
             "--voxtral-kv-cache",
+            "--voxtral-pronunciation-aliases",
             "--voxtral-eos-scores",
             "--voxtral-eos-guard-frames",
             "8",
@@ -1415,6 +1439,7 @@ mod tests {
         assert_eq!(args.matrix_max_frames, vec![32, 40]);
         assert_eq!(args.matrix_flow_steps, vec![5, 6, 7]);
         assert!(args.voxtral_kv_cache);
+        assert!(args.voxtral_pronunciation_aliases);
         assert!(args.voxtral_eos_scores);
         assert_eq!(args.voxtral_eos_guard_frames, 8);
         assert_eq!(args.voxtral_eos_guard_rank, 3);
@@ -1525,6 +1550,36 @@ mod tests {
                     "Read ticket A seventeen, version two point four point one, at nine thirty PM."
                         .to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn matrix_cases_apply_opt_in_voxtral_pronunciation_aliases() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--tts-backend",
+            "voxtral",
+            "--voxtral-matrix",
+            "--voxtral-pronunciation-aliases",
+            "--matrix-text",
+            "Voxtral reads A17.",
+            "--matrix-text",
+            "Kokoro should stay unchanged.",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            matrix_cases(&args).unwrap(),
+            vec![
+                MatrixCase {
+                    reference_text: "Voxtral reads A17.".to_string(),
+                    synthesis_text: "Vox trell reads A17.".to_string(),
+                },
+                MatrixCase {
+                    reference_text: "Kokoro should stay unchanged.".to_string(),
+                    synthesis_text: "Kokoro should stay unchanged.".to_string(),
+                }
+            ]
         );
     }
 

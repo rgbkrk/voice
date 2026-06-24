@@ -302,8 +302,7 @@ struct VoxtralSettingQualitySummary {
     quality_flags: Vec<QualityFlag>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QualityFlag {
     WordError,
     DidNotEnd,
@@ -312,6 +311,15 @@ enum QualityFlag {
     LongInternalGap,
     LeadingFragment,
     TrailingFragment,
+}
+
+impl Serialize for QualityFlag {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
 }
 
 impl QualityFlag {

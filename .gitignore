@@ -3,3 +3,7 @@ output.wav
 .context/
 .worktrees/
 eval/results/
+
+!.agents/
+!.agents/reviewers/
+!.agents/reviewers/**

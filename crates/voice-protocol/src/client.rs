@@ -14,6 +14,7 @@ use voice_stream::TtsStreamEvent;
 const SOCKET_ENV: &str = "VOICE_DAEMON_SOCKET";
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(120);
 const DURATION_CALL_TIMEOUT_PAD: Duration = Duration::from_secs(120);
+const VOXTRAL_TTS_READ_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Optional TTS engine controls for daemon requests.
 #[derive(Debug, Clone, Default)]
@@ -199,8 +200,9 @@ impl DaemonClient {
         if let Some(s) = speed {
             params["speed"] = serde_json::json!(s);
         }
+        let read_timeout = read_timeout_for_tts_options(&options);
         insert_tts_options(&mut params, options);
-        self.call("synthesize", params)
+        self.call_with_read_timeout("synthesize", params, read_timeout)
     }
 
     /// Stream TTS audio from the daemon.
@@ -258,7 +260,13 @@ impl DaemonClient {
         if let Some(ms) = frame_ms {
             params["frame_ms"] = serde_json::json!(ms);
         }
+        let read_timeout = read_timeout_for_tts_options(&options);
         insert_tts_options(&mut params, options);
+        if let Some(timeout) = read_timeout {
+            self.stream
+                .set_read_timeout(Some(timeout))
+                .map_err(|e| format!("set read timeout: {}", e))?;
+        }
 
         let req = rpc::Request::new("stream_speak", params).with_id(1);
         let json = serde_json::to_vec(&req).map_err(|e| format!("serialize: {}", e))?;
@@ -471,12 +479,12 @@ impl DaemonClient {
         if let Some(ms) = max_duration_ms {
             params["max_duration_ms"] = serde_json::json!(ms);
         }
-        insert_tts_options(&mut params, options);
-        self.call_with_read_timeout(
-            "converse",
-            params,
+        let read_timeout = max_timeout(
+            read_timeout_for_tts_options(&options),
             max_duration_ms.map(read_timeout_for_max_duration),
-        )
+        );
+        insert_tts_options(&mut params, options);
+        self.call_with_read_timeout("converse", params, read_timeout)
     }
 
     /// Convenience: cancel all pending requests from this client.
@@ -541,6 +549,22 @@ impl DaemonClient {
 
 fn read_timeout_for_max_duration(max_duration_ms: u64) -> Duration {
     Duration::from_millis(max_duration_ms).saturating_add(DURATION_CALL_TIMEOUT_PAD)
+}
+
+fn read_timeout_for_tts_options(options: &TtsRequestOptions<'_>) -> Option<Duration> {
+    if options.engine == Some("voxtral") || options.voxtral_model.is_some() {
+        Some(VOXTRAL_TTS_READ_TIMEOUT)
+    } else {
+        None
+    }
+}
+
+fn max_timeout(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(timeout), None) | (None, Some(timeout)) => Some(timeout),
+        (None, None) => None,
+    }
 }
 
 fn insert_tts_options(params: &mut Value, options: TtsRequestOptions<'_>) {
@@ -714,6 +738,46 @@ mod tests {
         assert_eq!(
             read_timeout_for_max_duration(180_000),
             Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn voxtral_tts_options_use_extended_read_timeout() {
+        assert_eq!(
+            read_timeout_for_tts_options(&TtsRequestOptions {
+                engine: Some("voxtral"),
+                ..TtsRequestOptions::default()
+            }),
+            Some(VOXTRAL_TTS_READ_TIMEOUT)
+        );
+        assert_eq!(
+            read_timeout_for_tts_options(&TtsRequestOptions {
+                voxtral_model: Some("mistralai/Voxtral-4B-TTS-2603"),
+                ..TtsRequestOptions::default()
+            }),
+            Some(VOXTRAL_TTS_READ_TIMEOUT)
+        );
+        assert_eq!(
+            read_timeout_for_tts_options(&TtsRequestOptions::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn converse_timeout_uses_longer_tts_or_duration_timeout() {
+        assert_eq!(
+            max_timeout(
+                Some(VOXTRAL_TTS_READ_TIMEOUT),
+                Some(read_timeout_for_max_duration(1_500))
+            ),
+            Some(VOXTRAL_TTS_READ_TIMEOUT)
+        );
+        assert_eq!(
+            max_timeout(
+                Some(VOXTRAL_TTS_READ_TIMEOUT),
+                Some(read_timeout_for_max_duration(3_600_000))
+            ),
+            Some(Duration::from_secs(3_720))
         );
     }
 

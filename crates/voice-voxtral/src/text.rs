@@ -24,7 +24,7 @@ pub fn normalize_tts_text(text: &str) -> String {
             continue;
         }
 
-        if is_ascii_uppercase(byte) {
+        if byte.is_ascii_uppercase() {
             if let Some((replacement, end)) = parse_letter_number(text, index) {
                 output.push_str(&replacement);
                 index = end;
@@ -98,10 +98,10 @@ fn parse_dotted_number(text: &str, start: usize) -> Option<(String, usize)> {
 
 fn parse_letter_number(text: &str, start: usize) -> Option<(String, usize)> {
     let bytes = text.as_bytes();
-    if start > 0 && is_ascii_alphanumeric(bytes[start - 1]) {
+    if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
         return None;
     }
-    if !is_ascii_uppercase(bytes[start]) || !bytes.get(start + 1).is_some_and(u8::is_ascii_digit) {
+    if !bytes[start].is_ascii_uppercase() || !bytes.get(start + 1).is_some_and(u8::is_ascii_digit) {
         return None;
     }
     let letter = bytes[start] as char;
@@ -109,7 +109,7 @@ fn parse_letter_number(text: &str, start: usize) -> Option<(String, usize)> {
     let end = number.end;
     if bytes
         .get(end)
-        .is_some_and(|byte| is_ascii_alphanumeric(*byte))
+        .is_some_and(|byte| byte.is_ascii_alphanumeric())
     {
         return None;
     }
@@ -243,14 +243,6 @@ fn tens_word(tens: u32) -> &'static str {
         9 => "ninety",
         _ => unreachable!("tens out of range"),
     }
-}
-
-fn is_ascii_uppercase(byte: u8) -> bool {
-    byte.is_ascii_uppercase()
-}
-
-fn is_ascii_alphanumeric(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric()
 }
 
 #[cfg(test)]

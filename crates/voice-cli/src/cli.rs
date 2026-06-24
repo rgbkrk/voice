@@ -638,6 +638,10 @@ struct ConverseArgs {
     #[arg(long = "voxtral-realtime")]
     voxtral_realtime: bool,
 
+    // Deliberately no --voxtral-normalize-text yet: converse has separate
+    // turn-taking and daemon queue behavior that should be validated in its
+    // own slice before changing the spoken prompt.
+
     /// Override Voxtral's initial streaming codec chunk size for daemon playback
     #[arg(long = "voxtral-stream-begin-frames")]
     voxtral_stream_begin_frames: Option<usize>,

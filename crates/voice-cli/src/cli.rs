@@ -17,7 +17,7 @@ const DEFAULT_VOXTRAL_MODEL: &str = voice_voxtral::DEFAULT_REPO;
 const KOKORO_DEFAULT_VOICE: &str = "af_heart";
 const VOXTRAL_DEFAULT_VOICE: &str = "casual_male";
 const VOXTRAL_DEFAULT_MAX_FRAMES: usize = 256;
-const VOXTRAL_REALTIME_MAX_FRAMES: usize = 40;
+const VOXTRAL_REALTIME_MAX_FRAMES: usize = 56;
 const VOXTRAL_REALTIME_STREAM_BEGIN_FRAMES: usize = 2;
 
 static QUIET: AtomicBool = AtomicBool::new(false);
@@ -399,6 +399,14 @@ fn validate_effective_voxtral_options(options: EffectiveVoxtralOptions) -> Resul
         return Err("--voxtral-flow-steps must be greater than zero".to_string());
     }
     validate_voxtral_stream_begin_frames(options.stream_begin_frames)
+}
+
+fn validate_speed(speed: f32) -> Result<(), String> {
+    if speed.is_finite() && speed > 0.0 && speed <= 5.0 {
+        Ok(())
+    } else {
+        Err("speed must be between 0 (exclusive) and 5 (inclusive)".to_string())
+    }
 }
 
 fn apply_auto_voxtral_max_frames(
@@ -827,6 +835,10 @@ struct BenchTtsArgs {
     /// Target daemon stream frame duration in milliseconds when --daemon is set
     #[arg(long = "stream-frame-ms", default_value_t = 20)]
     stream_frame_ms: u32,
+
+    /// Speech speed factor (1.0 = normal)
+    #[arg(short, long, default_value = "1.0")]
+    speed: f32,
 
     /// Number of measured synthesis runs per engine after model load
     #[arg(long = "runs", default_value_t = 1)]
@@ -1699,6 +1711,7 @@ struct TtsBenchReport {
     text: String,
     mode: &'static str,
     runs: usize,
+    speed: f32,
     output_dir: Option<String>,
     engines: Vec<TtsBenchEngineReport>,
 }
@@ -1725,9 +1738,13 @@ struct TtsBenchRunReport {
     first_audio_ms: f64,
     total_ms: f64,
     audio_duration_ms: f64,
+    model_audio_duration_ms: Option<f64>,
     realtime_factor: Option<f64>,
+    model_realtime_factor: Option<f64>,
     first_audio_realtime_factor: Option<f64>,
+    first_audio_model_realtime_factor: Option<f64>,
     samples: usize,
+    model_samples: Option<usize>,
     sample_rate: u32,
     chunks: Option<usize>,
     frames: Option<usize>,
@@ -1769,6 +1786,10 @@ fn run_bench(args: BenchArgs) {
 fn run_bench_tts(args: BenchTtsArgs) {
     if args.runs == 0 {
         eprintln!("Error: --runs must be greater than zero");
+        std::process::exit(1);
+    }
+    if let Err(message) = validate_speed(args.speed) {
+        eprintln!("Error: {message}");
         std::process::exit(1);
     }
     if let Err(message) = validate_effective_voxtral_options(args.effective_voxtral_options()) {
@@ -1819,6 +1840,7 @@ fn run_bench_tts(args: BenchTtsArgs) {
         text,
         mode: if args.daemon { "daemon_stream" } else { "local" },
         runs: args.runs,
+        speed: args.speed,
         output_dir: args
             .output_dir
             .as_ref()
@@ -1873,7 +1895,7 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
         let mut first_audio = None;
         for chunk in &phoneme_chunks {
             let chunk_audio =
-                voice_tts::generate_with_mode(&mut model, chunk, &voice, 1.0, synthesis_mode)
+                voice_tts::generate_with_mode(&mut model, chunk, &voice, args.speed, synthesis_mode)
                     .map_err(|e| format!("kokoro synthesis failed: {e}"))?;
             if first_audio.is_none() {
                 first_audio = Some(total_start.elapsed());
@@ -1904,9 +1926,13 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
             first_audio_ms,
             total_ms,
             audio_duration_ms: generated_audio_ms,
+            model_audio_duration_ms: Some(generated_audio_ms),
             realtime_factor: ratio_ms(total_ms, generated_audio_ms),
+            model_realtime_factor: ratio_ms(total_ms, generated_audio_ms),
             first_audio_realtime_factor: ratio_ms(first_audio_ms, generated_audio_ms),
+            first_audio_model_realtime_factor: ratio_ms(first_audio_ms, generated_audio_ms),
             samples: samples.len(),
+            model_samples: Some(samples.len()),
             sample_rate,
             chunks: Some(phoneme_chunks.len()),
             frames: None,
@@ -1997,7 +2023,10 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         let total = total_start.elapsed();
         let total_ms = duration_ms(total);
         let first_audio_ms = duration_ms(trace.first_audio_chunk.unwrap_or(total));
-        let generated_audio_ms = audio_duration_ms(audio.samples.len(), audio.sample_rate);
+        let model_audio_ms = audio_duration_ms(audio.samples.len(), audio.sample_rate);
+        let output_samples = voice_audio::adjust_speed(&audio.samples, args.speed)
+            .map_err(|e| format!("voxtral speed adjustment failed: {e}"))?;
+        let generated_audio_ms = audio_duration_ms(output_samples.len(), audio.sample_rate);
         let language_ms = duration_ms(trace.language);
         let acoustic_ms = duration_ms(trace.acoustic);
         let decode_loop_ms = duration_ms(trace.decode_loop);
@@ -2007,7 +2036,7 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             TtsEngine::Voxtral,
             &args.voxtral_voice,
             run_idx + 1,
-            &audio.samples,
+            &output_samples,
             audio.sample_rate,
         )?;
 
@@ -2021,9 +2050,13 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             first_audio_ms,
             total_ms,
             audio_duration_ms: generated_audio_ms,
+            model_audio_duration_ms: Some(model_audio_ms),
             realtime_factor: ratio_ms(total_ms, generated_audio_ms),
+            model_realtime_factor: ratio_ms(total_ms, model_audio_ms),
             first_audio_realtime_factor: ratio_ms(first_audio_ms, generated_audio_ms),
-            samples: audio.samples.len(),
+            first_audio_model_realtime_factor: ratio_ms(first_audio_ms, model_audio_ms),
+            samples: output_samples.len(),
+            model_samples: Some(audio.samples.len()),
             sample_rate: audio.sample_rate,
             chunks: None,
             frames: Some(audio.frames),
@@ -2125,7 +2158,7 @@ fn bench_daemon_tts(
             &prepared,
             voice_protocol::client::StreamSpeakOptions {
                 voice: Some(voice),
-                speed: Some(1.0),
+                speed: Some(args.speed as f64),
                 sample_rate: Some(args.stream_sample_rate),
                 frame_ms: Some(args.stream_frame_ms),
                 tts: daemon_tts_options(engine, &args.voxtral_model, voxtral),
@@ -2194,6 +2227,14 @@ fn bench_daemon_tts(
             .and_then(|result| result.get("voxtral_frames"))
             .and_then(json_number_usize)
             .filter(|_| engine == TtsEngine::Voxtral);
+        let model_audio_duration_ms = worker_result
+            .as_ref()
+            .and_then(|result| result.get("model_audio_duration_ms"))
+            .and_then(json_number_ms);
+        let model_samples = worker_result
+            .as_ref()
+            .and_then(|result| result.get("model_samples"))
+            .and_then(json_number_usize);
 
         let total = total_start.elapsed();
         let first_audio = first_pcm_at.unwrap_or(total);
@@ -2210,9 +2251,14 @@ fn bench_daemon_tts(
             first_audio_ms,
             total_ms,
             audio_duration_ms: generated_audio_ms,
+            model_audio_duration_ms,
             realtime_factor: ratio_ms(total_ms, generated_audio_ms),
+            model_realtime_factor: model_audio_duration_ms.and_then(|duration| ratio_ms(total_ms, duration)),
             first_audio_realtime_factor: ratio_ms(first_audio_ms, generated_audio_ms),
+            first_audio_model_realtime_factor: model_audio_duration_ms
+                .and_then(|duration| ratio_ms(first_audio_ms, duration)),
             samples,
+            model_samples,
             sample_rate: args.stream_sample_rate,
             chunks: None,
             frames: Some(frames as usize),
@@ -2438,6 +2484,7 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
     println!("tts_bench.text={}", report.text);
     println!("tts_bench.mode={}", report.mode);
     println!("tts_bench.runs={}", report.runs);
+    println!("tts_bench.speed={}", report.speed);
     if let Some(output_dir) = &report.output_dir {
         println!("tts_bench.output_dir={output_dir}");
     }
@@ -2453,17 +2500,26 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
         );
         for run in &engine.runs {
             let mut line = format!(
-                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} realtime_factor={} first_audio_realtime_factor={} phoneme_ms={} first_code_frame_ms={} voxtral_realtime={} voxtral_sync_trace={} voxtral_max_frames={} voxtral_flow_steps={} voxtral_stream_begin_frames={} voxtral_audio_frames={} voxtral_codec_chunks={} voxtral_codec_chunks_per_second={} voxtral_language_ms_per_frame={} voxtral_acoustic_ms_per_frame={} voxtral_decode_loop_ms_per_frame={} voxtral_codec_ms_per_chunk={} output_wav={}",
+                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} model_audio_ms={} realtime_factor={} model_realtime_factor={} first_audio_realtime_factor={} first_audio_model_realtime_factor={} phoneme_ms={} first_code_frame_ms={} voxtral_realtime={} voxtral_sync_trace={} voxtral_max_frames={} voxtral_flow_steps={} voxtral_stream_begin_frames={} voxtral_audio_frames={} voxtral_codec_chunks={} voxtral_codec_chunks_per_second={} voxtral_language_ms_per_frame={} voxtral_acoustic_ms_per_frame={} voxtral_decode_loop_ms_per_frame={} voxtral_codec_ms_per_chunk={} output_wav={}",
                 engine.engine,
                 run.run,
                 run.first_audio_ms,
                 run.total_ms,
                 run.synth_ms,
                 run.audio_duration_ms,
+                run.model_audio_duration_ms
+                    .map(|value| format!("{value:.1}"))
+                    .unwrap_or_else(|| "-".to_string()),
                 run.realtime_factor
                     .map(|value| format!("{value:.3}"))
                     .unwrap_or_else(|| "-".to_string()),
+                run.model_realtime_factor
+                    .map(|value| format!("{value:.3}"))
+                    .unwrap_or_else(|| "-".to_string()),
                 run.first_audio_realtime_factor
+                    .map(|value| format!("{value:.3}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                run.first_audio_model_realtime_factor
                     .map(|value| format!("{value:.3}"))
                     .unwrap_or_else(|| "-".to_string()),
                 run.phoneme_ms
@@ -2637,6 +2693,11 @@ fn run_phonemes(args: PhonemesArgs) {
 }
 
 fn run_say(say_args: SayArgs) {
+    if let Err(message) = validate_speed(say_args.speed) {
+        eprintln!("Error: {message}");
+        std::process::exit(1);
+    }
+
     let output_format = match say_args.output.as_ref() {
         Some(output_path) => match resolve_say_output_format(output_path, say_args.format) {
             Ok(format) => Some(format),
@@ -2891,10 +2952,6 @@ fn run_voxtral_say(
         std::process::exit(1);
     }
 
-    if (say_args.speed - 1.0).abs() > f32::EPSILON {
-        info!("Voxtral does not support --speed yet; generating at model speed");
-    }
-
     info!("Loading Voxtral TTS model ({})...", say_args.voxtral_model);
     let mut runtime = match voice_voxtral::VoxtralTtsRuntime::load_default(&say_args.voxtral_model)
     {
@@ -2919,16 +2976,21 @@ fn run_voxtral_say(
             std::process::exit(1);
         }
     };
+    let samples = match voice_audio::adjust_speed(&audio.samples, say_args.speed) {
+        Ok(samples) => samples,
+        Err(e) => {
+            eprintln!("Voxtral speed adjustment failed: {e}");
+            std::process::exit(1);
+        }
+    };
 
     if let Some(output_path) = &say_args.output {
         let format = output_format.expect("output format resolved when output path is set");
-        if let Err(e) =
-            voice_audio::save_audio(&audio.samples, output_path, audio.sample_rate, format)
-        {
+        if let Err(e) = voice_audio::save_audio(&samples, output_path, audio.sample_rate, format) {
             eprintln!("Failed to write audio: {e}");
             std::process::exit(1);
         }
-    } else if let Err(e) = play_samples(&audio.samples, audio.sample_rate) {
+    } else if let Err(e) = play_samples(&samples, audio.sample_rate) {
         eprintln!("Audio playback failed: {e}");
         std::process::exit(1);
     }
@@ -2942,6 +3004,11 @@ fn resolve_say_output_format(
 }
 
 fn run_stream(stream_args: StreamArgs) {
+    if let Err(message) = validate_speed(stream_args.speed) {
+        eprintln!("Error: {message}");
+        std::process::exit(1);
+    }
+
     let voice = selected_voice(stream_args.engine, &stream_args.voice);
     if let Err(message) = validate_voice_for_engine(stream_args.engine, &voice) {
         eprintln!("{message}");
@@ -3405,6 +3472,10 @@ fn run_converse(args: ConverseArgs) {
         eprintln!("Error: No text provided. Usage: voice converse <text>");
         std::process::exit(1);
     }
+    if let Err(message) = validate_speed(args.speed) {
+        eprintln!("Error: {message}");
+        std::process::exit(1);
+    }
 
     let voice = selected_voice(args.engine, &args.voice);
     if let Err(message) = validate_voice_for_engine(args.engine, &voice) {
@@ -3488,9 +3559,6 @@ fn run_converse(args: ConverseArgs) {
     }
 
     if args.engine == TtsEngine::Voxtral {
-        if (args.speed - 1.0).abs() > f32::EPSILON {
-            info!("Voxtral does not support --speed yet; generating at model speed");
-        }
         let stt_handle = std::thread::spawn(listen::load_stt);
         info!("Loading Voxtral TTS model ({})...", args.voxtral_model);
         let mut runtime = match voice_voxtral::VoxtralTtsRuntime::load_default(&args.voxtral_model) {
@@ -3511,7 +3579,14 @@ fn run_converse(args: ConverseArgs) {
                 std::process::exit(1);
             }
         };
-        if let Err(e) = play_samples(&audio.samples, audio.sample_rate) {
+        let samples = match voice_audio::adjust_speed(&audio.samples, args.speed) {
+            Ok(samples) => samples,
+            Err(e) => {
+                eprintln!("Voxtral speed adjustment failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = play_samples(&samples, audio.sample_rate) {
             eprintln!("Audio playback failed: {e}");
             std::process::exit(1);
         }
@@ -4377,6 +4452,7 @@ mod tests {
             daemon: false,
             stream_sample_rate: 24_000,
             stream_frame_ms: 20,
+            speed: 1.0,
             runs: 1,
             deterministic: false,
             markdown: false,

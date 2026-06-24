@@ -579,6 +579,7 @@ fn speak(
         let channels = NonZero::new(1u16).unwrap();
         let rate = NonZero::new(voice_voxtral::SAMPLE_RATE).unwrap();
         let mut accumulated_audio = Vec::new();
+        let speed = resolved.speed;
         let (audio, trace) = {
             let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
             let runtime = state.get_voxtral_runtime(&resolved.voxtral_model)?;
@@ -594,8 +595,14 @@ fn speak(
                                 "Cancelled by user".to_string(),
                             ));
                         }
-                        accumulated_audio.extend_from_slice(&chunk.samples);
-                        player.append(SamplesBuffer::new(channels, rate, chunk.samples.clone()));
+                        let samples =
+                            voice_audio::adjust_speed(&chunk.samples, speed).map_err(|e| {
+                                voice_voxtral::VoxtralError::Unsupported(format!(
+                                    "speed adjustment: {e}"
+                                ))
+                            })?;
+                        accumulated_audio.extend_from_slice(&samples);
+                        player.append(SamplesBuffer::new(channels, rate, samples));
                         Ok(())
                     },
                 )
@@ -618,8 +625,12 @@ fn speak(
             "voice": resolved.voice,
             "duration_ms": started.elapsed().as_millis() as u64,
             "chunks": trace.codec_chunks,
-            "samples": audio.samples.len(),
+            "samples": accumulated_audio.len(),
+            "model_samples": audio.samples.len(),
+            "model_audio_duration_ms": audio.samples.len().saturating_mul(1_000) as f64
+                / audio.sample_rate.max(1) as f64,
             "sample_rate": audio.sample_rate,
+            "speed": resolved.speed,
             "frames": audio.frames,
             "ended": audio.ended,
             "first_code_frame_ms": trace.first_frame.map(|duration| duration.as_millis() as u64),
@@ -731,7 +742,9 @@ fn synthesize_to_file(
 
         let path = std::path::Path::new(output_path);
         let output_format = voice_audio::resolve_output_format(path, output_format)?;
-        voice_audio::save_audio(&audio.samples, path, audio.sample_rate, output_format)?;
+        let samples = voice_audio::adjust_speed(&audio.samples, resolved.speed)
+            .map_err(|e| format!("speed adjustment: {e}"))?;
+        voice_audio::save_audio(&samples, path, audio.sample_rate, output_format)?;
 
         return Ok(serde_json::json!({
             "engine": resolved.engine,
@@ -740,7 +753,10 @@ fn synthesize_to_file(
             "mime_type": output_format.mime_type(),
             "duration_ms": started.elapsed().as_millis() as u64,
             "chunks": 1,
-            "samples": audio.samples.len(),
+            "samples": samples.len(),
+            "model_samples": audio.samples.len(),
+            "model_audio_duration_ms": audio.samples.len().saturating_mul(1_000) as f64
+                / audio.sample_rate.max(1) as f64,
             "sample_rate": audio.sample_rate,
             "voice": resolved.voice,
             "speed": resolved.speed,
@@ -843,6 +859,7 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
         send_stream_event(&event_tx, TtsStreamEvent::Started { metadata }, &cancelled)?;
 
         let mut packetizer = Packetizer::new(stream_id.clone(), output_sample_rate, frame_ms);
+        let speed = resolved.speed;
         let generation = {
             let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
             let runtime = state.get_voxtral_runtime(&resolved.voxtral_model)?;
@@ -857,10 +874,16 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
                             "Cancelled by user".to_string(),
                         ));
                     }
+                    let samples =
+                        voice_audio::adjust_speed(&chunk.samples, speed).map_err(|e| {
+                            voice_voxtral::VoxtralError::Unsupported(format!(
+                                "speed adjustment: {e}"
+                            ))
+                        })?;
                     let samples = if output_sample_rate == chunk.sample_rate {
-                        chunk.samples.clone()
+                        samples
                     } else {
-                        resample_linear(&chunk.samples, chunk.sample_rate, output_sample_rate)
+                        resample_linear(&samples, chunk.sample_rate, output_sample_rate)
                     };
                     for frame in packetizer.push_samples(chunk.chunk_index as u32, &samples) {
                         send_stream_event(&event_tx, TtsStreamEvent::Audio { frame }, &cancelled)
@@ -905,6 +928,9 @@ fn stream_speak(tts: &Arc<Mutex<TtsState>>, job: StreamSpeakJob) -> Result<Strin
             "chunks": trace.codec_chunks,
             "frames": packetizer.frames_emitted(),
             "samples": samples,
+            "model_samples": audio.samples.len(),
+            "model_audio_duration_ms": audio.samples.len().saturating_mul(1_000) as f64
+                / audio.sample_rate.max(1) as f64,
             "sample_rate": output_sample_rate,
             "source_sample_rate": source_sample_rate,
             "frame_ms": frame_ms,

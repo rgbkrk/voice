@@ -118,6 +118,18 @@ struct Args {
     #[arg(long = "voxtral-eos-scores")]
     voxtral_eos_scores: bool,
 
+    /// Extra frames to allow after --max-frames when EOS is close at the cap.
+    #[arg(long = "voxtral-eos-guard-frames", default_value_t = 0)]
+    voxtral_eos_guard_frames: usize,
+
+    /// Maximum EOS rank that can activate --voxtral-eos-guard-frames.
+    #[arg(long = "voxtral-eos-guard-rank", default_value_t = 2)]
+    voxtral_eos_guard_rank: usize,
+
+    /// Maximum selected-minus-EOS logit margin that can activate the EOS guard.
+    #[arg(long = "voxtral-eos-guard-margin", default_value_t = 0.5)]
+    voxtral_eos_guard_margin: f32,
+
     /// Deterministic seed for Voxtral flow noise.
     #[arg(long, default_value_t = 0x5658_5452_414c)]
     seed: u64,
@@ -220,6 +232,9 @@ struct VoxtralMatrixReport {
     sync_trace: bool,
     text_normalization: bool,
     eos_scores: bool,
+    eos_guard_frames: usize,
+    eos_guard_rank: usize,
+    eos_guard_margin: f32,
     seed: u64,
     output_dir: Option<PathBuf>,
     spectrogram_dir: Option<PathBuf>,
@@ -465,6 +480,9 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                     use_kv_cache: args.voxtral_kv_cache,
                     synchronize_trace: args.voxtral_sync_trace,
                     trace_semantic_scores: args.voxtral_eos_scores,
+                    eos_guard_frames: args.voxtral_eos_guard_frames,
+                    eos_guard_max_rank: args.voxtral_eos_guard_rank,
+                    eos_guard_max_margin: args.voxtral_eos_guard_margin,
                     ..Default::default()
                 };
 
@@ -577,6 +595,9 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         sync_trace: args.voxtral_sync_trace,
         text_normalization: args.voxtral_normalize_text,
         eos_scores: args.voxtral_eos_scores,
+        eos_guard_frames: args.voxtral_eos_guard_frames,
+        eos_guard_rank: args.voxtral_eos_guard_rank,
+        eos_guard_margin: args.voxtral_eos_guard_margin,
         seed: args.seed,
         output_dir: args.output_dir.clone(),
         spectrogram_dir: args.spectrogram_dir.clone(),
@@ -706,6 +727,10 @@ fn synthesize_voxtral(
             flow_steps: args.flow_steps,
             use_kv_cache: args.voxtral_kv_cache,
             synchronize_trace: args.voxtral_sync_trace,
+            trace_semantic_scores: args.voxtral_eos_scores,
+            eos_guard_frames: args.voxtral_eos_guard_frames,
+            eos_guard_max_rank: args.voxtral_eos_guard_rank,
+            eos_guard_max_margin: args.voxtral_eos_guard_margin,
             ..Default::default()
         },
     )?;
@@ -1013,14 +1038,17 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
     );
     println!("voxtral_matrix.model_load_ms={:.1}", report.model_load_ms);
     println!(
-        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} eos_scores={}",
+        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} eos_scores={} eos_guard_frames={} eos_guard_rank={} eos_guard_margin={:.3}",
         report.matrix_max_frames,
         report.matrix_flow_steps,
         report.stream_begin_frames,
         report.kv_cache,
         report.sync_trace,
         report.text_normalization,
-        report.eos_scores
+        report.eos_scores,
+        report.eos_guard_frames,
+        report.eos_guard_rank,
+        report.eos_guard_margin
     );
     if let Some(output_dir) = &report.output_dir {
         println!("voxtral_matrix.output_dir={}", output_dir.display());
@@ -1354,6 +1382,12 @@ mod tests {
             "5,6,7",
             "--voxtral-kv-cache",
             "--voxtral-eos-scores",
+            "--voxtral-eos-guard-frames",
+            "8",
+            "--voxtral-eos-guard-rank",
+            "3",
+            "--voxtral-eos-guard-margin",
+            "0.75",
             "--voxtral-stream-begin-frames",
             "2",
             "--output-dir",
@@ -1382,6 +1416,9 @@ mod tests {
         assert_eq!(args.matrix_flow_steps, vec![5, 6, 7]);
         assert!(args.voxtral_kv_cache);
         assert!(args.voxtral_eos_scores);
+        assert_eq!(args.voxtral_eos_guard_frames, 8);
+        assert_eq!(args.voxtral_eos_guard_rank, 3);
+        assert_eq!(args.voxtral_eos_guard_margin, 0.75);
         assert_eq!(args.voxtral_stream_begin_frames, 2);
         assert_eq!(args.output_dir, Some(PathBuf::from("/tmp/voxtral-matrix")));
         assert_eq!(

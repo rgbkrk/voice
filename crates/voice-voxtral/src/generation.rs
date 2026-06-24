@@ -19,6 +19,9 @@ pub struct VoxtralGenerationOptions {
     pub use_kv_cache: bool,
     pub synchronize_trace: bool,
     pub trace_semantic_scores: bool,
+    pub eos_guard_frames: usize,
+    pub eos_guard_max_rank: usize,
+    pub eos_guard_max_margin: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +88,9 @@ impl Default for VoxtralGenerationOptions {
             use_kv_cache: false,
             synchronize_trace: false,
             trace_semantic_scores: false,
+            eos_guard_frames: 0,
+            eos_guard_max_rank: 2,
+            eos_guard_max_margin: 0.5,
         }
     }
 }
@@ -391,8 +397,15 @@ fn generate_audio_inner(
     let loop_start = Instant::now();
     let mut code_frames = Vec::with_capacity(options.max_frames * config.num_codebooks());
     let mut ended = false;
+    let mut eos_guard_active = false;
+    let max_decode_frames = options.max_frames.saturating_add(options.eos_guard_frames);
 
-    for frame_idx in 0..options.max_frames {
+    for frame_idx in 0..max_decode_frames {
+        if frame_idx >= options.max_frames && !eos_guard_active {
+            break;
+        }
+        eos_guard_active = false;
+
         let language_start = Instant::now();
         let hidden = if let Some(cache) = language_cache.as_mut() {
             let start_pos = cache.len();
@@ -441,11 +454,24 @@ fn generate_audio_inner(
 
         let frame = candle(frame_codes.to_vec2::<u32>())?.remove(0);
         let semantic_code = frame[0];
-        if options.trace_semantic_scores {
-            let (rank, margin) =
-                semantic_eos_rank_and_margin(config, modules, &last_hidden, semantic_code)?;
-            trace.semantic_eos_ranks.push(rank);
-            trace.semantic_eos_margins.push(margin);
+        let should_check_guard =
+            options.eos_guard_frames > 0 && frame_idx + 1 >= options.max_frames;
+        let semantic_score = if options.trace_semantic_scores || should_check_guard {
+            Some(semantic_eos_rank_and_margin(
+                config,
+                modules,
+                &last_hidden,
+                semantic_code,
+            )?)
+        } else {
+            None
+        };
+        if let Some((rank, margin)) = semantic_score {
+            if options.trace_semantic_scores {
+                trace.semantic_eos_ranks.push(rank);
+                trace.semantic_eos_margins.push(margin);
+            }
+            eos_guard_active = should_extend_eos_guard(&options, should_check_guard, rank, margin);
         }
         if semantic_code == 1 {
             trace.eos_frame = Some(frame_idx);
@@ -565,8 +591,15 @@ where
     let mut emitted_frames = 0usize;
     let mut emitted_samples = Vec::new();
     let mut ended = false;
+    let mut eos_guard_active = false;
+    let max_decode_frames = options.max_frames.saturating_add(options.eos_guard_frames);
 
-    for frame_idx in 0..options.max_frames {
+    for frame_idx in 0..max_decode_frames {
+        if frame_idx >= options.max_frames && !eos_guard_active {
+            break;
+        }
+        eos_guard_active = false;
+
         let language_start = Instant::now();
         let hidden = if let Some(cache) = language_cache.as_mut() {
             let start_pos = cache.len();
@@ -615,11 +648,24 @@ where
 
         let frame = candle(frame_codes.to_vec2::<u32>())?.remove(0);
         let semantic_code = frame[0];
-        if options.trace_semantic_scores {
-            let (rank, margin) =
-                semantic_eos_rank_and_margin(config, modules, &last_hidden, semantic_code)?;
-            trace.semantic_eos_ranks.push(rank);
-            trace.semantic_eos_margins.push(margin);
+        let should_check_guard =
+            options.eos_guard_frames > 0 && frame_idx + 1 >= options.max_frames;
+        let semantic_score = if options.trace_semantic_scores || should_check_guard {
+            Some(semantic_eos_rank_and_margin(
+                config,
+                modules,
+                &last_hidden,
+                semantic_code,
+            )?)
+        } else {
+            None
+        };
+        if let Some((rank, margin)) = semantic_score {
+            if options.trace_semantic_scores {
+                trace.semantic_eos_ranks.push(rank);
+                trace.semantic_eos_margins.push(margin);
+            }
+            eos_guard_active = should_extend_eos_guard(&options, should_check_guard, rank, margin);
         }
         if semantic_code == 1 {
             trace.eos_frame = Some(frame_idx);
@@ -831,6 +877,18 @@ fn semantic_eos_rank_and_margin(
     Ok((rank, selected_logit - eos_logit))
 }
 
+fn should_extend_eos_guard(
+    options: &VoxtralGenerationOptions,
+    should_check_guard: bool,
+    eos_rank: usize,
+    eos_margin: f32,
+) -> bool {
+    should_check_guard
+        && options.eos_guard_frames > 0
+        && eos_rank <= options.eos_guard_max_rank
+        && eos_margin <= options.eos_guard_max_margin
+}
+
 fn flow_timesteps(steps: usize) -> Result<Vec<f32>> {
     if steps == 0 {
         return Err(VoxtralError::InvalidConfig(
@@ -897,4 +955,30 @@ impl XorShift64 {
 
 fn candle<T>(result: candle_core::Result<T>) -> Result<T> {
     result.map_err(|e| VoxtralError::Candle(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_extend_eos_guard, VoxtralGenerationOptions};
+
+    #[test]
+    fn eos_guard_extends_only_near_cap_when_eos_is_close() {
+        let options = VoxtralGenerationOptions {
+            eos_guard_frames: 8,
+            eos_guard_max_rank: 2,
+            eos_guard_max_margin: 0.5,
+            ..Default::default()
+        };
+
+        assert!(should_extend_eos_guard(&options, true, 2, 0.25));
+        assert!(!should_extend_eos_guard(&options, false, 2, 0.25));
+        assert!(!should_extend_eos_guard(&options, true, 3, 0.25));
+        assert!(!should_extend_eos_guard(&options, true, 2, 0.75));
+        assert!(!should_extend_eos_guard(
+            &VoxtralGenerationOptions::default(),
+            true,
+            1,
+            0.0
+        ));
+    }
 }

@@ -84,14 +84,16 @@ fn apply_pronunciation_aliases(text: &str) -> String {
 
 fn replace_ascii_word(text: &str, word: &str, replacement: &str) -> String {
     let mut output = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let word_bytes = word.as_bytes();
     let mut index = 0;
 
     while index < text.len() {
         let candidate_end = index.saturating_add(word.len());
-        if candidate_end <= text.len()
-            && text[index..candidate_end].eq_ignore_ascii_case(word)
-            && is_word_boundary(text, index, candidate_end)
-        {
+        let matches_word = bytes
+            .get(index..candidate_end)
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(word_bytes));
+        if matches_word && is_word_boundary(text, index, candidate_end) {
             output.push_str(replacement);
             index = candidate_end;
             continue;
@@ -397,6 +399,20 @@ mod tests {
                 }
             ),
             "Voxtralized text should not change."
+        );
+    }
+
+    #[test]
+    fn pronunciation_aliases_do_not_panic_on_utf8_boundary_overlap() {
+        assert_eq!(
+            normalize_tts_text_with_options(
+                "Voxtraé should remain unchanged.",
+                VoxtralTextNormalizationOptions {
+                    numeric: false,
+                    pronunciation_aliases: true,
+                }
+            ),
+            "Voxtraé should remain unchanged."
         );
     }
 

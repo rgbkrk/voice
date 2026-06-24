@@ -59,6 +59,35 @@ pub fn save_audio(
     }
 }
 
+/// Adjust PCM duration by linear resampling while keeping the declared sample rate unchanged.
+///
+/// This is a lightweight playback/eval helper, not a pitch-preserving time-stretch
+/// algorithm. Values above `1.0` shorten the sample buffer; values below `1.0`
+/// lengthen it.
+pub fn adjust_speed(samples: &[f32], speed: f32) -> Result<Vec<f32>, String> {
+    if !speed.is_finite() || speed <= 0.0 {
+        return Err(format!(
+            "speed must be finite and greater than zero, got {speed}"
+        ));
+    }
+    if samples.is_empty() || (speed - 1.0).abs() <= f32::EPSILON {
+        return Ok(samples.to_vec());
+    }
+
+    let output_len = ((samples.len() as f64) / f64::from(speed)).round() as usize;
+    let output_len = output_len.max(1);
+    let mut output = Vec::with_capacity(output_len);
+    for index in 0..output_len {
+        let source = index as f64 * f64::from(speed);
+        let left = source.floor() as usize;
+        let right = (left + 1).min(samples.len() - 1);
+        let fraction = (source - left as f64) as f32;
+        let sample = samples[left] * (1.0 - fraction) + samples[right] * fraction;
+        output.push(sample);
+    }
+    Ok(output)
+}
+
 pub fn resolve_output_format(
     path: &Path,
     explicit: Option<AudioOutputFormat>,
@@ -489,6 +518,27 @@ mod tests {
             .sqrt();
         assert!(rms > 0.0);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn adjust_speed_keeps_identity_at_normal_speed() {
+        let samples = vec![0.0, 0.25, 0.5, 0.25, 0.0];
+
+        assert_eq!(adjust_speed(&samples, 1.0).unwrap(), samples);
+    }
+
+    #[test]
+    fn adjust_speed_shortens_and_lengthens_sample_count() {
+        let samples = vec![0.0; 100];
+
+        assert_eq!(adjust_speed(&samples, 2.0).unwrap().len(), 50);
+        assert_eq!(adjust_speed(&samples, 0.5).unwrap().len(), 200);
+    }
+
+    #[test]
+    fn adjust_speed_rejects_invalid_speed() {
+        assert!(adjust_speed(&[0.0], 0.0).is_err());
+        assert!(adjust_speed(&[0.0], f32::NAN).is_err());
     }
 
     #[test]

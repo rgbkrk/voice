@@ -11,6 +11,7 @@ repository = "https://github.com/rgbkrk/voice"
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+voice-audio = { path = "../voice-audio" }
 voice-g2p = { version = "0.2.2", path = "../voice-g2p" }
 voice-stt = { version = "0.2.0", path = "../voice-stt" }
 voice-tts = { version = "0.3.0", path = "../voice-tts" }

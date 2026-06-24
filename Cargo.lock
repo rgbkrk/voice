@@ -7120,6 +7120,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "voice-audio",
  "voice-g2p",
  "voice-stt",
  "voice-tts",

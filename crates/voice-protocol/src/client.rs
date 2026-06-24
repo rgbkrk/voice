@@ -142,7 +142,22 @@ impl DaemonClient {
         speed: Option<f64>,
         options: TtsRequestOptions<'_>,
     ) -> Result<Response, String> {
-        let mut params = serde_json::json!({"text": text, "wait": false});
+        self.speak_with_options_and_wait(text, voice, speed, options, false)
+    }
+
+    /// Convenience: send a speak request and optionally wait for playback completion.
+    pub fn speak_with_options_and_wait(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        speed: Option<f64>,
+        options: TtsRequestOptions<'_>,
+        wait: bool,
+    ) -> Result<Response, String> {
+        let read_timeout = wait
+            .then(|| read_timeout_for_tts_options(&options))
+            .flatten();
+        let mut params = serde_json::json!({"text": text, "wait": wait});
         if let Some(v) = voice {
             params["voice"] = Value::String(v.to_string());
         }
@@ -150,7 +165,7 @@ impl DaemonClient {
             params["speed"] = serde_json::json!(s);
         }
         insert_tts_options(&mut params, options);
-        self.call("speak", params)
+        self.call_with_read_timeout("speak", params, read_timeout)
     }
 
     /// Convenience: synthesize text to an audio file via the daemon and wait for completion.
@@ -725,6 +740,71 @@ mod tests {
         let mut client = DaemonClient::connect().unwrap();
         let response = client
             .converse_with_duration("hello", Some("af_heart"), Some(1500))
+            .unwrap();
+
+        assert!(response.error.is_none());
+
+        match old {
+            Some(value) => std::env::set_var(SOCKET_ENV, value),
+            None => std::env::remove_var(SOCKET_ENV),
+        }
+        let _ = std::fs::remove_file(path);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn speak_with_options_and_wait_sends_wait_true() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "voice-protocol-speak-wait-test-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let frame = read_frame_sync(&mut stream).unwrap().unwrap();
+            let request = frame.json::<Request>().unwrap();
+            assert_eq!(request.method, "speak");
+            assert_eq!(request.params["text"], "hello");
+            assert_eq!(request.params["voice"], "casual_male");
+            assert_eq!(request.params["wait"], true);
+            assert_eq!(request.params["engine"], "voxtral");
+            assert_eq!(request.params["voxtral_kv_cache"], true);
+
+            let response = Response::success(
+                Some(1.into()),
+                serde_json::json!({
+                    "queue_id": "q",
+                    "status": "completed",
+                    "result": "{\"engine\":\"voxtral\"}",
+                }),
+            );
+            write_frame_sync(
+                &mut stream,
+                &Frame::response(&serde_json::to_vec(&response).unwrap()),
+            )
+            .unwrap();
+        });
+
+        let old = std::env::var(SOCKET_ENV).ok();
+        std::env::set_var(SOCKET_ENV, &path);
+
+        let mut client = DaemonClient::connect().unwrap();
+        let response = client
+            .speak_with_options_and_wait(
+                "hello",
+                Some("casual_male"),
+                Some(1.0),
+                TtsRequestOptions {
+                    engine: Some("voxtral"),
+                    voxtral_kv_cache: true,
+                    ..TtsRequestOptions::default()
+                },
+                true,
+            )
             .unwrap();
 
         assert!(response.error.is_none());

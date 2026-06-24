@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use voice_audio::AudioOutputFormat;
 use voice_stream::{
     resample_linear, AudioEncoding, InterleavedMonoMixer, Packetizer, StreamEnded, StreamMetadata,
@@ -27,6 +27,7 @@ const STT_REPO: &str = "distil-whisper/distil-large-v3";
 const KOKORO_ENGINE: &str = "kokoro";
 const VOXTRAL_ENGINE: &str = "voxtral";
 const KOKORO_DEFAULT_VOICE: &str = "af_heart";
+const LISTEN_OPEN_GRACE_MS: u64 = 8_000;
 
 // -- TTS state ---------------------------------------------------------------
 
@@ -346,10 +347,12 @@ pub async fn run(
                     let max_ms = *max_duration_ms;
                     let stt = stt.clone();
                     let queue_id = entry.id.clone();
+                    let cancelled = entry.cancelled.clone();
 
-                    let result =
-                        tokio::task::spawn_blocking(move || listen(&stt, max_ms, Some(&queue_id)))
-                            .await;
+                    let result = tokio::task::spawn_blocking(move || {
+                        listen_bounded(&stt, max_ms, Some(&queue_id), &cancelled)
+                    })
+                    .await;
 
                     match result {
                         Ok(Ok(msg)) => {
@@ -393,9 +396,24 @@ pub async fn run(
 
                     // Speak then listen, return combined JSON
                     let speak_result = tokio::task::spawn_blocking(move || {
-                        let spoke_json = speak(&tts, &text, resolved, Some(&queue_id), &cancelled)?;
-                        let heard_json = listen(&stt, max_duration_ms, Some(&queue_id))?; // Pass queue_id for answer recording
-                                                                                          // Parse both results and combine into the converse format
+                        let stt_warmup = {
+                            let stt = stt.clone();
+                            std::thread::spawn(move || ensure_stt(&stt))
+                        };
+                        let spoke_json =
+                            match speak(&tts, &text, resolved, Some(&queue_id), &cancelled) {
+                                Ok(spoke_json) => spoke_json,
+                                Err(err) => {
+                                    let _ = stt_warmup.join();
+                                    return Err(err);
+                                }
+                            };
+                        stt_warmup
+                            .join()
+                            .map_err(|_| "stt warmup panicked".to_string())??;
+                        let heard_json =
+                            listen_bounded(&stt, max_duration_ms, Some(&queue_id), &cancelled)?; // Pass queue_id for answer recording
+                                                                                                 // Parse both results and combine into the converse format
                         let spoke: serde_json::Value =
                             serde_json::from_str(&spoke_json).unwrap_or_default();
                         let heard: serde_json::Value =
@@ -1063,10 +1081,58 @@ fn ensure_stt(stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>) -> Result<(), S
     Ok(())
 }
 
+fn listen_bounded(
+    stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
+    max_duration_ms: Option<u64>,
+    queue_id: Option<&str>,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<String, String> {
+    let max_ms = max_duration_ms.unwrap_or(60000);
+    let timeout = Duration::from_millis(max_ms.saturating_add(LISTEN_OPEN_GRACE_MS));
+    let started = Instant::now();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stt = stt.clone();
+    let queue_id = queue_id.map(ToOwned::to_owned);
+    let cancelled_for_thread = cancelled.clone();
+
+    std::thread::spawn(move || {
+        let result = listen(
+            &stt,
+            max_duration_ms,
+            queue_id.as_deref(),
+            &cancelled_for_thread,
+        );
+        let _ = tx.send(result);
+    });
+
+    loop {
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Cancelled by user".to_string());
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            cancelled.store(true, Ordering::SeqCst);
+            return Err(format!("listen timed out after {}ms", timeout.as_millis()));
+        }
+
+        let remaining = timeout.saturating_sub(elapsed);
+        let poll = remaining.min(Duration::from_millis(100));
+        match rx.recv_timeout(poll) {
+            Ok(result) => return result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("listen worker exited without a result".to_string());
+            }
+        }
+    }
+}
+
 fn listen(
     stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
     max_duration_ms: Option<u64>,
     queue_id: Option<&str>,
+    cancelled: &Arc<AtomicBool>,
 ) -> Result<String, String> {
     ensure_stt(stt)?;
 
@@ -1074,10 +1140,18 @@ fn listen(
 
     eprintln!("voice daemon: listening (max {}ms)...", max_ms);
 
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("Cancelled by user".to_string());
+    }
+
     // Play a ding to signal recording start
     play_tone(880.0, 0.15);
     // Brief pause so the ding finishes before mic opens
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(100));
+
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("Cancelled by user".to_string());
+    }
 
     // Open mic
     let mic = MicrophoneBuilder::new()
@@ -1129,7 +1203,15 @@ fn listen(
 
     // Calibrate noise floor — sample peak amplitude over 500ms.
     // The mic may take a moment to warm up (especially Bluetooth).
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    let calibration_started = Instant::now();
+    while calibration_started.elapsed() < Duration::from_millis(500) {
+        if cancelled.load(Ordering::SeqCst) {
+            stop.store(true, Ordering::Relaxed);
+            let _ = mic_thread.join();
+            return Err("Cancelled by user".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
     let noise_floor = f32::from_bits(recent_peak.swap(0f32.to_bits(), Ordering::Relaxed));
     // Threshold must be well above noise to avoid false positives.
     // Use the same heuristic as the CLI: max(noise * 3, 0.01)
@@ -1142,17 +1224,22 @@ fn listen(
     // VAD state machine: wait for speech, then stop after 2s of silence.
     let started = Instant::now();
     let max_dur = std::time::Duration::from_millis(max_ms);
-    let silence_timeout = std::time::Duration::from_millis(2000);
+    let silence_timeout = Duration::from_millis(2000);
     let mut speech_detected = false;
     let mut last_speech = Instant::now();
+    let mut was_cancelled = false;
 
     loop {
+        if cancelled.load(Ordering::SeqCst) {
+            was_cancelled = true;
+            break;
+        }
         if started.elapsed() > max_dur {
             eprintln!("voice daemon: max duration reached");
             break;
         }
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50));
         let peak = f32::from_bits(recent_peak.swap(0f32.to_bits(), Ordering::Relaxed));
 
         if peak > threshold {
@@ -1172,6 +1259,10 @@ fn listen(
 
     stop.store(true, Ordering::Relaxed);
     let _ = mic_thread.join();
+
+    if was_cancelled {
+        return Err("Cancelled by user".to_string());
+    }
 
     // Play stop tone
     play_tone(440.0, 0.1);

@@ -2737,64 +2737,10 @@ fn run_converse(args: ConverseArgs) {
         std::process::exit(1);
     }
 
-    let text = args.text.join(" ");
-
-    // Delegate to daemon if available
-    if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
-        if !daemon_supports_engine(&mut daemon, args.engine) {
-            eprintln!(
-                "Daemon does not advertise {} support, falling back to local",
-                args.engine.as_str()
-            );
-        } else {
-            match daemon.converse_with_options_and_duration(
-                &text,
-                Some(&voice),
-                daemon_tts_options(
-                    args.engine,
-                    &args.voxtral_model,
-                    args.voxtral_max_frames,
-                    args.voxtral_flow_steps,
-                    args.voxtral_kv_cache,
-                ),
-                Some(args.duration * 1_000),
-            ) {
-                Ok(resp) => {
-                    if interrupted() {
-                        std::process::exit(130);
-                    }
-                    // Extract and print the heard text from the worker's JSON result.
-                    if let Some(result) = resp.result {
-                        if let Some(r) = result.get("result").and_then(|v| v.as_str()) {
-                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(r) {
-                                if let Some(text) = value
-                                    .get("heard")
-                                    .and_then(|heard| heard.get("text"))
-                                    .and_then(|text| text.as_str())
-                                {
-                                    println!("{text}");
-                                } else {
-                                    println!("{r}");
-                                }
-                            } else {
-                                println!("{r}");
-                            }
-                        }
-                    } else if let Some(err) = resp.error {
-                        eprintln!("Daemon error: {}", err.message);
-                    }
-                    return;
-                }
-                Err(e) => {
-                    eprintln!("Daemon error: {e}, falling back to local");
-                }
-            }
-        }
-    }
-
     let sub_file = args.sub_file.clone().or_else(find_sub_file);
     let (subs, phoneme_overrides) = collect_subs(&args.subs, sub_file.as_deref());
 
+    let text = args.text.join(" ");
     let text = if args.markdown {
         strip_markdown(&text)
     } else {
@@ -2807,14 +2753,69 @@ fn run_converse(args: ConverseArgs) {
         apply_substitutions(&text, &subs)
     };
 
+    // Delegate TTS playback to daemon if available, but keep microphone capture
+    // in the foreground CLI process. Background daemon mic capture can wedge in
+    // CoreAudio on macOS, while daemon TTS is the fast queued path we want.
+    if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
+        if !daemon_supports_engine(&mut daemon, args.engine) {
+            eprintln!(
+                "Daemon does not advertise {} support, falling back to local",
+                args.engine.as_str()
+            );
+        } else {
+            let stt_handle = std::thread::spawn(listen::load_stt);
+            match daemon.speak_with_options_and_wait(
+                &text,
+                Some(&voice),
+                Some(args.speed as f64),
+                daemon_tts_options(
+                    args.engine,
+                    &args.voxtral_model,
+                    args.voxtral_max_frames,
+                    args.voxtral_flow_steps,
+                    args.voxtral_kv_cache,
+                ),
+                true,
+            ) {
+                Ok(resp) if resp.error.is_none() => {
+                    let failed = resp
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.get("status"))
+                        .and_then(|s| s.as_str())
+                        == Some("failed");
+                    if failed {
+                        let _ = stt_handle.join();
+                        eprintln!("Daemon speak failed, falling back to local");
+                    } else {
+                        if interrupted() {
+                            std::process::exit(130);
+                        }
+                        finish_converse_listen(stt_handle, args.duration);
+                        return;
+                    }
+                }
+                Ok(resp) => {
+                    let _ = stt_handle.join();
+                    if let Some(err) = resp.error {
+                        eprintln!("Daemon error: {}, falling back to local", err.message);
+                    }
+                }
+                Err(e) => {
+                    let _ = stt_handle.join();
+                    eprintln!("Daemon error: {e}, falling back to local");
+                }
+            }
+        }
+    }
+
     if args.engine == TtsEngine::Voxtral {
         if (args.speed - 1.0).abs() > f32::EPSILON {
             info!("Voxtral does not support --speed yet; generating at model speed");
         }
         let stt_handle = std::thread::spawn(listen::load_stt);
         info!("Loading Voxtral TTS model ({})...", args.voxtral_model);
-        let mut runtime = match voice_voxtral::VoxtralTtsRuntime::load_default(&args.voxtral_model)
-        {
+        let mut runtime = match voice_voxtral::VoxtralTtsRuntime::load_default(&args.voxtral_model) {
             Ok(runtime) => runtime,
             Err(e) => {
                 eprintln!("Failed to load Voxtral model '{}': {e}", args.voxtral_model);

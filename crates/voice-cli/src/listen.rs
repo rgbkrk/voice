@@ -25,13 +25,15 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rodio::microphone::MicrophoneBuilder;
 use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
 use voice_stream::InterleavedMonoMixer;
 
 use crate::{INTERRUPTED, QUIET};
+
+const MIC_OPEN_TIMEOUT_MS: u64 = 8_000;
 
 // ── Sound configuration ───────────────────────────────────────────────
 
@@ -486,6 +488,39 @@ impl Drop for WarmMic {
 /// Uses the default input device. Rodio handles sample format conversion
 /// and multi-channel mixing internally.
 fn open_mic() -> Result<(String, u32, rodio::microphone::Microphone), String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(open_mic_inner());
+    });
+
+    let timeout = Duration::from_millis(MIC_OPEN_TIMEOUT_MS);
+    let started = Instant::now();
+    loop {
+        if INTERRUPTED.load(Ordering::Relaxed) {
+            return Err("Interrupted".to_string());
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Err(format!(
+                "Opening microphone timed out after {}ms",
+                timeout.as_millis()
+            ));
+        }
+
+        let remaining = timeout.saturating_sub(elapsed);
+        let poll = remaining.min(Duration::from_millis(100));
+        match rx.recv_timeout(poll) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("Microphone open worker exited without a result".to_string());
+            }
+        }
+    }
+}
+
+fn open_mic_inner() -> Result<(String, u32, rodio::microphone::Microphone), String> {
     let mic = MicrophoneBuilder::new()
         .default_device()
         .map_err(|e| format!("No input device: {e}"))?

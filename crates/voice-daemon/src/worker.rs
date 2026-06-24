@@ -548,37 +548,44 @@ fn speak(
         }
 
         let started = Instant::now();
-        let audio = {
-            let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
-            generate_voxtral_audio(
-                &mut state,
-                text,
-                &resolved.voice,
-                &resolved.voxtral_model,
-                resolved.voxtral_options.clone(),
-            )?
-        };
-
-        if cancelled.load(Ordering::SeqCst) {
-            return Err("Cancelled by user".to_string());
-        }
-
         let mut stream =
             DeviceSinkBuilder::open_default_sink().map_err(|e| format!("audio: {}", e))?;
         stream.log_on_drop(false);
         let player = Player::connect_new(stream.mixer());
         let channels = NonZero::new(1u16).unwrap();
-        let rate = NonZero::new(audio.sample_rate).unwrap();
-        player.append(SamplesBuffer::new(channels, rate, audio.samples.clone()));
+        let rate = NonZero::new(voice_voxtral::SAMPLE_RATE).unwrap();
+        let mut accumulated_audio = Vec::new();
+        let (audio, trace) = {
+            let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
+            let runtime = state.get_voxtral_runtime(&resolved.voxtral_model)?;
+            runtime
+                .generate_audio_streaming_with_trace(
+                    text,
+                    &resolved.voice,
+                    resolved.voxtral_options.clone(),
+                    VoxtralStreamingConfig::default(),
+                    |chunk| {
+                        if cancelled.load(Ordering::SeqCst) {
+                            return Err(voice_voxtral::VoxtralError::Unsupported(
+                                "Cancelled by user".to_string(),
+                            ));
+                        }
+                        accumulated_audio.extend_from_slice(&chunk.samples);
+                        player.append(SamplesBuffer::new(channels, rate, chunk.samples.clone()));
+                        Ok(())
+                    },
+                )
+                .map_err(|e| format!("generate Voxtral audio: {e}"))?
+        };
 
         while !player.empty() {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
         if let Some(qid) = queue_id {
-            if !audio.samples.is_empty() {
+            if !accumulated_audio.is_empty() {
                 let path = audio_recorder::question_path(qid);
-                audio_recorder::save_wav(&path, &audio.samples, audio.sample_rate)?;
+                audio_recorder::save_wav(&path, &accumulated_audio, audio.sample_rate)?;
             }
         }
 
@@ -586,11 +593,13 @@ fn speak(
             "engine": resolved.engine,
             "voice": resolved.voice,
             "duration_ms": started.elapsed().as_millis() as u64,
-            "chunks": 1,
+            "chunks": trace.codec_chunks,
             "samples": audio.samples.len(),
             "sample_rate": audio.sample_rate,
             "frames": audio.frames,
             "ended": audio.ended,
+            "first_code_frame_ms": trace.first_frame.map(|duration| duration.as_millis() as u64),
+            "first_audio_chunk_ms": trace.first_audio_chunk.map(|duration| duration.as_millis() as u64),
         })
         .to_string());
     }

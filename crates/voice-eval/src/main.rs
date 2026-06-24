@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::f64::consts::PI;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,6 +12,15 @@ const DEFAULT_TTS_BACKEND: &str = "kokoro";
 const DEFAULT_STT_BACKEND: &str = "whisper";
 const DEFAULT_KOKORO_VOICE: &str = "af_heart";
 const DEFAULT_VOXTRAL_VOICE: &str = "casual_male";
+const VOXTRAL_QUALITY_SUITE_PROMPTS: &[&str] = &[
+    "hello world",
+    "A fast reply should arrive naturally.",
+    "Voxtral should pronounce its own made-up name clearly.",
+    "Please pause, then continue; do not add extra words.",
+    "Read ticket A17, version 2.4.1, at 9:30 PM.",
+    "If I ask a quick question, can you answer in one sentence?",
+    "The voice should stay steady across a longer reply, even when the sentence reaches the realtime frame cap.",
+];
 
 #[derive(Debug, Parser)]
 #[command(
@@ -77,6 +87,10 @@ struct Args {
     /// Run a Voxtral quality/speed matrix instead of a single evaluation.
     #[arg(long = "voxtral-matrix")]
     voxtral_matrix: bool,
+
+    /// Run the canonical varied Voxtral quality prompt suite.
+    #[arg(long = "voxtral-quality-suite")]
+    voxtral_quality_suite: bool,
 
     /// Additional prompt for --voxtral-matrix. Repeat for multiple prompts.
     #[arg(long = "matrix-text", value_name = "TEXT")]
@@ -257,7 +271,61 @@ struct VoxtralMatrixReport {
     seed: u64,
     output_dir: Option<PathBuf>,
     spectrogram_dir: Option<PathBuf>,
+    quality_summary: VoxtralQualitySummary,
     rows: Vec<VoxtralMatrixRow>,
+}
+
+#[derive(Debug, Serialize)]
+struct VoxtralQualitySummary {
+    total_rows: usize,
+    clean_rows: usize,
+    suspect_rows: usize,
+    ended_rows: usize,
+    zero_wer_rows: usize,
+    transcript_correct_artifact_rows: usize,
+    by_setting: Vec<VoxtralSettingQualitySummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct VoxtralSettingQualitySummary {
+    max_frames: usize,
+    flow_steps: usize,
+    rows: usize,
+    clean_rows: usize,
+    suspect_rows: usize,
+    ended_rows: usize,
+    zero_wer_rows: usize,
+    transcript_correct_artifact_rows: usize,
+    average_word_error_rate: Option<f32>,
+    average_realtime_factor: Option<f64>,
+    average_first_active_audio_ms: Option<f64>,
+    quality_flags: Vec<QualityFlag>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum QualityFlag {
+    WordError,
+    DidNotEnd,
+    NoActiveAudio,
+    ExtraActiveSegments,
+    LongInternalGap,
+    LeadingFragment,
+    TrailingFragment,
+}
+
+impl QualityFlag {
+    fn as_str(self) -> &'static str {
+        match self {
+            QualityFlag::WordError => "word_error",
+            QualityFlag::DidNotEnd => "did_not_end",
+            QualityFlag::NoActiveAudio => "no_active_audio",
+            QualityFlag::ExtraActiveSegments => "extra_active_segments",
+            QualityFlag::LongInternalGap => "long_internal_gap",
+            QualityFlag::LeadingFragment => "leading_fragment",
+            QualityFlag::TrailingFragment => "trailing_fragment",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -301,6 +369,8 @@ struct VoxtralMatrixRow {
     reference_word_count: usize,
     word_error_count: usize,
     word_error_rate: Option<f32>,
+    quality_suspect: bool,
+    quality_flags: Vec<QualityFlag>,
     stt_token_count: usize,
     audio_diagnostics: AudioDiagnostics,
     output_wav: Option<PathBuf>,
@@ -310,7 +380,7 @@ struct VoxtralMatrixRow {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    if args.voxtral_matrix {
+    if args.voxtral_matrix || args.voxtral_quality_suite {
         return run_voxtral_matrix(&args);
     }
 
@@ -448,6 +518,14 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if args.expected_text.is_some() {
         return Err("--expected-text cannot be used with --voxtral-matrix".into());
     }
+    if args.voxtral_quality_suite && !args.matrix_texts.is_empty() {
+        return Err("--voxtral-quality-suite cannot be combined with --matrix-text".into());
+    }
+    if args.voxtral_quality_suite && !args.matrix_synthesis_texts.is_empty() {
+        return Err(
+            "--voxtral-quality-suite cannot be combined with --matrix-synthesis-text".into(),
+        );
+    }
     if args.synthesis_text.is_some() {
         return Err(
             "--synthesis-text cannot be used with --voxtral-matrix; use --matrix-synthesis-text"
@@ -568,6 +646,8 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 let first_audio_ms = trace.first_audio_chunk.map(duration_ms);
                 let first_active_audio_ms =
                     first_active_audio_ms(first_audio_ms, &audio_diagnostics);
+                let quality_flags =
+                    voxtral_quality_flags(wer.distance, audio.ended, &audio_diagnostics);
 
                 rows.push(VoxtralMatrixRow {
                     text_index,
@@ -609,6 +689,8 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                     reference_word_count: wer.reference_words.len(),
                     word_error_count: wer.distance,
                     word_error_rate: wer.rate,
+                    quality_suspect: !quality_flags.is_empty(),
+                    quality_flags,
                     stt_token_count: transcription.tokens.len(),
                     audio_diagnostics,
                     output_wav,
@@ -640,6 +722,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         seed: args.seed,
         output_dir: args.output_dir.clone(),
         spectrogram_dir: args.spectrogram_dir.clone(),
+        quality_summary: summarize_voxtral_quality(&rows),
         rows,
     };
 
@@ -673,7 +756,12 @@ fn tts_voice(args: &Args) -> String {
 }
 
 fn matrix_cases(args: &Args) -> Result<Vec<MatrixCase>, Box<dyn std::error::Error>> {
-    let reference_texts = if args.matrix_texts.is_empty() {
+    let reference_texts = if args.voxtral_quality_suite {
+        VOXTRAL_QUALITY_SUITE_PROMPTS
+            .iter()
+            .map(|prompt| (*prompt).to_string())
+            .collect()
+    } else if args.matrix_texts.is_empty() {
         vec![args.text.clone()]
     } else {
         args.matrix_texts.clone()
@@ -1096,6 +1184,17 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
     );
     println!("voxtral_matrix.model_load_ms={:.1}", report.model_load_ms);
     println!(
+        "voxtral_matrix.quality_suspect_rows={}/{}",
+        report.quality_summary.suspect_rows, report.quality_summary.total_rows
+    );
+    println!(
+        "voxtral_matrix.clean_rows={} ended_rows={} zero_wer_rows={} transcript_correct_artifact_rows={}",
+        report.quality_summary.clean_rows,
+        report.quality_summary.ended_rows,
+        report.quality_summary.zero_wer_rows,
+        report.quality_summary.transcript_correct_artifact_rows
+    );
+    println!(
         "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} pronunciation_aliases={} auto_max_frames={} eos_scores={} eos_guard_frames={} eos_guard_max_rank={} eos_guard_max_margin={:.3} time_token_equivalence={}",
         report.matrix_max_frames,
         report.matrix_flow_steps,
@@ -1120,6 +1219,23 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
             spectrogram_dir.display()
         );
     }
+    for setting in &report.quality_summary.by_setting {
+        println!(
+            "voxtral_matrix.setting max_frames={} flow_steps={} clean_rows={}/{} suspect_rows={} ended_rows={} zero_wer_rows={} transcript_correct_artifact_rows={} avg_wer={} avg_rtf={} avg_first_active_audio_ms={} quality_flags={}",
+            setting.max_frames,
+            setting.flow_steps,
+            setting.clean_rows,
+            setting.rows,
+            setting.suspect_rows,
+            setting.ended_rows,
+            setting.zero_wer_rows,
+            setting.transcript_correct_artifact_rows,
+            format_optional_f32(setting.average_word_error_rate),
+            format_optional_f64(setting.average_realtime_factor),
+            format_optional_f64(setting.average_first_active_audio_ms),
+            format_quality_flags(&setting.quality_flags)
+        );
+    }
     for row in &report.rows {
         println!(
             concat!(
@@ -1127,6 +1243,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
                 "reference_text={:?} synthesis_text={:?} ",
                 "first_audio_ms={} first_active_audio_ms={} total_ms={:.1} audio_ms={:.1} rtf={} ",
                 "wer={} errors={}/{} frames={} ended={} chunks={} ",
+                "quality_suspect={} quality_flags={} ",
                 "eos_frame={} semantic_count={} semantic_tail={:?} ",
                 "semantic_tail_unique={} semantic_tail_repeat={} ",
                 "eos_rank_tail={:?} eos_margin_tail={:?} ",
@@ -1150,6 +1267,8 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
             row.audio_frames,
             row.ended,
             row.codec_chunks,
+            row.quality_suspect,
+            format_quality_flags(&row.quality_flags),
             format_optional_usize(row.eos_frame),
             row.semantic_code_count,
             row.semantic_tail_codes,
@@ -1169,6 +1288,159 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
             row.transcription
         );
     }
+}
+
+fn voxtral_quality_flags(
+    word_error_count: usize,
+    ended: bool,
+    diagnostics: &AudioDiagnostics,
+) -> Vec<QualityFlag> {
+    let mut flags = Vec::new();
+    if word_error_count > 0 {
+        flags.push(QualityFlag::WordError);
+    }
+    if !ended {
+        flags.push(QualityFlag::DidNotEnd);
+    }
+    if diagnostics.active_segment_count == 0 {
+        flags.push(QualityFlag::NoActiveAudio);
+    } else {
+        if diagnostics.active_segment_count > 1 {
+            flags.push(QualityFlag::ExtraActiveSegments);
+        }
+        if diagnostics.long_gap_count > 0 {
+            flags.push(QualityFlag::LongInternalGap);
+        }
+        if diagnostics.leading_fragment_seconds.is_some() {
+            flags.push(QualityFlag::LeadingFragment);
+        }
+        if diagnostics.trailing_fragment_seconds.is_some() {
+            flags.push(QualityFlag::TrailingFragment);
+        }
+    }
+    flags
+}
+
+#[derive(Debug, Default)]
+struct QualityAccumulator {
+    rows: usize,
+    clean_rows: usize,
+    suspect_rows: usize,
+    ended_rows: usize,
+    zero_wer_rows: usize,
+    transcript_correct_artifact_rows: usize,
+    word_error_rate_sum: f64,
+    word_error_rate_count: usize,
+    realtime_factor_sum: f64,
+    realtime_factor_count: usize,
+    first_active_audio_ms_sum: f64,
+    first_active_audio_ms_count: usize,
+    quality_flags: Vec<QualityFlag>,
+}
+
+impl QualityAccumulator {
+    fn add_row(&mut self, row: &VoxtralMatrixRow) {
+        self.rows += 1;
+        if row.quality_suspect {
+            self.suspect_rows += 1;
+        } else {
+            self.clean_rows += 1;
+        }
+        if row.ended {
+            self.ended_rows += 1;
+        }
+        if row.word_error_count == 0 {
+            self.zero_wer_rows += 1;
+        }
+        if row.word_error_count == 0 && artifact_quality_flags(&row.quality_flags) {
+            self.transcript_correct_artifact_rows += 1;
+        }
+        if let Some(word_error_rate) = row.word_error_rate {
+            self.word_error_rate_sum += f64::from(word_error_rate);
+            self.word_error_rate_count += 1;
+        }
+        if let Some(realtime_factor) = row.realtime_factor {
+            self.realtime_factor_sum += realtime_factor;
+            self.realtime_factor_count += 1;
+        }
+        if let Some(first_active_audio_ms) = row.first_active_audio_ms {
+            self.first_active_audio_ms_sum += first_active_audio_ms;
+            self.first_active_audio_ms_count += 1;
+        }
+        for flag in &row.quality_flags {
+            if !self.quality_flags.contains(flag) {
+                self.quality_flags.push(*flag);
+            }
+        }
+    }
+
+    fn average_word_error_rate(&self) -> Option<f32> {
+        (self.word_error_rate_count > 0)
+            .then_some((self.word_error_rate_sum / self.word_error_rate_count as f64) as f32)
+    }
+
+    fn average_realtime_factor(&self) -> Option<f64> {
+        (self.realtime_factor_count > 0)
+            .then_some(self.realtime_factor_sum / self.realtime_factor_count as f64)
+    }
+
+    fn average_first_active_audio_ms(&self) -> Option<f64> {
+        (self.first_active_audio_ms_count > 0)
+            .then_some(self.first_active_audio_ms_sum / self.first_active_audio_ms_count as f64)
+    }
+}
+
+fn summarize_voxtral_quality(rows: &[VoxtralMatrixRow]) -> VoxtralQualitySummary {
+    let mut total = QualityAccumulator::default();
+    let mut by_setting = BTreeMap::<(usize, usize), QualityAccumulator>::new();
+    for row in rows {
+        total.add_row(row);
+        by_setting
+            .entry((row.max_frames, row.flow_steps))
+            .or_default()
+            .add_row(row);
+    }
+
+    VoxtralQualitySummary {
+        total_rows: total.rows,
+        clean_rows: total.clean_rows,
+        suspect_rows: total.suspect_rows,
+        ended_rows: total.ended_rows,
+        zero_wer_rows: total.zero_wer_rows,
+        transcript_correct_artifact_rows: total.transcript_correct_artifact_rows,
+        by_setting: by_setting
+            .into_iter()
+            .map(
+                |((max_frames, flow_steps), setting)| VoxtralSettingQualitySummary {
+                    max_frames,
+                    flow_steps,
+                    rows: setting.rows,
+                    clean_rows: setting.clean_rows,
+                    suspect_rows: setting.suspect_rows,
+                    ended_rows: setting.ended_rows,
+                    zero_wer_rows: setting.zero_wer_rows,
+                    transcript_correct_artifact_rows: setting.transcript_correct_artifact_rows,
+                    average_word_error_rate: setting.average_word_error_rate(),
+                    average_realtime_factor: setting.average_realtime_factor(),
+                    average_first_active_audio_ms: setting.average_first_active_audio_ms(),
+                    quality_flags: setting.quality_flags,
+                },
+            )
+            .collect(),
+    }
+}
+
+fn artifact_quality_flags(flags: &[QualityFlag]) -> bool {
+    flags.iter().any(|flag| {
+        matches!(
+            flag,
+            QualityFlag::NoActiveAudio
+                | QualityFlag::ExtraActiveSegments
+                | QualityFlag::LongInternalGap
+                | QualityFlag::LeadingFragment
+                | QualityFlag::TrailingFragment
+        )
+    })
 }
 
 fn duration_ms(duration: Duration) -> f64 {
@@ -1247,6 +1519,17 @@ fn format_optional_usize(value: Option<usize>) -> String {
 fn format_optional_path(path: Option<&PathBuf>) -> String {
     path.map(|path| path.display().to_string())
         .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn format_quality_flags(flags: &[QualityFlag]) -> String {
+    if flags.is_empty() {
+        return "none".to_string();
+    }
+    flags
+        .iter()
+        .map(|flag| flag.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn print_text_report(report: &EvalReport) {
@@ -1843,6 +2126,48 @@ mod tests {
     }
 
     #[test]
+    fn voxtral_quality_suite_uses_canonical_prompt_set() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--tts-backend",
+            "voxtral",
+            "--voxtral-quality-suite",
+        ])
+        .unwrap();
+
+        let cases = matrix_cases(&args).unwrap();
+        assert_eq!(cases.len(), VOXTRAL_QUALITY_SUITE_PROMPTS.len());
+        assert_eq!(cases[0].reference_text, "hello world");
+        assert_eq!(
+            cases[2].reference_text,
+            "Voxtral should pronounce its own made-up name clearly."
+        );
+        assert_eq!(
+            cases.last().unwrap().reference_text,
+            "The voice should stay steady across a longer reply, even when the sentence reaches the realtime frame cap."
+        );
+        assert!(cases
+            .iter()
+            .all(|case| case.reference_text == case.synthesis_text));
+    }
+
+    #[test]
+    fn voxtral_quality_suite_rejects_custom_matrix_texts() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--tts-backend",
+            "voxtral",
+            "--voxtral-quality-suite",
+            "--matrix-text",
+            "custom prompt",
+        ])
+        .unwrap();
+
+        let err = run_voxtral_matrix(&args).unwrap_err().to_string();
+        assert!(err.contains("--voxtral-quality-suite cannot be combined with --matrix-text"));
+    }
+
+    #[test]
     fn auto_voxtral_max_frames_uses_synthesis_text_estimate_without_lowering_explicit_caps() {
         let args = Args::try_parse_from([
             "voice-eval",
@@ -1977,6 +2302,133 @@ mod tests {
     }
 
     #[test]
+    fn voxtral_quality_flags_keep_clean_rows_unflagged() {
+        let sample_rate = 1_000;
+        let diagnostics = analyze_audio(&tone_samples(sample_rate, 1.0, 0.5), sample_rate);
+
+        assert_eq!(voxtral_quality_flags(0, true, &diagnostics), Vec::new());
+        assert_eq!(format_quality_flags(&[]), "none");
+    }
+
+    #[test]
+    fn voxtral_quality_flags_mark_transcript_and_cap_failures() {
+        let sample_rate = 1_000;
+        let diagnostics = analyze_audio(&tone_samples(sample_rate, 1.0, 0.5), sample_rate);
+
+        assert_eq!(
+            voxtral_quality_flags(2, false, &diagnostics),
+            vec![QualityFlag::WordError, QualityFlag::DidNotEnd]
+        );
+        assert_eq!(
+            format_quality_flags(&[QualityFlag::WordError, QualityFlag::DidNotEnd]),
+            "word_error,did_not_end"
+        );
+    }
+
+    #[test]
+    fn voxtral_quality_flags_mark_transcript_correct_audio_artifacts() {
+        let sample_rate = 1_000;
+        let mut samples = Vec::new();
+        samples.extend(tone_samples(sample_rate, 0.08, 0.5));
+        samples.extend(silence_samples(sample_rate, 0.40));
+        samples.extend(tone_samples(sample_rate, 0.50, 0.5));
+        samples.extend(silence_samples(sample_rate, 0.30));
+        samples.extend(tone_samples(sample_rate, 0.10, 0.5));
+        let diagnostics = analyze_audio(&samples, sample_rate);
+
+        assert_eq!(
+            voxtral_quality_flags(0, true, &diagnostics),
+            vec![
+                QualityFlag::ExtraActiveSegments,
+                QualityFlag::LongInternalGap,
+                QualityFlag::LeadingFragment,
+                QualityFlag::TrailingFragment
+            ]
+        );
+    }
+
+    #[test]
+    fn voxtral_quality_flags_mark_silent_rows() {
+        let sample_rate = 1_000;
+        let diagnostics = analyze_audio(&silence_samples(sample_rate, 0.5), sample_rate);
+
+        assert_eq!(
+            voxtral_quality_flags(0, true, &diagnostics),
+            vec![QualityFlag::NoActiveAudio]
+        );
+    }
+
+    #[test]
+    fn voxtral_quality_summary_groups_rows_by_setting() {
+        let rows = vec![
+            matrix_row_for_test(32, 5, true, 0, Some(0.0), Some(1.1), Some(350.0), vec![]),
+            matrix_row_for_test(
+                32,
+                5,
+                false,
+                2,
+                Some(0.25),
+                Some(1.3),
+                Some(420.0),
+                vec![QualityFlag::WordError, QualityFlag::DidNotEnd],
+            ),
+            matrix_row_for_test(
+                40,
+                7,
+                true,
+                0,
+                Some(0.0),
+                Some(0.9),
+                Some(300.0),
+                vec![
+                    QualityFlag::ExtraActiveSegments,
+                    QualityFlag::LeadingFragment,
+                ],
+            ),
+        ];
+
+        let summary = summarize_voxtral_quality(&rows);
+
+        assert_eq!(summary.total_rows, 3);
+        assert_eq!(summary.clean_rows, 1);
+        assert_eq!(summary.suspect_rows, 2);
+        assert_eq!(summary.ended_rows, 2);
+        assert_eq!(summary.zero_wer_rows, 2);
+        assert_eq!(summary.transcript_correct_artifact_rows, 1);
+        assert_eq!(summary.by_setting.len(), 2);
+
+        let setting_32_5 = &summary.by_setting[0];
+        assert_eq!(setting_32_5.max_frames, 32);
+        assert_eq!(setting_32_5.flow_steps, 5);
+        assert_eq!(setting_32_5.rows, 2);
+        assert_eq!(setting_32_5.clean_rows, 1);
+        assert_eq!(setting_32_5.suspect_rows, 1);
+        assert_eq!(
+            setting_32_5.quality_flags,
+            vec![QualityFlag::WordError, QualityFlag::DidNotEnd,]
+        );
+        assert_eq!(setting_32_5.average_word_error_rate, Some(0.125));
+        assert!(
+            (setting_32_5.average_realtime_factor.unwrap() - 1.2).abs() < 0.000_001,
+            "unexpected average realtime factor: {:?}",
+            setting_32_5.average_realtime_factor
+        );
+        assert_eq!(setting_32_5.average_first_active_audio_ms, Some(385.0));
+
+        let setting_40_7 = &summary.by_setting[1];
+        assert_eq!(setting_40_7.max_frames, 40);
+        assert_eq!(setting_40_7.flow_steps, 7);
+        assert_eq!(setting_40_7.transcript_correct_artifact_rows, 1);
+        assert_eq!(
+            setting_40_7.quality_flags,
+            vec![
+                QualityFlag::ExtraActiveSegments,
+                QualityFlag::LeadingFragment,
+            ]
+        );
+    }
+
+    #[test]
     fn spectrogram_pgm_has_a_valid_grayscale_header() {
         let image = spectrogram_pgm(&tone_samples(1_000, 0.10, 0.5), 1_000);
 
@@ -1996,5 +2448,97 @@ mod tests {
 
     fn silence_samples(sample_rate: u32, duration_seconds: f64) -> Vec<f32> {
         vec![0.0; (sample_rate as f64 * duration_seconds).round() as usize]
+    }
+
+    fn matrix_row_for_test(
+        max_frames: usize,
+        flow_steps: usize,
+        ended: bool,
+        word_error_count: usize,
+        word_error_rate: Option<f32>,
+        realtime_factor: Option<f64>,
+        first_active_audio_ms: Option<f64>,
+        quality_flags: Vec<QualityFlag>,
+    ) -> VoxtralMatrixRow {
+        let quality_suspect = !quality_flags.is_empty();
+        VoxtralMatrixRow {
+            text_index: 0,
+            text: "reference".to_string(),
+            synthesis_text: "synthesis".to_string(),
+            max_frames,
+            flow_steps,
+            first_code_frame_ms: Some(10.0),
+            first_audio_ms: Some(250.0),
+            first_active_audio_ms,
+            total_ms: 1000.0,
+            audio_duration_ms: 900.0,
+            realtime_factor,
+            samples: 24_000,
+            sample_rate: 24_000,
+            audio_frames: max_frames,
+            ended,
+            eos_frame: ended.then_some(audio_frames_for_test(max_frames)),
+            semantic_code_count: max_frames,
+            semantic_tail_codes: Vec::new(),
+            semantic_tail_unique_count: 0,
+            semantic_tail_repeat_count: 0,
+            semantic_eos_rank_tail: Vec::new(),
+            semantic_eos_margin_tail: Vec::new(),
+            semantic_best_eos_rank: None,
+            semantic_best_eos_margin: None,
+            codec_chunks: 1,
+            language_ms: 100.0,
+            language_ms_per_frame: Some(2.5),
+            acoustic_ms: 200.0,
+            acoustic_ms_per_frame: Some(5.0),
+            decode_loop_ms: 300.0,
+            decode_loop_ms_per_frame: Some(7.5),
+            codec_ms: 30.0,
+            codec_ms_per_chunk: Some(30.0),
+            transcription: "hypothesis".to_string(),
+            normalized_reference: "reference".to_string(),
+            normalized_hypothesis: "hypothesis".to_string(),
+            reference_word_count: 4,
+            word_error_count,
+            word_error_rate,
+            quality_suspect,
+            quality_flags,
+            stt_token_count: 4,
+            audio_diagnostics: audio_diagnostics_for_test(),
+            output_wav: None,
+            spectrogram_pgm: None,
+        }
+    }
+
+    fn audio_frames_for_test(max_frames: usize) -> usize {
+        max_frames.saturating_sub(1)
+    }
+
+    fn audio_diagnostics_for_test() -> AudioDiagnostics {
+        AudioDiagnostics {
+            duration_seconds: 1.0,
+            peak_dbfs: -1.0,
+            rms_dbfs: -12.0,
+            active_threshold_dbfs: -41.0,
+            active_duration_seconds: 1.0,
+            active_span_seconds: 1.0,
+            active_ratio: Some(1.0),
+            first_active_seconds: Some(0.0),
+            active_segment_count: 1,
+            long_gap_count: 0,
+            longest_internal_gap_seconds: 0.0,
+            gap_seconds: Vec::new(),
+            leading_silence_seconds: 0.0,
+            trailing_silence_seconds: 0.0,
+            leading_fragment_seconds: None,
+            trailing_fragment_seconds: None,
+            segments: vec![AudioSegment {
+                start_seconds: 0.0,
+                end_seconds: 1.0,
+                duration_seconds: 1.0,
+                peak_dbfs: -1.0,
+                rms_dbfs: -12.0,
+            }],
+        }
     }
 }

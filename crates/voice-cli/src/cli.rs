@@ -1643,13 +1643,18 @@ struct TtsBenchRunReport {
     voxtral_language_cache: Option<bool>,
     voxtral_stream_begin_frames: Option<usize>,
     voxtral_voice_cache_hit: Option<bool>,
+    voxtral_audio_frames: Option<usize>,
     voxtral_codec_chunks: Option<usize>,
     voxtral_codec_chunks_per_second: Option<f64>,
     voxtral_prompt_ms: Option<f64>,
     voxtral_language_ms: Option<f64>,
+    voxtral_language_ms_per_frame: Option<f64>,
     voxtral_acoustic_ms: Option<f64>,
+    voxtral_acoustic_ms_per_frame: Option<f64>,
     voxtral_decode_loop_ms: Option<f64>,
+    voxtral_decode_loop_ms_per_frame: Option<f64>,
     voxtral_codec_ms: Option<f64>,
+    voxtral_codec_ms_per_chunk: Option<f64>,
     daemon_response_ms: Option<f64>,
     daemon_started_ms: Option<f64>,
     daemon_first_pcm_ms: Option<f64>,
@@ -1816,13 +1821,18 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
             voxtral_language_cache: None,
             voxtral_stream_begin_frames: None,
             voxtral_voice_cache_hit: None,
+            voxtral_audio_frames: None,
             voxtral_codec_chunks: None,
             voxtral_codec_chunks_per_second: None,
             voxtral_prompt_ms: None,
             voxtral_language_ms: None,
+            voxtral_language_ms_per_frame: None,
             voxtral_acoustic_ms: None,
+            voxtral_acoustic_ms_per_frame: None,
             voxtral_decode_loop_ms: None,
+            voxtral_decode_loop_ms_per_frame: None,
             voxtral_codec_ms: None,
+            voxtral_codec_ms_per_chunk: None,
             daemon_response_ms: None,
             daemon_started_ms: None,
             daemon_first_pcm_ms: None,
@@ -1885,6 +1895,10 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         let total_ms = duration_ms(total);
         let first_audio_ms = duration_ms(trace.first_audio_chunk.unwrap_or(total));
         let generated_audio_ms = audio_duration_ms(audio.samples.len(), audio.sample_rate);
+        let language_ms = duration_ms(trace.language);
+        let acoustic_ms = duration_ms(trace.acoustic);
+        let decode_loop_ms = duration_ms(trace.decode_loop);
+        let codec_ms = duration_ms(trace.codec);
         let output_wav = maybe_write_bench_wav(
             &args.output_dir,
             TtsEngine::Voxtral,
@@ -1917,13 +1931,18 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             voxtral_language_cache: Some(trace.language_cache),
             voxtral_stream_begin_frames: Some(voxtral_streaming_config(voxtral).chunk_frames_at_begin),
             voxtral_voice_cache_hit: Some(trace.voice_cache_hit),
+            voxtral_audio_frames: Some(audio.frames),
             voxtral_codec_chunks: Some(trace.codec_chunks),
             voxtral_codec_chunks_per_second: per_second(trace.codec_chunks, total_ms),
             voxtral_prompt_ms: Some(duration_ms(trace.prompt)),
-            voxtral_language_ms: Some(duration_ms(trace.language)),
-            voxtral_acoustic_ms: Some(duration_ms(trace.acoustic)),
-            voxtral_decode_loop_ms: Some(duration_ms(trace.decode_loop)),
-            voxtral_codec_ms: Some(duration_ms(trace.codec)),
+            voxtral_language_ms: Some(language_ms),
+            voxtral_language_ms_per_frame: per_unit(language_ms, audio.frames),
+            voxtral_acoustic_ms: Some(acoustic_ms),
+            voxtral_acoustic_ms_per_frame: per_unit(acoustic_ms, audio.frames),
+            voxtral_decode_loop_ms: Some(decode_loop_ms),
+            voxtral_decode_loop_ms_per_frame: per_unit(decode_loop_ms, audio.frames),
+            voxtral_codec_ms: Some(codec_ms),
+            voxtral_codec_ms_per_chunk: per_unit(codec_ms, trace.codec_chunks),
             daemon_response_ms: None,
             daemon_started_ms: None,
             daemon_first_pcm_ms: None,
@@ -2055,8 +2074,12 @@ fn bench_daemon_tts(
         let voxtral_codec_chunks = worker_result
             .as_ref()
             .and_then(|result| result.get("chunks"))
-            .and_then(|value| value.as_u64())
-            .and_then(|value| usize::try_from(value).ok())
+            .and_then(json_number_usize)
+            .filter(|_| engine == TtsEngine::Voxtral);
+        let voxtral_audio_frames = worker_result
+            .as_ref()
+            .and_then(|result| result.get("voxtral_frames"))
+            .and_then(json_number_usize)
             .filter(|_| engine == TtsEngine::Voxtral);
 
         let total = total_start.elapsed();
@@ -2088,14 +2111,19 @@ fn bench_daemon_tts(
             voxtral_stream_begin_frames: (engine == TtsEngine::Voxtral)
                 .then_some(voxtral_streaming_config(voxtral).chunk_frames_at_begin),
             voxtral_voice_cache_hit: None,
+            voxtral_audio_frames,
             voxtral_codec_chunks,
             voxtral_codec_chunks_per_second: voxtral_codec_chunks
                 .and_then(|chunks| per_second(chunks, total_ms)),
             voxtral_prompt_ms: None,
             voxtral_language_ms: None,
+            voxtral_language_ms_per_frame: None,
             voxtral_acoustic_ms: None,
+            voxtral_acoustic_ms_per_frame: None,
             voxtral_decode_loop_ms: None,
+            voxtral_decode_loop_ms_per_frame: None,
             voxtral_codec_ms: None,
+            voxtral_codec_ms_per_chunk: None,
             daemon_response_ms: response_at.map(duration_ms),
             daemon_started_ms: started_at.map(duration_ms),
             daemon_first_pcm_ms: Some(duration_ms(first_audio)),
@@ -2161,6 +2189,12 @@ fn daemon_recent_result_for_queue(
 
 fn json_number_ms(value: &serde_json::Value) -> Option<f64> {
     value.as_f64().or_else(|| value.as_u64().map(|value| value as f64))
+}
+
+fn json_number_usize(value: &serde_json::Value) -> Option<usize> {
+    value
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
 }
 
 fn voxtral_streaming_config(
@@ -2269,6 +2303,10 @@ fn per_second(count: usize, elapsed_ms: f64) -> Option<f64> {
     (elapsed_ms > 0.0).then_some(count as f64 / (elapsed_ms / 1_000.0))
 }
 
+fn per_unit(total_ms: f64, units: usize) -> Option<f64> {
+    (units > 0).then_some(total_ms / units as f64)
+}
+
 fn print_tts_bench_report(report: &TtsBenchReport) {
     println!("tts_bench.text={}", report.text);
     println!("tts_bench.mode={}", report.mode);
@@ -2288,7 +2326,7 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
         );
         for run in &engine.runs {
             let mut line = format!(
-                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} realtime_factor={} first_audio_realtime_factor={} phoneme_ms={} first_code_frame_ms={} voxtral_realtime={} voxtral_max_frames={} voxtral_flow_steps={} voxtral_stream_begin_frames={} voxtral_codec_chunks={} voxtral_codec_chunks_per_second={} output_wav={}",
+                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} realtime_factor={} first_audio_realtime_factor={} phoneme_ms={} first_code_frame_ms={} voxtral_realtime={} voxtral_max_frames={} voxtral_flow_steps={} voxtral_stream_begin_frames={} voxtral_audio_frames={} voxtral_codec_chunks={} voxtral_codec_chunks_per_second={} voxtral_language_ms_per_frame={} voxtral_acoustic_ms_per_frame={} voxtral_decode_loop_ms_per_frame={} voxtral_codec_ms_per_chunk={} output_wav={}",
                 engine.engine,
                 run.run,
                 run.first_audio_ms,
@@ -2319,11 +2357,26 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
                 run.voxtral_stream_begin_frames
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_audio_frames
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
                 run.voxtral_codec_chunks
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
                 run.voxtral_codec_chunks_per_second
                     .map(|value| format!("{value:.2}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_language_ms_per_frame
+                    .map(|value| format!("{value:.1}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_acoustic_ms_per_frame
+                    .map(|value| format!("{value:.1}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_decode_loop_ms_per_frame
+                    .map(|value| format!("{value:.1}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_codec_ms_per_chunk
+                    .map(|value| format!("{value:.1}"))
                     .unwrap_or_else(|| "-".to_string()),
                 run.output_wav.as_deref().unwrap_or("")
             );

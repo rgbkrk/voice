@@ -233,8 +233,8 @@ struct VoxtralMatrixReport {
     text_normalization: bool,
     eos_scores: bool,
     eos_guard_frames: usize,
-    eos_guard_rank: usize,
-    eos_guard_margin: f32,
+    eos_guard_max_rank: usize,
+    eos_guard_max_margin: f32,
     seed: u64,
     output_dir: Option<PathBuf>,
     spectrogram_dir: Option<PathBuf>,
@@ -596,8 +596,8 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         text_normalization: args.voxtral_normalize_text,
         eos_scores: args.voxtral_eos_scores,
         eos_guard_frames: args.voxtral_eos_guard_frames,
-        eos_guard_rank: args.voxtral_eos_guard_rank,
-        eos_guard_margin: args.voxtral_eos_guard_margin,
+        eos_guard_max_rank: args.voxtral_eos_guard_rank,
+        eos_guard_max_margin: args.voxtral_eos_guard_margin,
         seed: args.seed,
         output_dir: args.output_dir.clone(),
         spectrogram_dir: args.spectrogram_dir.clone(),
@@ -1038,7 +1038,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
     );
     println!("voxtral_matrix.model_load_ms={:.1}", report.model_load_ms);
     println!(
-        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} eos_scores={} eos_guard_frames={} eos_guard_rank={} eos_guard_margin={:.3}",
+        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} eos_scores={} eos_guard_frames={} eos_guard_max_rank={} eos_guard_max_margin={:.3}",
         report.matrix_max_frames,
         report.matrix_flow_steps,
         report.stream_begin_frames,
@@ -1047,8 +1047,8 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
         report.text_normalization,
         report.eos_scores,
         report.eos_guard_frames,
-        report.eos_guard_rank,
-        report.eos_guard_margin
+        report.eos_guard_max_rank,
+        report.eos_guard_max_margin
     );
     if let Some(output_dir) = &report.output_dir {
         println!("voxtral_matrix.output_dir={}", output_dir.display());

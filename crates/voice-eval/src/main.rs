@@ -30,6 +30,10 @@ struct Args {
     #[arg(long = "expected-text")]
     expected_text: Option<String>,
 
+    /// Text to synthesize when it should differ from the scored reference text.
+    #[arg(long = "synthesis-text", value_name = "TEXT")]
+    synthesis_text: Option<String>,
+
     /// TTS backend to synthesize with.
     #[arg(long = "tts-backend", default_value = DEFAULT_TTS_BACKEND)]
     tts_backend: String,
@@ -73,6 +77,10 @@ struct Args {
     /// Additional prompt for --voxtral-matrix. Repeat for multiple prompts.
     #[arg(long = "matrix-text", value_name = "TEXT")]
     matrix_texts: Vec<String>,
+
+    /// Synthesis text paired by index with --matrix-text.
+    #[arg(long = "matrix-synthesis-text", value_name = "TEXT")]
+    matrix_synthesis_texts: Vec<String>,
 
     /// Comma-separated max-frame values for --voxtral-matrix.
     #[arg(
@@ -156,9 +164,16 @@ struct AudioDiagnostics {
     segments: Vec<AudioSegment>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MatrixCase {
+    reference_text: String,
+    synthesis_text: String,
+}
+
 #[derive(Debug, Serialize)]
 struct EvalReport {
     text: String,
+    synthesis_text: String,
     voice: String,
     tts_model: String,
     stt_backend: String,
@@ -204,6 +219,7 @@ struct VoxtralMatrixReport {
 struct VoxtralMatrixRow {
     text_index: usize,
     text: String,
+    synthesis_text: String,
     max_frames: usize,
     flow_steps: usize,
     first_code_frame_ms: Option<f64>,
@@ -245,8 +261,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tts_model_path = tts_model_path(&args);
     let tts_voice = tts_voice(&args);
+    if args.input_wav.is_some() && args.synthesis_text.is_some() {
+        return Err("--synthesis-text cannot be used with --input-wav".into());
+    }
     let reference_text = args
         .expected_text
+        .clone()
+        .unwrap_or_else(|| args.text.clone());
+    let synthesis_text = args
+        .synthesis_text
         .clone()
         .unwrap_or_else(|| args.text.clone());
     let (samples, sample_rate, phoneme_chunks, synthesis_mode) = if let Some(input_wav) =
@@ -255,10 +278,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let audio = voice_stt::load_audio_file(input_wav)?;
         (audio.samples, audio.sample_rate, Vec::new(), "input-wav")
     } else if args.tts_backend == "voxtral" {
-        let (samples, sample_rate) = synthesize_voxtral(&args, &tts_voice)?;
+        let (samples, sample_rate) = synthesize_voxtral(&args, &synthesis_text, &tts_voice)?;
         (samples, sample_rate, Vec::new(), "voxtral-native")
     } else if args.tts_backend == "kokoro" {
-        let phoneme_chunks = voice_g2p::text_to_phoneme_chunks(&args.text)?;
+        let phoneme_chunks = voice_g2p::text_to_phoneme_chunks(&synthesis_text)?;
         let mode = if args.stochastic {
             voice_tts::SynthesisMode::Stochastic
         } else {
@@ -317,6 +340,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let report = EvalReport {
         text: reference_text,
+        synthesis_text,
         voice: tts_voice,
         tts_model: tts_model_path,
         stt_backend: stt_backend.as_str().to_string(),
@@ -359,6 +383,12 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if args.expected_text.is_some() {
         return Err("--expected-text cannot be used with --voxtral-matrix".into());
     }
+    if args.synthesis_text.is_some() {
+        return Err(
+            "--synthesis-text cannot be used with --voxtral-matrix; use --matrix-synthesis-text"
+                .into(),
+        );
+    }
     if args.tts_backend != "voxtral" {
         return Err("--voxtral-matrix requires --tts-backend voxtral".into());
     }
@@ -378,7 +408,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         return Err("--voxtral-stream-begin-frames must be greater than zero".into());
     }
 
-    let texts = matrix_texts(args)?;
+    let cases = matrix_cases(args)?;
     let tts_model_path = tts_model_path(args);
     let tts_voice = tts_voice(args);
     let (mut runtime, load_trace) =
@@ -396,7 +426,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut rows = Vec::new();
-    for (text_index, text) in texts.iter().enumerate() {
+    for (text_index, case) in cases.iter().enumerate() {
         for &max_frames in &args.matrix_max_frames {
             for &flow_steps in &args.matrix_flow_steps {
                 let streaming = voice_voxtral::VoxtralStreamingConfig {
@@ -414,7 +444,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
                 let run_start = Instant::now();
                 let (audio, trace) = runtime.generate_audio_streaming_with_trace(
-                    text,
+                    &case.synthesis_text,
                     &tts_voice,
                     options,
                     streaming,
@@ -443,7 +473,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
                 let transcription =
                     stt_model.transcribe_audio(&audio.samples, audio.sample_rate)?;
-                let wer = word_error_rate(text, &transcription.text);
+                let wer = word_error_rate(&case.reference_text, &transcription.text);
                 let audio_diagnostics = analyze_audio(&audio.samples, audio.sample_rate);
                 let total_ms = duration_ms(total);
                 let audio_duration_ms = audio_duration_ms(audio.samples.len(), audio.sample_rate);
@@ -454,7 +484,8 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
                 rows.push(VoxtralMatrixRow {
                     text_index,
-                    text: text.clone(),
+                    text: case.reference_text.clone(),
+                    synthesis_text: case.synthesis_text.clone(),
                     max_frames,
                     flow_steps,
                     first_code_frame_ms: trace.first_frame.map(duration_ms),
@@ -536,16 +567,45 @@ fn tts_voice(args: &Args) -> String {
     })
 }
 
-fn matrix_texts(args: &Args) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let texts = if args.matrix_texts.is_empty() {
+fn matrix_cases(args: &Args) -> Result<Vec<MatrixCase>, Box<dyn std::error::Error>> {
+    let reference_texts = if args.matrix_texts.is_empty() {
         vec![args.text.clone()]
     } else {
         args.matrix_texts.clone()
     };
-    if texts.iter().any(|text| text.trim().is_empty()) {
+    if reference_texts.iter().any(|text| text.trim().is_empty()) {
         return Err("--matrix-text values must not be empty".into());
     }
-    Ok(texts)
+    if args
+        .matrix_synthesis_texts
+        .iter()
+        .any(|text| text.trim().is_empty())
+    {
+        return Err("--matrix-synthesis-text values must not be empty".into());
+    }
+
+    let synthesis_texts = if args.matrix_synthesis_texts.is_empty() {
+        reference_texts.clone()
+    } else {
+        if args.matrix_synthesis_texts.len() != reference_texts.len() {
+            return Err(format!(
+                "--matrix-synthesis-text count ({}) must match --matrix-text count ({})",
+                args.matrix_synthesis_texts.len(),
+                reference_texts.len()
+            )
+            .into());
+        }
+        args.matrix_synthesis_texts.clone()
+    };
+
+    Ok(reference_texts
+        .into_iter()
+        .zip(synthesis_texts)
+        .map(|(reference_text, synthesis_text)| MatrixCase {
+            reference_text,
+            synthesis_text,
+        })
+        .collect())
 }
 
 fn synthesize_kokoro(
@@ -579,12 +639,13 @@ fn synthesize_kokoro(
 
 fn synthesize_voxtral(
     args: &Args,
+    text: &str,
     voice_name: &str,
 ) -> Result<(Vec<f32>, u32), Box<dyn std::error::Error>> {
     let tts_model_path = tts_model_path(args);
     let model = voice_voxtral::VoxtralModel::load(&tts_model_path)?;
     let audio = model.generate_audio_default(
-        &args.text,
+        text,
         voice_name,
         voice_voxtral::VoxtralGenerationOptions {
             max_frames: args.max_frames,
@@ -919,6 +980,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
         println!(
             concat!(
                 "voxtral_matrix.row text_index={} max_frames={} flow_steps={} ",
+                "synthesis_text={:?} ",
                 "first_audio_ms={} total_ms={:.1} audio_ms={:.1} rtf={} ",
                 "wer={} errors={}/{} frames={} ended={} chunks={} ",
                 "segments={} long_gaps={} longest_gap_s={:.3} active_ratio={} ",
@@ -927,6 +989,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
             row.text_index,
             row.max_frames,
             row.flow_steps,
+            row.synthesis_text,
             format_optional_f64(row.first_audio_ms),
             row.total_ms,
             row.audio_duration_ms,
@@ -988,6 +1051,9 @@ fn format_optional_path(path: Option<&PathBuf>) -> String {
 
 fn print_text_report(report: &EvalReport) {
     println!("reference: {}", report.text);
+    if report.synthesis_text != report.text {
+        println!("synthesis text: {}", report.synthesis_text);
+    }
     println!("hypothesis: {}", report.transcription);
     println!("normalized reference: {}", report.normalized_reference);
     println!("normalized hypothesis: {}", report.normalized_hypothesis);
@@ -1144,6 +1210,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_synthesis_text_for_pronunciation_eval() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--tts-backend",
+            "voxtral",
+            "--text",
+            "Voxtral should sound clear.",
+            "--synthesis-text",
+            "Vox trahl should sound clear.",
+        ])
+        .unwrap();
+
+        assert_eq!(args.text, "Voxtral should sound clear.");
+        assert_eq!(
+            args.synthesis_text.as_deref(),
+            Some("Vox trahl should sound clear.")
+        );
+    }
+
+    #[test]
     fn parses_voxtral_matrix_args() {
         let args = Args::try_parse_from([
             "voice-eval",
@@ -1154,6 +1240,10 @@ mod tests {
             "A fast reply should arrive naturally.",
             "--matrix-text",
             "Voxtral pronunciation should stay clear.",
+            "--matrix-synthesis-text",
+            "A fast reply should arrive naturally.",
+            "--matrix-synthesis-text",
+            "Vox trahl pronunciation should stay clear.",
             "--matrix-max-frames",
             "32,40",
             "--matrix-flow-steps",
@@ -1174,6 +1264,13 @@ mod tests {
             vec![
                 "A fast reply should arrive naturally.",
                 "Voxtral pronunciation should stay clear."
+            ]
+        );
+        assert_eq!(
+            args.matrix_synthesis_texts,
+            vec![
+                "A fast reply should arrive naturally.",
+                "Vox trahl pronunciation should stay clear."
             ]
         );
         assert_eq!(args.matrix_max_frames, vec![32, 40]);
@@ -1218,11 +1315,68 @@ mod tests {
     }
 
     #[test]
-    fn matrix_texts_falls_back_to_primary_text() {
+    fn matrix_cases_falls_back_to_primary_text() {
         let args =
             Args::try_parse_from(["voice-eval", "--voxtral-matrix", "--text", "hello"]).unwrap();
 
-        assert_eq!(matrix_texts(&args).unwrap(), vec!["hello"]);
+        assert_eq!(
+            matrix_cases(&args).unwrap(),
+            vec![MatrixCase {
+                reference_text: "hello".to_string(),
+                synthesis_text: "hello".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn matrix_cases_pair_reference_and_synthesis_texts() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--voxtral-matrix",
+            "--matrix-text",
+            "Voxtral sounds clear.",
+            "--matrix-text",
+            "Read ticket A17.",
+            "--matrix-synthesis-text",
+            "Vox trahl sounds clear.",
+            "--matrix-synthesis-text",
+            "Read ticket A seventeen.",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            matrix_cases(&args).unwrap(),
+            vec![
+                MatrixCase {
+                    reference_text: "Voxtral sounds clear.".to_string(),
+                    synthesis_text: "Vox trahl sounds clear.".to_string(),
+                },
+                MatrixCase {
+                    reference_text: "Read ticket A17.".to_string(),
+                    synthesis_text: "Read ticket A seventeen.".to_string(),
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn matrix_cases_require_matching_synthesis_count() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--voxtral-matrix",
+            "--matrix-text",
+            "Voxtral sounds clear.",
+            "--matrix-text",
+            "Read ticket A17.",
+            "--matrix-synthesis-text",
+            "Vox trahl sounds clear.",
+        ])
+        .unwrap();
+
+        let err = matrix_cases(&args).unwrap_err().to_string();
+        assert!(
+            err.contains("--matrix-synthesis-text count (1) must match --matrix-text count (2)")
+        );
     }
 
     #[test]

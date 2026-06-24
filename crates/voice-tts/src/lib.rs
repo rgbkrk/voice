@@ -225,10 +225,10 @@ pub fn generate_with_mode(
     Ok(samples)
 }
 
-/// Save audio samples to a WAV file (24kHz, 32-bit float).
+/// Save mono audio samples to a stereo WAV file (24kHz, 32-bit float).
 pub fn save_wav(samples: &[f32], path: &Path, sample_rate: u32) -> Result<()> {
     let spec = hound::WavSpec {
-        channels: 1,
+        channels: 2,
         sample_rate,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
@@ -236,6 +236,9 @@ pub fn save_wav(samples: &[f32], path: &Path, sample_rate: u32) -> Result<()> {
     let mut writer = hound::WavWriter::create(path, spec)
         .map_err(|e| VoicersError::Io(std::io::Error::other(e)))?;
     for &sample in samples {
+        writer
+            .write_sample(sample)
+            .map_err(|e| VoicersError::Io(std::io::Error::other(e)))?;
         writer
             .write_sample(sample)
             .map_err(|e| VoicersError::Io(std::io::Error::other(e)))?;
@@ -272,14 +275,14 @@ mod tests {
     }
 
     #[test]
-    fn save_wav_writes_mono_float_samples() {
+    fn save_wav_writes_stereo_float_samples() {
         let path = temp_path("wav");
         let samples = vec![0.0, 0.25, -0.25, 0.5, -0.5];
         save_wav(&samples, &path, 24_000).expect("save wav");
 
         let mut reader = hound::WavReader::open(&path).expect("read saved wav");
         let spec = reader.spec();
-        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.channels, 2);
         assert_eq!(spec.sample_rate, 24_000);
         assert_eq!(spec.bits_per_sample, 32);
         assert_eq!(spec.sample_format, hound::SampleFormat::Float);
@@ -288,7 +291,11 @@ mod tests {
             .samples::<f32>()
             .collect::<std::result::Result<Vec<_>, _>>()
             .expect("decode saved wav samples");
-        assert_eq!(decoded, samples);
+        assert_eq!(decoded.len(), samples.len() * 2);
+        for (frame, expected) in decoded.chunks_exact(2).zip(samples) {
+            assert_eq!(frame[0], expected);
+            assert_eq!(frame[1], expected);
+        }
 
         let _ = std::fs::remove_file(path);
     }

@@ -106,7 +106,7 @@ pub fn save_wav(samples: &[f32], path: &Path, sample_rate: u32) -> Result<(), St
     ensure_parent_dir(path)?;
 
     let spec = WavSpec {
-        channels: 1,
+        channels: 2,
         sample_rate,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
@@ -116,6 +116,9 @@ pub fn save_wav(samples: &[f32], path: &Path, sample_rate: u32) -> Result<(), St
         WavWriter::create(path, spec).map_err(|e| format!("create WAV {}: {e}", path.display()))?;
 
     for &sample in samples {
+        writer
+            .write_sample(sample)
+            .map_err(|e| format!("write WAV sample: {e}"))?;
         writer
             .write_sample(sample)
             .map_err(|e| format!("write WAV sample: {e}"))?;
@@ -467,7 +470,7 @@ mod tests {
 
         let mut reader = hound::WavReader::open(&path).expect("read saved wav");
         let spec = reader.spec();
-        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.channels, 2);
         assert_eq!(spec.sample_rate, 24_000);
         assert_eq!(spec.bits_per_sample, 32);
         assert_eq!(spec.sample_format, hound::SampleFormat::Float);
@@ -476,7 +479,11 @@ mod tests {
             .samples::<f32>()
             .collect::<Result<Vec<_>, _>>()
             .expect("decode saved wav samples");
-        assert_eq!(decoded.len(), samples.len());
+        assert_eq!(decoded.len(), samples.len() * 2);
+        for (frame, expected) in decoded.chunks_exact(2).zip(samples.iter().copied()) {
+            assert_eq!(frame[0], expected);
+            assert_eq!(frame[1], expected);
+        }
         let rms = (decoded.iter().map(|sample| sample * sample).sum::<f32>()
             / decoded.len() as f32)
             .sqrt();

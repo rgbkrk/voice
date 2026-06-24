@@ -540,7 +540,11 @@ fn handle_tools_call(
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 let text = preprocess_for_daemon(raw, markdown, &session.subs);
-                Some(daemon.converse(&text, arguments.get("voice").and_then(|v| v.as_str())))
+                Some(daemon.converse_with_duration(
+                    &text,
+                    arguments.get("voice").and_then(|v| v.as_str()),
+                    arguments.get("max_duration_ms").and_then(|v| v.as_u64()),
+                ))
             }
             _ => None,
         };

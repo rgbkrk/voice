@@ -324,10 +324,15 @@ pub async fn run(
                         }
                     }
                 }
-                VoiceRequest::Converse { text, voice } => {
+                VoiceRequest::Converse {
+                    text,
+                    voice,
+                    max_duration_ms,
+                } => {
                     let text = text.clone();
                     let voice = voice.clone().or_else(|| Some(config.get_voice_name()));
                     let default_speed = Some(config.get_speed() as f64);
+                    let max_duration_ms = *max_duration_ms;
                     let tts = tts.clone();
                     let stt = stt.clone();
                     let queue_id = entry.id.clone(); // Capture for audio recording
@@ -343,8 +348,8 @@ pub async fn run(
                             Some(&queue_id),
                             &cancelled,
                         )?;
-                        let heard_json = listen(&stt, None, Some(&queue_id))?; // Pass queue_id for answer recording
-                                                                               // Parse both results and combine into the converse format
+                        let heard_json = listen(&stt, max_duration_ms, Some(&queue_id))?; // Pass queue_id for answer recording
+                                                                                          // Parse both results and combine into the converse format
                         let spoke: serde_json::Value =
                             serde_json::from_str(&spoke_json).unwrap_or_default();
                         let heard: serde_json::Value =

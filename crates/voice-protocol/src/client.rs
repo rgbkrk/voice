@@ -12,6 +12,8 @@ use std::time::Duration;
 use voice_stream::TtsStreamEvent;
 
 const SOCKET_ENV: &str = "VOICE_DAEMON_SOCKET";
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(120);
+const DURATION_CALL_TIMEOUT_PAD: Duration = Duration::from_secs(120);
 
 /// A synchronous client connection to the voice daemon.
 pub struct DaemonClient {
@@ -51,9 +53,7 @@ impl DaemonClient {
     pub fn connect() -> Option<Self> {
         let path = daemon_socket_path();
         let stream = UnixStream::connect(&path).ok()?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(120)))
-            .ok()?;
+        stream.set_read_timeout(Some(DEFAULT_READ_TIMEOUT)).ok()?;
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
             .ok()?;
@@ -62,6 +62,25 @@ impl DaemonClient {
 
     /// Send a JSON-RPC request and get the response.
     pub fn call(&mut self, method: &str, params: Value) -> Result<Response, String> {
+        self.call_with_read_timeout(method, params, None)
+    }
+
+    fn call_with_read_timeout(
+        &mut self,
+        method: &str,
+        params: Value,
+        read_timeout: Option<Duration>,
+    ) -> Result<Response, String> {
+        if let Some(timeout) = read_timeout {
+            self.stream
+                .set_read_timeout(Some(timeout))
+                .map_err(|e| format!("set read timeout: {}", e))?;
+        }
+
+        self.call_inner(method, params)
+    }
+
+    fn call_inner(&mut self, method: &str, params: Value) -> Result<Response, String> {
         let req = rpc::Request::new(method, params).with_id(1);
         let json = serde_json::to_vec(&req).map_err(|e| format!("serialize: {}", e))?;
 
@@ -331,16 +350,37 @@ impl DaemonClient {
         if let Some(ms) = max_duration_ms {
             params["max_duration_ms"] = serde_json::json!(ms);
         }
-        self.call("listen", params)
+        self.call_with_read_timeout(
+            "listen",
+            params,
+            max_duration_ms.map(read_timeout_for_max_duration),
+        )
     }
 
     /// Convenience: send a converse request. Blocks until speak+listen completes.
     pub fn converse(&mut self, text: &str, voice: Option<&str>) -> Result<Response, String> {
+        self.converse_with_duration(text, voice, None)
+    }
+
+    /// Convenience: send a converse request with an optional max listen duration.
+    pub fn converse_with_duration(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        max_duration_ms: Option<u64>,
+    ) -> Result<Response, String> {
         let mut params = serde_json::json!({"text": text, "wait": true});
         if let Some(v) = voice {
             params["voice"] = Value::String(v.to_string());
         }
-        self.call("converse", params)
+        if let Some(ms) = max_duration_ms {
+            params["max_duration_ms"] = serde_json::json!(ms);
+        }
+        self.call_with_read_timeout(
+            "converse",
+            params,
+            max_duration_ms.map(read_timeout_for_max_duration),
+        )
     }
 
     /// Convenience: cancel all pending requests from this client.
@@ -382,12 +422,15 @@ impl DaemonClient {
     }
 }
 
+fn read_timeout_for_max_duration(max_duration_ms: u64) -> Duration {
+    Duration::from_millis(max_duration_ms).saturating_add(DURATION_CALL_TIMEOUT_PAD)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::frames::{read_frame_sync, write_frame_sync, Frame};
-    use crate::rpc::{Event, Response};
-    use std::io::Read;
+    use crate::rpc::{Event, Request, Response};
     use std::os::unix::net::UnixListener;
     use std::sync::Mutex;
     use std::thread;
@@ -419,8 +462,7 @@ mod tests {
 
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 64];
-            let _ = stream.read(&mut buf).unwrap();
+            let _ = read_frame_sync(&mut stream).unwrap().unwrap();
             write_frame_sync(&mut stream, &Frame::event(b"{}")).unwrap();
         });
 
@@ -453,8 +495,7 @@ mod tests {
 
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 128];
-            let _ = stream.read(&mut buf).unwrap();
+            let _ = read_frame_sync(&mut stream).unwrap().unwrap();
             let response =
                 Response::success(Some(1.into()), serde_json::json!({ "status": "idle" }));
             let payload = serde_json::to_vec(&response).unwrap();
@@ -474,6 +515,71 @@ mod tests {
         }
         let _ = std::fs::remove_file(path);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn converse_with_duration_sends_max_duration_ms() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "voice-protocol-converse-test-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let frame = read_frame_sync(&mut stream).unwrap().unwrap();
+            let request = frame.json::<Request>().unwrap();
+            assert_eq!(request.method, "converse");
+            assert_eq!(request.params["text"], "hello");
+            assert_eq!(request.params["voice"], "af_heart");
+            assert_eq!(request.params["max_duration_ms"], 1500);
+
+            let response = Response::success(
+                Some(1.into()),
+                serde_json::json!({
+                    "queue_id": "q",
+                    "status": "completed",
+                    "result": "{\"heard\":{\"text\":\"ok\"}}",
+                }),
+            );
+            write_frame_sync(
+                &mut stream,
+                &Frame::response(&serde_json::to_vec(&response).unwrap()),
+            )
+            .unwrap();
+        });
+
+        let old = std::env::var(SOCKET_ENV).ok();
+        std::env::set_var(SOCKET_ENV, &path);
+
+        let mut client = DaemonClient::connect().unwrap();
+        let response = client
+            .converse_with_duration("hello", Some("af_heart"), Some(1500))
+            .unwrap();
+
+        assert!(response.error.is_none());
+
+        match old {
+            Some(value) => std::env::set_var(SOCKET_ENV, value),
+            None => std::env::remove_var(SOCKET_ENV),
+        }
+        let _ = std::fs::remove_file(path);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn duration_calls_pad_read_timeout() {
+        assert_eq!(
+            read_timeout_for_max_duration(1_500),
+            Duration::from_millis(121_500)
+        );
+        assert_eq!(
+            read_timeout_for_max_duration(180_000),
+            Duration::from_secs(300)
+        );
     }
 
     #[test]

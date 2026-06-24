@@ -1804,12 +1804,27 @@ fn run_converse(args: ConverseArgs) {
 
     // Delegate to daemon if available
     if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
-        match daemon.converse(&text, Some(&args.voice)) {
+        match daemon.converse_with_duration(&text, Some(&args.voice), Some(args.duration * 1_000)) {
             Ok(resp) => {
-                // Extract and print the heard text
+                if interrupted() {
+                    std::process::exit(130);
+                }
+                // Extract and print the heard text from the worker's JSON result.
                 if let Some(result) = resp.result {
                     if let Some(r) = result.get("result").and_then(|v| v.as_str()) {
-                        println!("{}", r);
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(r) {
+                            if let Some(text) = value
+                                .get("heard")
+                                .and_then(|heard| heard.get("text"))
+                                .and_then(|text| text.as_str())
+                            {
+                                println!("{text}");
+                            } else {
+                                println!("{r}");
+                            }
+                        } else {
+                            println!("{r}");
+                        }
                     }
                 } else if let Some(err) = resp.error {
                     eprintln!("Daemon error: {}", err.message);

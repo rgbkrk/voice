@@ -528,7 +528,15 @@ async fn dispatch(
                 Ok(voice) => voice,
                 Err(resp) => return resp,
             };
-            VoiceRequest::Converse { text, voice }
+            let max_duration_ms = match optional_duration_param(&req, "max_duration_ms") {
+                Ok(duration) => duration,
+                Err(resp) => return resp,
+            };
+            VoiceRequest::Converse {
+                text,
+                voice,
+                max_duration_ms,
+            }
         }
         "replay_audio" => {
             let queue_id = match required_string_param(&req, "queue_id") {
@@ -706,9 +714,13 @@ async fn dispatch(
                     .enqueue_listen(client_id.to_string(), max_duration_ms)
                     .await
             }
-            VoiceRequest::Converse { text, voice } => {
+            VoiceRequest::Converse {
+                text,
+                voice,
+                max_duration_ms,
+            } => {
                 queue
-                    .enqueue_converse(client_id.to_string(), text, voice)
+                    .enqueue_converse(client_id.to_string(), text, voice, max_duration_ms)
                     .await
             }
         };

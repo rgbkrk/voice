@@ -57,6 +57,7 @@ pub enum VoiceRequest {
     Converse {
         text: String,
         voice: Option<String>,
+        max_duration_ms: Option<u64>,
     },
 }
 
@@ -214,9 +215,17 @@ impl RequestQueue {
         client_id: String,
         text: String,
         voice: Option<String>,
+        max_duration_ms: Option<u64>,
     ) -> String {
-        self.enqueue(client_id, VoiceRequest::Converse { text, voice })
-            .await
+        self.enqueue(
+            client_id,
+            VoiceRequest::Converse {
+                text,
+                voice,
+                max_duration_ms,
+            },
+        )
+        .await
     }
 
     async fn enqueue(&self, client_id: String, request: VoiceRequest) -> String {

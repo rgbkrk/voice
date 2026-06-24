@@ -12,6 +12,10 @@ readme = "README.md"
 name = "voice"
 path = "src/main.rs"
 
+[[bin]]
+name = "voxtral"
+path = "src/bin/voxtral.rs"
+
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
 bin-dir = "{ bin }{ binary-ext }"

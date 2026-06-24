@@ -2176,6 +2176,24 @@ mod tests {
     }
 
     #[test]
+    fn voxtral_quality_suite_rejects_custom_matrix_synthesis_texts() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--tts-backend",
+            "voxtral",
+            "--voxtral-quality-suite",
+            "--matrix-synthesis-text",
+            "custom synthesis",
+        ])
+        .unwrap();
+
+        let err = run_voxtral_matrix(&args).unwrap_err().to_string();
+        assert!(
+            err.contains("--voxtral-quality-suite cannot be combined with --matrix-synthesis-text")
+        );
+    }
+
+    #[test]
     fn auto_voxtral_max_frames_uses_synthesis_text_estimate_without_lowering_explicit_caps() {
         let args = Args::try_parse_from([
             "voice-eval",

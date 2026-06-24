@@ -16,6 +16,9 @@ const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
 const DEFAULT_VOXTRAL_MODEL: &str = voice_voxtral::DEFAULT_REPO;
 const KOKORO_DEFAULT_VOICE: &str = "af_heart";
 const VOXTRAL_DEFAULT_VOICE: &str = "casual_male";
+const VOXTRAL_DEFAULT_MAX_FRAMES: usize = 256;
+const VOXTRAL_REALTIME_MAX_FRAMES: usize = 40;
+const VOXTRAL_REALTIME_STREAM_BEGIN_FRAMES: usize = 2;
 
 static QUIET: AtomicBool = AtomicBool::new(false);
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -169,7 +172,7 @@ struct SayArgs {
     voxtral_model: String,
 
     /// Maximum Voxtral audio frames to generate
-    #[arg(long = "voxtral-max-frames", default_value_t = 256)]
+    #[arg(long = "voxtral-max-frames", default_value_t = VOXTRAL_DEFAULT_MAX_FRAMES)]
     voxtral_max_frames: usize,
 
     /// Voxtral flow-matching steps per frame
@@ -179,6 +182,10 @@ struct SayArgs {
     /// Enable Voxtral language KV cache (off by default)
     #[arg(long = "voxtral-kv-cache")]
     voxtral_kv_cache: bool,
+
+    /// Use the current opt-in low-latency Voxtral preset
+    #[arg(long = "voxtral-realtime")]
+    voxtral_realtime: bool,
 
     /// Override Voxtral's initial streaming codec chunk size for daemon playback
     #[arg(long = "voxtral-stream-begin-frames")]
@@ -344,23 +351,106 @@ fn validate_voice_for_engine(engine: TtsEngine, voice: &str) -> Result<(), Strin
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EffectiveVoxtralOptions {
+    max_frames: usize,
+    flow_steps: usize,
+    kv_cache: bool,
+    stream_begin_frames: Option<usize>,
+}
+
+fn effective_voxtral_options(
+    max_frames: usize,
+    flow_steps: usize,
+    kv_cache: bool,
+    stream_begin_frames: Option<usize>,
+    realtime: bool,
+) -> EffectiveVoxtralOptions {
+    EffectiveVoxtralOptions {
+        max_frames: if realtime && max_frames == VOXTRAL_DEFAULT_MAX_FRAMES {
+            VOXTRAL_REALTIME_MAX_FRAMES
+        } else {
+            max_frames
+        },
+        flow_steps,
+        kv_cache: kv_cache || realtime,
+        stream_begin_frames: stream_begin_frames
+            .or_else(|| realtime.then_some(VOXTRAL_REALTIME_STREAM_BEGIN_FRAMES)),
+    }
+}
+
+fn validate_effective_voxtral_options(options: EffectiveVoxtralOptions) -> Result<(), String> {
+    if options.max_frames == 0 {
+        return Err("--voxtral-max-frames must be greater than zero".to_string());
+    }
+    if options.flow_steps == 0 {
+        return Err("--voxtral-flow-steps must be greater than zero".to_string());
+    }
+    validate_voxtral_stream_begin_frames(options.stream_begin_frames)
+}
+
+impl SayArgs {
+    fn effective_voxtral_options(&self) -> EffectiveVoxtralOptions {
+        effective_voxtral_options(
+            self.voxtral_max_frames,
+            self.voxtral_flow_steps,
+            self.voxtral_kv_cache,
+            self.voxtral_stream_begin_frames,
+            self.voxtral_realtime,
+        )
+    }
+}
+
+impl StreamArgs {
+    fn effective_voxtral_options(&self) -> EffectiveVoxtralOptions {
+        effective_voxtral_options(
+            self.voxtral_max_frames,
+            self.voxtral_flow_steps,
+            self.voxtral_kv_cache,
+            self.voxtral_stream_begin_frames,
+            self.voxtral_realtime,
+        )
+    }
+}
+
+impl ConverseArgs {
+    fn effective_voxtral_options(&self) -> EffectiveVoxtralOptions {
+        effective_voxtral_options(
+            self.voxtral_max_frames,
+            self.voxtral_flow_steps,
+            self.voxtral_kv_cache,
+            self.voxtral_stream_begin_frames,
+            self.voxtral_realtime,
+        )
+    }
+}
+
+impl BenchTtsArgs {
+    fn effective_voxtral_options(&self) -> EffectiveVoxtralOptions {
+        effective_voxtral_options(
+            self.voxtral_max_frames,
+            self.voxtral_flow_steps,
+            self.voxtral_kv_cache,
+            self.voxtral_stream_begin_frames,
+            self.voxtral_realtime,
+        )
+    }
+}
+
 fn daemon_tts_options<'a>(
     engine: TtsEngine,
     voxtral_model: &'a str,
-    max_frames: usize,
-    flow_steps: usize,
-    stream_begin_frames: Option<usize>,
-    kv_cache: bool,
+    voxtral: EffectiveVoxtralOptions,
 ) -> voice_protocol::client::TtsRequestOptions<'a> {
     voice_protocol::client::TtsRequestOptions {
         engine: Some(engine.as_str()),
         voxtral_model: (engine == TtsEngine::Voxtral).then_some(voxtral_model),
-        voxtral_max_frames: (engine == TtsEngine::Voxtral).then_some(max_frames),
-        voxtral_flow_steps: (engine == TtsEngine::Voxtral).then_some(flow_steps),
+        voxtral_max_frames: (engine == TtsEngine::Voxtral).then_some(voxtral.max_frames),
+        voxtral_flow_steps: (engine == TtsEngine::Voxtral).then_some(voxtral.flow_steps),
         voxtral_stream_begin_frames: (engine == TtsEngine::Voxtral)
-            .then_some(stream_begin_frames)
+            .then_some(voxtral.stream_begin_frames)
             .flatten(),
-        voxtral_kv_cache: engine == TtsEngine::Voxtral && kv_cache,
+        voxtral_kv_cache: engine == TtsEngine::Voxtral && voxtral.kv_cache,
     }
 }
 
@@ -420,7 +510,7 @@ struct StreamArgs {
     voxtral_model: String,
 
     /// Maximum Voxtral audio frames to generate
-    #[arg(long = "voxtral-max-frames", default_value_t = 256)]
+    #[arg(long = "voxtral-max-frames", default_value_t = VOXTRAL_DEFAULT_MAX_FRAMES)]
     voxtral_max_frames: usize,
 
     /// Voxtral flow-matching steps per frame
@@ -430,6 +520,10 @@ struct StreamArgs {
     /// Enable Voxtral language KV cache (off by default)
     #[arg(long = "voxtral-kv-cache")]
     voxtral_kv_cache: bool,
+
+    /// Use the current opt-in low-latency Voxtral preset
+    #[arg(long = "voxtral-realtime")]
+    voxtral_realtime: bool,
 
     /// Override Voxtral's initial streaming codec chunk size
     #[arg(long = "voxtral-stream-begin-frames")]
@@ -519,7 +613,7 @@ struct ConverseArgs {
     voxtral_model: String,
 
     /// Maximum Voxtral audio frames to generate
-    #[arg(long = "voxtral-max-frames", default_value_t = 256)]
+    #[arg(long = "voxtral-max-frames", default_value_t = VOXTRAL_DEFAULT_MAX_FRAMES)]
     voxtral_max_frames: usize,
 
     /// Voxtral flow-matching steps per frame
@@ -529,6 +623,10 @@ struct ConverseArgs {
     /// Enable Voxtral language KV cache (off by default)
     #[arg(long = "voxtral-kv-cache")]
     voxtral_kv_cache: bool,
+
+    /// Use the current opt-in low-latency Voxtral preset
+    #[arg(long = "voxtral-realtime")]
+    voxtral_realtime: bool,
 
     /// Override Voxtral's initial streaming codec chunk size for daemon playback
     #[arg(long = "voxtral-stream-begin-frames")]
@@ -637,7 +735,7 @@ struct BenchTtsArgs {
     voxtral_model: String,
 
     /// Maximum Voxtral audio frames to generate
-    #[arg(long = "voxtral-max-frames", default_value_t = 256)]
+    #[arg(long = "voxtral-max-frames", default_value_t = VOXTRAL_DEFAULT_MAX_FRAMES)]
     voxtral_max_frames: usize,
 
     /// Voxtral flow-matching steps per frame
@@ -647,6 +745,10 @@ struct BenchTtsArgs {
     /// Enable Voxtral language KV cache
     #[arg(long = "voxtral-kv-cache")]
     voxtral_kv_cache: bool,
+
+    /// Use the current opt-in low-latency Voxtral preset
+    #[arg(long = "voxtral-realtime")]
+    voxtral_realtime: bool,
 
     /// Override Voxtral's initial streaming codec chunk size for benchmarking
     #[arg(long = "voxtral-stream-begin-frames")]
@@ -1239,9 +1341,10 @@ fn main() {
                     engine: profile.default_tts_engine(),
                     voice: None,
                     voxtral_model: DEFAULT_VOXTRAL_MODEL.to_string(),
-                    voxtral_max_frames: 256,
+                    voxtral_max_frames: VOXTRAL_DEFAULT_MAX_FRAMES,
                     voxtral_flow_steps: 7,
                     voxtral_kv_cache: false,
+                    voxtral_realtime: false,
                     voxtral_stream_begin_frames: None,
                     output: None,
                     format: None,
@@ -1534,6 +1637,9 @@ struct TtsBenchRunReport {
     chunks: Option<usize>,
     frames: Option<usize>,
     ended: Option<bool>,
+    voxtral_max_frames: Option<usize>,
+    voxtral_flow_steps: Option<usize>,
+    voxtral_realtime: Option<bool>,
     voxtral_language_cache: Option<bool>,
     voxtral_stream_begin_frames: Option<usize>,
     voxtral_voice_cache_hit: Option<bool>,
@@ -1564,15 +1670,7 @@ fn run_bench_tts(args: BenchTtsArgs) {
         eprintln!("Error: --runs must be greater than zero");
         std::process::exit(1);
     }
-    if args.voxtral_max_frames == 0 {
-        eprintln!("Error: --voxtral-max-frames must be greater than zero");
-        std::process::exit(1);
-    }
-    if args.voxtral_flow_steps == 0 {
-        eprintln!("Error: --voxtral-flow-steps must be greater than zero");
-        std::process::exit(1);
-    }
-    if let Err(message) = validate_voxtral_stream_begin_frames(args.voxtral_stream_begin_frames) {
+    if let Err(message) = validate_effective_voxtral_options(args.effective_voxtral_options()) {
         eprintln!("Error: {message}");
         std::process::exit(1);
     }
@@ -1712,6 +1810,9 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
             chunks: Some(phoneme_chunks.len()),
             frames: None,
             ended: None,
+            voxtral_max_frames: None,
+            voxtral_flow_steps: None,
+            voxtral_realtime: None,
             voxtral_language_cache: None,
             voxtral_stream_begin_frames: None,
             voxtral_voice_cache_hit: None,
@@ -1748,6 +1849,7 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
 
 fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineReport, String> {
     validate_voice_for_engine(TtsEngine::Voxtral, &args.voxtral_voice)?;
+    let voxtral = args.effective_voxtral_options();
 
     let (mut runtime, load_trace) =
         voice_voxtral::VoxtralTtsRuntime::load_default_with_trace(&args.voxtral_model)
@@ -1766,11 +1868,11 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
                 &prepared,
                 &args.voxtral_voice,
                 voxtral_generation_options(
-                    args.voxtral_max_frames,
-                    args.voxtral_flow_steps,
-                    args.voxtral_kv_cache,
+                    voxtral.max_frames,
+                    voxtral.flow_steps,
+                    voxtral.kv_cache,
                 ),
-                voxtral_streaming_config(args),
+                voxtral_streaming_config(voxtral),
                 |chunk| {
                     streamed_samples += chunk.samples.len();
                     Ok(())
@@ -1809,10 +1911,11 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             chunks: None,
             frames: Some(audio.frames),
             ended: Some(audio.ended),
+            voxtral_max_frames: Some(voxtral.max_frames),
+            voxtral_flow_steps: Some(voxtral.flow_steps),
+            voxtral_realtime: Some(args.voxtral_realtime),
             voxtral_language_cache: Some(trace.language_cache),
-            voxtral_stream_begin_frames: Some(
-                voxtral_streaming_config(args).chunk_frames_at_begin,
-            ),
+            voxtral_stream_begin_frames: Some(voxtral_streaming_config(voxtral).chunk_frames_at_begin),
             voxtral_voice_cache_hit: Some(trace.voice_cache_hit),
             voxtral_codec_chunks: Some(trace.codec_chunks),
             voxtral_codec_chunks_per_second: per_second(trace.codec_chunks, total_ms),
@@ -1856,6 +1959,7 @@ fn bench_daemon_tts(
         TtsEngine::Voxtral => args.voxtral_voice.as_str(),
     };
     validate_voice_for_engine(engine, voice)?;
+    let voxtral = args.effective_voxtral_options();
 
     let mut daemon = voice_protocol::client::DaemonClient::connect()
         .ok_or_else(|| "voice daemon is not running; start it with `voice daemon start`".to_string())?;
@@ -1892,14 +1996,7 @@ fn bench_daemon_tts(
                 speed: Some(1.0),
                 sample_rate: Some(args.stream_sample_rate),
                 frame_ms: Some(args.stream_frame_ms),
-                tts: daemon_tts_options(
-                    engine,
-                    &args.voxtral_model,
-                    args.voxtral_max_frames,
-                    args.voxtral_flow_steps,
-                    args.voxtral_stream_begin_frames,
-                    args.voxtral_kv_cache,
-                ),
+                tts: daemon_tts_options(engine, &args.voxtral_model, voxtral),
             },
             |response| {
                 response_at = Some(total_start.elapsed());
@@ -1984,9 +2081,12 @@ fn bench_daemon_tts(
             chunks: None,
             frames: Some(frames as usize),
             ended: Some(true),
-            voxtral_language_cache: (engine == TtsEngine::Voxtral).then_some(args.voxtral_kv_cache),
+            voxtral_max_frames: (engine == TtsEngine::Voxtral).then_some(voxtral.max_frames),
+            voxtral_flow_steps: (engine == TtsEngine::Voxtral).then_some(voxtral.flow_steps),
+            voxtral_realtime: (engine == TtsEngine::Voxtral).then_some(args.voxtral_realtime),
+            voxtral_language_cache: (engine == TtsEngine::Voxtral).then_some(voxtral.kv_cache),
             voxtral_stream_begin_frames: (engine == TtsEngine::Voxtral)
-                .then_some(voxtral_streaming_config(args).chunk_frames_at_begin),
+                .then_some(voxtral_streaming_config(voxtral).chunk_frames_at_begin),
             voxtral_voice_cache_hit: None,
             voxtral_codec_chunks,
             voxtral_codec_chunks_per_second: voxtral_codec_chunks
@@ -2063,9 +2163,11 @@ fn json_number_ms(value: &serde_json::Value) -> Option<f64> {
     value.as_f64().or_else(|| value.as_u64().map(|value| value as f64))
 }
 
-fn voxtral_streaming_config(args: &BenchTtsArgs) -> voice_voxtral::VoxtralStreamingConfig {
+fn voxtral_streaming_config(
+    options: EffectiveVoxtralOptions,
+) -> voice_voxtral::VoxtralStreamingConfig {
     let mut config = voice_voxtral::VoxtralStreamingConfig::default();
-    if let Some(stream_begin_frames) = args.voxtral_stream_begin_frames {
+    if let Some(stream_begin_frames) = options.stream_begin_frames {
         config.chunk_frames_at_begin = stream_begin_frames;
     }
     config
@@ -2186,7 +2288,7 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
         );
         for run in &engine.runs {
             let mut line = format!(
-                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} realtime_factor={} first_audio_realtime_factor={} phoneme_ms={} first_code_frame_ms={} voxtral_stream_begin_frames={} voxtral_codec_chunks={} voxtral_codec_chunks_per_second={} output_wav={}",
+                "tts_bench.run engine={} run={} first_audio_ms={:.1} total_ms={:.1} synth_ms={:.1} audio_ms={:.1} realtime_factor={} first_audio_realtime_factor={} phoneme_ms={} first_code_frame_ms={} voxtral_realtime={} voxtral_max_frames={} voxtral_flow_steps={} voxtral_stream_begin_frames={} voxtral_codec_chunks={} voxtral_codec_chunks_per_second={} output_wav={}",
                 engine.engine,
                 run.run,
                 run.first_audio_ms,
@@ -2204,6 +2306,15 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
                     .unwrap_or_else(|| "-".to_string()),
                 run.first_code_frame_ms
                     .map(|value| format!("{value:.1}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_realtime
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_max_frames
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                run.voxtral_flow_steps
+                    .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
                 run.voxtral_stream_begin_frames
                     .map(|value| value.to_string())
@@ -2359,8 +2470,8 @@ fn run_say(say_args: SayArgs) {
         eprintln!("{message}");
         std::process::exit(1);
     }
-    if let Err(message) = validate_voxtral_stream_begin_frames(say_args.voxtral_stream_begin_frames)
-    {
+    let voxtral = say_args.effective_voxtral_options();
+    if let Err(message) = validate_effective_voxtral_options(voxtral) {
         eprintln!("Error: {message}");
         std::process::exit(1);
     }
@@ -2391,14 +2502,8 @@ fn run_say(say_args: SayArgs) {
                     &say_args.subs,
                     say_args.sub_file.clone(),
                 );
-                let tts_options = daemon_tts_options(
-                    say_args.engine,
-                    &say_args.voxtral_model,
-                    say_args.voxtral_max_frames,
-                    say_args.voxtral_flow_steps,
-                    say_args.voxtral_stream_begin_frames,
-                    say_args.voxtral_kv_cache,
-                );
+                let tts_options =
+                    daemon_tts_options(say_args.engine, &say_args.voxtral_model, voxtral);
 
                 let daemon_result = if let Some(output_path) = &say_args.output {
                     daemon.synthesize_with_format_and_options(
@@ -2586,6 +2691,7 @@ fn run_voxtral_say(
     if (say_args.speed - 1.0).abs() > f32::EPSILON {
         info!("Voxtral does not support --speed yet; generating at model speed");
     }
+    let voxtral = say_args.effective_voxtral_options();
 
     info!("Loading Voxtral TTS model ({})...", say_args.voxtral_model);
     let mut runtime = match voice_voxtral::VoxtralTtsRuntime::load_default(&say_args.voxtral_model)
@@ -2603,11 +2709,7 @@ fn run_voxtral_say(
     let audio = match runtime.generate_audio(
         &text,
         voice,
-        voxtral_generation_options(
-            say_args.voxtral_max_frames,
-            say_args.voxtral_flow_steps,
-            say_args.voxtral_kv_cache,
-        ),
+        voxtral_generation_options(voxtral.max_frames, voxtral.flow_steps, voxtral.kv_cache),
     ) {
         Ok(audio) => audio,
         Err(e) => {
@@ -2643,6 +2745,7 @@ fn run_stream(stream_args: StreamArgs) {
         eprintln!("{message}");
         std::process::exit(1);
     }
+    let voxtral = stream_args.effective_voxtral_options();
 
     let text = match resolve_stream_text(&stream_args) {
         Ok(t) => t,
@@ -2664,9 +2767,7 @@ fn run_stream(stream_args: StreamArgs) {
             std::process::exit(1);
         },
     );
-    if let Err(message) =
-        validate_voxtral_stream_begin_frames(stream_args.voxtral_stream_begin_frames)
-    {
+    if let Err(message) = validate_effective_voxtral_options(voxtral) {
         eprintln!("voice stream: {message}");
         std::process::exit(1);
     }
@@ -2746,14 +2847,7 @@ fn run_stream(stream_args: StreamArgs) {
             speed: Some(stream_args.speed as f64),
             sample_rate: Some(stream_args.sample_rate),
             frame_ms: Some(stream_args.frame_ms),
-            tts: daemon_tts_options(
-                stream_args.engine,
-                &stream_args.voxtral_model,
-                stream_args.voxtral_max_frames,
-                stream_args.voxtral_flow_steps,
-                stream_args.voxtral_stream_begin_frames,
-                stream_args.voxtral_kv_cache,
-            ),
+            tts: daemon_tts_options(stream_args.engine, &stream_args.voxtral_model, voxtral),
         },
         |event| {
             if stream_args.json {
@@ -3107,7 +3201,8 @@ fn run_converse(args: ConverseArgs) {
         eprintln!("{message}");
         std::process::exit(1);
     }
-    if let Err(message) = validate_voxtral_stream_begin_frames(args.voxtral_stream_begin_frames) {
+    let voxtral = args.effective_voxtral_options();
+    if let Err(message) = validate_effective_voxtral_options(voxtral) {
         eprintln!("Error: {message}");
         std::process::exit(1);
     }
@@ -3146,10 +3241,7 @@ fn run_converse(args: ConverseArgs) {
                 daemon_tts_options(
                     args.engine,
                     &args.voxtral_model,
-                    args.voxtral_max_frames,
-                    args.voxtral_flow_steps,
-                    args.voxtral_stream_begin_frames,
-                    args.voxtral_kv_cache,
+                    voxtral,
                 ),
                 true,
             ) {
@@ -3201,11 +3293,7 @@ fn run_converse(args: ConverseArgs) {
         let audio = match runtime.generate_audio(
             &text,
             &voice,
-            voxtral_generation_options(
-                args.voxtral_max_frames,
-                args.voxtral_flow_steps,
-                args.voxtral_kv_cache,
-            ),
+            voxtral_generation_options(voxtral.max_frames, voxtral.flow_steps, voxtral.kv_cache),
         ) {
             Ok(audio) => audio,
             Err(e) => {
@@ -3796,6 +3884,30 @@ mod tests {
         assert!(validate_voxtral_stream_begin_frames(Some(0)).is_err());
         assert!(validate_voxtral_stream_begin_frames(Some(2)).is_ok());
         assert!(validate_voxtral_stream_begin_frames(None).is_ok());
+    }
+
+    #[test]
+    fn voxtral_realtime_preset_expands_default_options() {
+        let options =
+            effective_voxtral_options(VOXTRAL_DEFAULT_MAX_FRAMES, 7, false, None, true);
+
+        assert_eq!(options.max_frames, VOXTRAL_REALTIME_MAX_FRAMES);
+        assert_eq!(options.flow_steps, 7);
+        assert!(options.kv_cache);
+        assert_eq!(
+            options.stream_begin_frames,
+            Some(VOXTRAL_REALTIME_STREAM_BEGIN_FRAMES)
+        );
+    }
+
+    #[test]
+    fn voxtral_realtime_preset_preserves_explicit_overrides() {
+        let options = effective_voxtral_options(80, 5, false, Some(3), true);
+
+        assert_eq!(options.max_frames, 80);
+        assert_eq!(options.flow_steps, 5);
+        assert!(options.kv_cache);
+        assert_eq!(options.stream_begin_frames, Some(3));
     }
 
     #[test]

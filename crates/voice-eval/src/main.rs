@@ -1371,17 +1371,46 @@ fn normalize_time_tokens(words: Vec<String>) -> Vec<String> {
             index += 2;
             continue;
         }
-        if let Some((hour, minute)) = split_compact_time_token(word) {
-            normalized.push(hour);
-            normalized.push(minute);
-        } else if word.as_bytes().iter().all(u8::is_ascii_digit) {
-            normalized.push(canonical_digit_token(word));
+        if has_adjacent_meridiem(&words, index) {
+            if let Some((hour, minute)) = split_compact_time_token(word) {
+                normalized.push(hour);
+                normalized.push(minute);
+            } else if should_canonicalize_time_digit(&words, index) {
+                normalized.push(canonical_digit_token(word));
+            } else {
+                normalized.push(word.clone());
+            }
         } else {
             normalized.push(word.clone());
         }
         index += 1;
     }
     normalized
+}
+
+fn has_adjacent_meridiem(words: &[String], index: usize) -> bool {
+    index
+        .checked_sub(1)
+        .and_then(|previous| words.get(previous))
+        .is_some_and(|word| is_meridiem_token(word))
+        || index
+            .checked_sub(2)
+            .is_some_and(|previous| is_meridiem_pair(&words[previous], &words[index - 1]))
+        || words
+            .get(index + 1)
+            .is_some_and(|word| is_meridiem_token(word))
+        || words
+            .get(index + 1)
+            .zip(words.get(index + 2))
+            .is_some_and(|(first, second)| is_meridiem_pair(first, second))
+}
+
+fn is_meridiem_token(word: &str) -> bool {
+    word == "am" || word == "pm"
+}
+
+fn is_meridiem_pair(first: &str, second: &str) -> bool {
+    (first == "a" || first == "p") && second == "m"
 }
 
 fn split_compact_time_token(token: &str) -> Option<(String, String)> {
@@ -1396,6 +1425,13 @@ fn split_compact_time_token(token: &str) -> Option<(String, String)> {
         return None;
     }
     Some((canonical_digit_token(hour), canonical_digit_token(minute)))
+}
+
+fn should_canonicalize_time_digit(words: &[String], index: usize) -> bool {
+    let word = &words[index];
+    (word.len() == 1 || word.len() == 2)
+        && word.as_bytes().iter().all(u8::is_ascii_digit)
+        && has_adjacent_meridiem(words, index)
 }
 
 fn canonical_digit_token(token: &str) -> String {
@@ -1466,6 +1502,51 @@ mod tests {
             equivalent.hypothesis_words,
             vec!["use", "api", "on", "cpu", "at", "12", "5", "am"]
         );
+    }
+
+    #[test]
+    fn time_token_equivalence_preserves_non_time_numbers() {
+        assert_eq!(
+            normalize_words_with_options(
+                "Ticket 100, room 2000, agent 007, code 05.",
+                WerOptions {
+                    time_token_equivalence: true,
+                },
+            ),
+            vec!["ticket", "100", "room", "2000", "agent", "007", "code", "05"]
+        );
+    }
+
+    #[test]
+    fn time_token_equivalence_handles_single_token_meridiem() {
+        let equivalent = word_error_rate_with_options(
+            "Use API on CPU at 12:05 PM.",
+            "Use API on CPU at 1205 pm.",
+            WerOptions {
+                time_token_equivalence: true,
+            },
+        );
+        assert_eq!(equivalent.distance, 0);
+        assert_eq!(
+            equivalent.reference_words,
+            vec!["use", "api", "on", "cpu", "at", "12", "5", "pm"]
+        );
+        assert_eq!(
+            equivalent.hypothesis_words,
+            vec!["use", "api", "on", "cpu", "at", "12", "5", "pm"]
+        );
+    }
+
+    #[test]
+    fn time_token_equivalence_matches_compact_time_on_one_side() {
+        let equivalent = word_error_rate_with_options(
+            "Start at 12 05 PM.",
+            "Start at 1205 PM.",
+            WerOptions {
+                time_token_equivalence: true,
+            },
+        );
+        assert_eq!(equivalent.distance, 0);
     }
 
     #[test]

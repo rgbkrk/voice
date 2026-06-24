@@ -58,6 +58,10 @@ struct Args {
     #[arg(long = "stt-max-tokens")]
     stt_max_tokens: Option<usize>,
 
+    /// Treat compact time transcripts such as 1205 a.m. as equivalent to 12:05 AM for WER.
+    #[arg(long = "time-token-equivalence")]
+    time_token_equivalence: bool,
+
     /// Speech speed factor.
     #[arg(short, long, default_value_t = 1.0)]
     speed: f32,
@@ -215,6 +219,7 @@ struct EvalReport {
     duration_seconds: f32,
     phoneme_chunks: Vec<String>,
     transcription: String,
+    time_token_equivalence: bool,
     normalized_reference: String,
     normalized_hypothesis: String,
     reference_word_count: usize,
@@ -247,6 +252,7 @@ struct VoxtralMatrixReport {
     eos_guard_frames: usize,
     eos_guard_max_rank: usize,
     eos_guard_max_margin: f32,
+    time_token_equivalence: bool,
     seed: u64,
     output_dir: Option<PathBuf>,
     spectrogram_dir: Option<PathBuf>,
@@ -375,7 +381,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stt_model.set_max_new_tokens(max_new_tokens);
     }
     let transcription = stt_model.transcribe_audio(&samples, sample_rate)?;
-    let wer = word_error_rate(&reference_text, &transcription.text);
+    let wer =
+        word_error_rate_with_options(&reference_text, &transcription.text, wer_options(&args));
     let duration_seconds = if sample_rate == 0 {
         0.0
     } else {
@@ -406,6 +413,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         duration_seconds,
         phoneme_chunks,
         transcription: transcription.text,
+        time_token_equivalence: args.time_token_equivalence,
         normalized_reference: wer.reference_words.join(" "),
         normalized_hypothesis: wer.hypothesis_words.join(" "),
         reference_word_count: wer.reference_words.len(),
@@ -534,7 +542,11 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
                 let transcription =
                     stt_model.transcribe_audio(&audio.samples, audio.sample_rate)?;
-                let wer = word_error_rate(&case.reference_text, &transcription.text);
+                let wer = word_error_rate_with_options(
+                    &case.reference_text,
+                    &transcription.text,
+                    wer_options(args),
+                );
                 let audio_diagnostics = analyze_audio(&audio.samples, audio.sample_rate);
                 let total_ms = duration_ms(total);
                 let audio_duration_ms = audio_duration_ms(audio.samples.len(), audio.sample_rate);
@@ -617,6 +629,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         eos_guard_frames: args.voxtral_eos_guard_frames,
         eos_guard_max_rank: args.voxtral_eos_guard_rank,
         eos_guard_max_margin: args.voxtral_eos_guard_margin,
+        time_token_equivalence: args.time_token_equivalence,
         seed: args.seed,
         output_dir: args.output_dir.clone(),
         spectrogram_dir: args.spectrogram_dir.clone(),
@@ -1073,7 +1086,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
     );
     println!("voxtral_matrix.model_load_ms={:.1}", report.model_load_ms);
     println!(
-        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} pronunciation_aliases={} auto_max_frames={} eos_scores={} eos_guard_frames={} eos_guard_max_rank={} eos_guard_max_margin={:.3}",
+        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} pronunciation_aliases={} auto_max_frames={} eos_scores={} eos_guard_frames={} eos_guard_max_rank={} eos_guard_max_margin={:.3} time_token_equivalence={}",
         report.matrix_max_frames,
         report.matrix_flow_steps,
         report.stream_begin_frames,
@@ -1085,7 +1098,8 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
         report.eos_scores,
         report.eos_guard_frames,
         report.eos_guard_max_rank,
-        report.eos_guard_max_margin
+        report.eos_guard_max_margin,
+        report.time_token_equivalence
     );
     if let Some(output_dir) = &report.output_dir {
         println!("voxtral_matrix.output_dir={}", output_dir.display());
@@ -1227,6 +1241,9 @@ fn print_text_report(report: &EvalReport) {
     if report.voxtral_auto_max_frames {
         println!("voxtral auto max frames: enabled");
     }
+    if report.time_token_equivalence {
+        println!("time token equivalence: enabled");
+    }
     println!("hypothesis: {}", report.transcription);
     println!("normalized reference: {}", report.normalized_reference);
     println!("normalized hypothesis: {}", report.normalized_hypothesis);
@@ -1285,9 +1302,25 @@ struct Wer {
     rate: Option<f32>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct WerOptions {
+    time_token_equivalence: bool,
+}
+
+fn wer_options(args: &Args) -> WerOptions {
+    WerOptions {
+        time_token_equivalence: args.time_token_equivalence,
+    }
+}
+
+#[cfg(test)]
 fn word_error_rate(reference: &str, hypothesis: &str) -> Wer {
-    let reference_words = normalize_words(reference);
-    let hypothesis_words = normalize_words(hypothesis);
+    word_error_rate_with_options(reference, hypothesis, WerOptions::default())
+}
+
+fn word_error_rate_with_options(reference: &str, hypothesis: &str, options: WerOptions) -> Wer {
+    let reference_words = normalize_words_with_options(reference, options);
+    let hypothesis_words = normalize_words_with_options(hypothesis, options);
     let distance = levenshtein_words(&reference_words, &hypothesis_words);
     let rate = if reference_words.is_empty() {
         None
@@ -1303,7 +1336,12 @@ fn word_error_rate(reference: &str, hypothesis: &str) -> Wer {
     }
 }
 
+#[cfg(test)]
 fn normalize_words(text: &str) -> Vec<String> {
+    normalize_words_with_options(text, WerOptions::default())
+}
+
+fn normalize_words_with_options(text: &str, options: WerOptions) -> Vec<String> {
     let mut normalized = String::with_capacity(text.len());
     for ch in text.chars() {
         if ch.is_alphanumeric() || ch == '\'' {
@@ -1312,7 +1350,61 @@ fn normalize_words(text: &str) -> Vec<String> {
             normalized.push(' ');
         }
     }
-    normalized.split_whitespace().map(str::to_string).collect()
+    let words = normalized
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if options.time_token_equivalence {
+        normalize_time_tokens(words)
+    } else {
+        words
+    }
+}
+
+fn normalize_time_tokens(words: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(words.len());
+    let mut index = 0;
+    while index < words.len() {
+        let word = &words[index];
+        if (word == "a" || word == "p") && words.get(index + 1).is_some_and(|next| next == "m") {
+            normalized.push(format!("{word}m"));
+            index += 2;
+            continue;
+        }
+        if let Some((hour, minute)) = split_compact_time_token(word) {
+            normalized.push(hour);
+            normalized.push(minute);
+        } else if word.as_bytes().iter().all(u8::is_ascii_digit) {
+            normalized.push(canonical_digit_token(word));
+        } else {
+            normalized.push(word.clone());
+        }
+        index += 1;
+    }
+    normalized
+}
+
+fn split_compact_time_token(token: &str) -> Option<(String, String)> {
+    if !(token.len() == 3 || token.len() == 4) || !token.as_bytes().iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let hour_len = token.len() - 2;
+    let (hour, minute) = token.split_at(hour_len);
+    let hour_value = hour.parse::<u32>().ok()?;
+    let minute_value = minute.parse::<u32>().ok()?;
+    if !(1..=23).contains(&hour_value) || minute_value > 59 {
+        return None;
+    }
+    Some((canonical_digit_token(hour), canonical_digit_token(minute)))
+}
+
+fn canonical_digit_token(token: &str) -> String {
+    let trimmed = token.trim_start_matches('0');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn levenshtein_words(reference: &[String], hypothesis: &[String]) -> usize {
@@ -1346,6 +1438,37 @@ mod tests {
     }
 
     #[test]
+    fn time_token_equivalence_is_opt_in_for_eval() {
+        let default = word_error_rate("Use API on CPU at 12:05 AM.", "Use API on CPU at 1205 a.m.");
+        assert_ne!(default.distance, 0);
+        assert_eq!(
+            default.reference_words,
+            vec!["use", "api", "on", "cpu", "at", "12", "05", "am"]
+        );
+        assert_eq!(
+            default.hypothesis_words,
+            vec!["use", "api", "on", "cpu", "at", "1205", "a", "m"]
+        );
+
+        let equivalent = word_error_rate_with_options(
+            "Use API on CPU at 12:05 AM.",
+            "Use API on CPU at 1205 a.m.",
+            WerOptions {
+                time_token_equivalence: true,
+            },
+        );
+        assert_eq!(equivalent.distance, 0);
+        assert_eq!(
+            equivalent.reference_words,
+            vec!["use", "api", "on", "cpu", "at", "12", "5", "am"]
+        );
+        assert_eq!(
+            equivalent.hypothesis_words,
+            vec!["use", "api", "on", "cpu", "at", "12", "5", "am"]
+        );
+    }
+
+    #[test]
     fn computes_exact_word_error_rate() {
         let wer = word_error_rate("hello world", "hello world");
         assert_eq!(wer.distance, 0);
@@ -1373,12 +1496,14 @@ mod tests {
             "/tmp/voxtral-realtime",
             "--stt-max-tokens",
             "4",
+            "--time-token-equivalence",
         ])
         .unwrap();
 
         assert_eq!(args.stt_backend, "voxtral");
         assert_eq!(args.stt_model.as_deref(), Some("/tmp/voxtral-realtime"));
         assert_eq!(args.stt_max_tokens, Some(4));
+        assert!(args.time_token_equivalence);
         assert_eq!(args.input_wav, Some(PathBuf::from("/tmp/known.wav")));
     }
 
@@ -1395,6 +1520,7 @@ mod tests {
             "--voxtral-normalize-text",
             "--voxtral-pronunciation-aliases",
             "--voxtral-auto-max-frames",
+            "--time-token-equivalence",
         ])
         .unwrap();
 
@@ -1406,6 +1532,7 @@ mod tests {
         assert!(args.voxtral_normalize_text);
         assert!(args.voxtral_pronunciation_aliases);
         assert!(args.voxtral_auto_max_frames);
+        assert!(args.time_token_equivalence);
     }
 
     #[test]
@@ -1430,6 +1557,7 @@ mod tests {
             "--voxtral-kv-cache",
             "--voxtral-pronunciation-aliases",
             "--voxtral-auto-max-frames",
+            "--time-token-equivalence",
             "--voxtral-eos-scores",
             "--voxtral-eos-guard-frames",
             "8",
@@ -1466,6 +1594,7 @@ mod tests {
         assert!(args.voxtral_kv_cache);
         assert!(args.voxtral_pronunciation_aliases);
         assert!(args.voxtral_auto_max_frames);
+        assert!(args.time_token_equivalence);
         assert!(args.voxtral_eos_scores);
         assert_eq!(args.voxtral_eos_guard_frames, 8);
         assert_eq!(args.voxtral_eos_guard_rank, 3);

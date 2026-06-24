@@ -18,6 +18,7 @@ pub struct VoxtralGenerationOptions {
     pub cfg_alpha: f32,
     pub use_kv_cache: bool,
     pub synchronize_trace: bool,
+    pub trace_semantic_scores: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,10 @@ pub struct VoxtralGeneratedAudioChunk {
 pub struct VoxtralGenerationTrace {
     pub language_cache: bool,
     pub voice_cache_hit: bool,
+    pub semantic_codes: Vec<u32>,
+    pub eos_frame: Option<usize>,
+    pub semantic_eos_ranks: Vec<usize>,
+    pub semantic_eos_margins: Vec<f32>,
     pub voice_load: Duration,
     pub prompt: Duration,
     pub language: Duration,
@@ -79,6 +84,7 @@ impl Default for VoxtralGenerationOptions {
             cfg_alpha: 1.2,
             use_kv_cache: false,
             synchronize_trace: false,
+            trace_semantic_scores: false,
         }
     }
 }
@@ -434,10 +440,19 @@ fn generate_audio_inner(
             .get_or_insert_with(|| loop_start.elapsed());
 
         let frame = candle(frame_codes.to_vec2::<u32>())?.remove(0);
-        if frame[0] == 1 {
+        let semantic_code = frame[0];
+        if options.trace_semantic_scores {
+            let (rank, margin) =
+                semantic_eos_rank_and_margin(config, modules, &last_hidden, semantic_code)?;
+            trace.semantic_eos_ranks.push(rank);
+            trace.semantic_eos_margins.push(margin);
+        }
+        if semantic_code == 1 {
+            trace.eos_frame = Some(frame_idx);
             ended = true;
             break;
         }
+        trace.semantic_codes.push(semantic_code);
         code_frames.extend_from_slice(&frame);
 
         let next_embedding = candle(
@@ -599,10 +614,19 @@ where
             .get_or_insert_with(|| loop_start.elapsed());
 
         let frame = candle(frame_codes.to_vec2::<u32>())?.remove(0);
-        if frame[0] == 1 {
+        let semantic_code = frame[0];
+        if options.trace_semantic_scores {
+            let (rank, margin) =
+                semantic_eos_rank_and_margin(config, modules, &last_hidden, semantic_code)?;
+            trace.semantic_eos_ranks.push(rank);
+            trace.semantic_eos_margins.push(margin);
+        }
+        if semantic_code == 1 {
+            trace.eos_frame = Some(frame_idx);
             ended = true;
             break;
         }
+        trace.semantic_codes.push(semantic_code);
         frame_history.push(frame.clone());
 
         maybe_emit_streaming_chunk(
@@ -778,6 +802,33 @@ fn decode_codec_chunk_samples(
         )));
     }
     Ok(samples[start..end].to_vec())
+}
+
+fn semantic_eos_rank_and_margin(
+    config: &crate::VoxtralConfig,
+    modules: &VoxtralInferenceModules,
+    llm_hidden: &Tensor,
+    selected_code: u32,
+) -> Result<(usize, f32)> {
+    let logits = candle(modules.acoustic.semantic_logits(config, llm_hidden))?;
+    let row = candle(logits.to_dtype(DType::F32))?
+        .to_vec2::<f32>()
+        .map_err(|e| VoxtralError::Candle(e.to_string()))?
+        .remove(0);
+    let eos_logit = *row
+        .get(1)
+        .ok_or_else(|| VoxtralError::InvalidConfig("semantic logits missing EOS index".into()))?;
+    let selected_idx = usize::try_from(selected_code).map_err(|_| {
+        VoxtralError::InvalidConfig(format!("semantic code {selected_code} does not fit usize"))
+    })?;
+    let selected_logit = *row.get(selected_idx).ok_or_else(|| {
+        VoxtralError::InvalidConfig(format!(
+            "selected semantic code {selected_code} exceeds semantic logits length {}",
+            row.len()
+        ))
+    })?;
+    let rank = 1 + row.iter().filter(|&&logit| logit > eos_logit).count();
+    Ok((rank, selected_logit - eos_logit))
 }
 
 fn flow_timesteps(steps: usize) -> Result<Vec<f32>> {

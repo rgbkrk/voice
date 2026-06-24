@@ -114,6 +114,10 @@ struct Args {
     #[arg(long = "voxtral-sync-trace")]
     voxtral_sync_trace: bool,
 
+    /// Collect EOS rank/margin diagnostics for Voxtral semantic logits.
+    #[arg(long = "voxtral-eos-scores")]
+    voxtral_eos_scores: bool,
+
     /// Deterministic seed for Voxtral flow noise.
     #[arg(long, default_value_t = 0x5658_5452_414c)]
     seed: u64,
@@ -215,6 +219,7 @@ struct VoxtralMatrixReport {
     kv_cache: bool,
     sync_trace: bool,
     text_normalization: bool,
+    eos_scores: bool,
     seed: u64,
     output_dir: Option<PathBuf>,
     spectrogram_dir: Option<PathBuf>,
@@ -237,6 +242,15 @@ struct VoxtralMatrixRow {
     sample_rate: u32,
     audio_frames: usize,
     ended: bool,
+    eos_frame: Option<usize>,
+    semantic_code_count: usize,
+    semantic_tail_codes: Vec<u32>,
+    semantic_tail_unique_count: usize,
+    semantic_tail_repeat_count: usize,
+    semantic_eos_rank_tail: Vec<usize>,
+    semantic_eos_margin_tail: Vec<f32>,
+    semantic_best_eos_rank: Option<usize>,
+    semantic_best_eos_margin: Option<f32>,
     codec_chunks: usize,
     language_ms: f64,
     language_ms_per_frame: Option<f64>,
@@ -450,6 +464,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                     flow_steps,
                     use_kv_cache: args.voxtral_kv_cache,
                     synchronize_trace: args.voxtral_sync_trace,
+                    trace_semantic_scores: args.voxtral_eos_scores,
                     ..Default::default()
                 };
 
@@ -492,6 +507,14 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                 let acoustic_ms = duration_ms(trace.acoustic);
                 let decode_loop_ms = duration_ms(trace.decode_loop);
                 let codec_ms = duration_ms(trace.codec);
+                let semantic_tail_codes = tail_semantic_codes(&trace.semantic_codes, 8);
+                let semantic_tail_unique_count = unique_count(&semantic_tail_codes);
+                let semantic_tail_repeat_count = repeated_tail_count(&trace.semantic_codes);
+                let semantic_eos_rank_tail = tail_values(&trace.semantic_eos_ranks, 8);
+                let semantic_eos_margin_tail = tail_values(&trace.semantic_eos_margins, 8);
+                let semantic_best_eos_rank = trace.semantic_eos_ranks.iter().copied().min();
+                let semantic_best_eos_margin =
+                    trace.semantic_eos_margins.iter().copied().reduce(f32::min);
 
                 rows.push(VoxtralMatrixRow {
                     text_index,
@@ -508,6 +531,15 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                     sample_rate: audio.sample_rate,
                     audio_frames: audio.frames,
                     ended: audio.ended,
+                    eos_frame: trace.eos_frame,
+                    semantic_code_count: trace.semantic_codes.len(),
+                    semantic_tail_codes,
+                    semantic_tail_unique_count,
+                    semantic_tail_repeat_count,
+                    semantic_eos_rank_tail,
+                    semantic_eos_margin_tail,
+                    semantic_best_eos_rank,
+                    semantic_best_eos_margin,
                     codec_chunks: trace.codec_chunks,
                     language_ms,
                     language_ms_per_frame: per_unit(language_ms, audio.frames),
@@ -544,6 +576,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         kv_cache: args.voxtral_kv_cache,
         sync_trace: args.voxtral_sync_trace,
         text_normalization: args.voxtral_normalize_text,
+        eos_scores: args.voxtral_eos_scores,
         seed: args.seed,
         output_dir: args.output_dir.clone(),
         spectrogram_dir: args.spectrogram_dir.clone(),
@@ -980,13 +1013,14 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
     );
     println!("voxtral_matrix.model_load_ms={:.1}", report.model_load_ms);
     println!(
-        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={}",
+        "voxtral_matrix.max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} eos_scores={}",
         report.matrix_max_frames,
         report.matrix_flow_steps,
         report.stream_begin_frames,
         report.kv_cache,
         report.sync_trace,
-        report.text_normalization
+        report.text_normalization,
+        report.eos_scores
     );
     if let Some(output_dir) = &report.output_dir {
         println!("voxtral_matrix.output_dir={}", output_dir.display());
@@ -1004,6 +1038,10 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
                 "reference_text={:?} synthesis_text={:?} ",
                 "first_audio_ms={} total_ms={:.1} audio_ms={:.1} rtf={} ",
                 "wer={} errors={}/{} frames={} ended={} chunks={} ",
+                "eos_frame={} semantic_count={} semantic_tail={:?} ",
+                "semantic_tail_unique={} semantic_tail_repeat={} ",
+                "eos_rank_tail={:?} eos_margin_tail={:?} ",
+                "best_eos_rank={} best_eos_margin={} ",
                 "segments={} long_gaps={} longest_gap_s={:.3} active_ratio={} ",
                 "lead_frag_s={} trail_frag_s={} spectrogram={} transcript={:?}"
             ),
@@ -1022,6 +1060,15 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
             row.audio_frames,
             row.ended,
             row.codec_chunks,
+            format_optional_usize(row.eos_frame),
+            row.semantic_code_count,
+            row.semantic_tail_codes,
+            row.semantic_tail_unique_count,
+            row.semantic_tail_repeat_count,
+            row.semantic_eos_rank_tail,
+            row.semantic_eos_margin_tail,
+            format_optional_usize(row.semantic_best_eos_rank),
+            format_optional_f32(row.semantic_best_eos_margin),
             row.audio_diagnostics.active_segment_count,
             row.audio_diagnostics.long_gap_count,
             row.audio_diagnostics.longest_internal_gap_seconds,
@@ -1054,6 +1101,30 @@ fn per_unit(total_ms: f64, units: usize) -> Option<f64> {
     (units > 0).then_some(total_ms / units as f64)
 }
 
+fn tail_semantic_codes(codes: &[u32], max_len: usize) -> Vec<u32> {
+    let start = codes.len().saturating_sub(max_len);
+    codes[start..].to_vec()
+}
+
+fn tail_values<T: Clone>(values: &[T], max_len: usize) -> Vec<T> {
+    let start = values.len().saturating_sub(max_len);
+    values[start..].to_vec()
+}
+
+fn unique_count(codes: &[u32]) -> usize {
+    let mut sorted = codes.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    sorted.len()
+}
+
+fn repeated_tail_count(codes: &[u32]) -> usize {
+    let Some(&last) = codes.last() else {
+        return 0;
+    };
+    codes.iter().rev().take_while(|&&code| code == last).count()
+}
+
 fn format_optional_f64(value: Option<f64>) -> String {
     value
         .map(|value| format!("{value:.3}"))
@@ -1063,6 +1134,12 @@ fn format_optional_f64(value: Option<f64>) -> String {
 fn format_optional_f32(value: Option<f32>) -> String {
     value
         .map(|value| format!("{value:.3}"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn format_optional_usize(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
         .unwrap_or_else(|| "n/a".to_string())
 }
 
@@ -1276,6 +1353,7 @@ mod tests {
             "--matrix-flow-steps",
             "5,6,7",
             "--voxtral-kv-cache",
+            "--voxtral-eos-scores",
             "--voxtral-stream-begin-frames",
             "2",
             "--output-dir",
@@ -1303,6 +1381,7 @@ mod tests {
         assert_eq!(args.matrix_max_frames, vec![32, 40]);
         assert_eq!(args.matrix_flow_steps, vec![5, 6, 7]);
         assert!(args.voxtral_kv_cache);
+        assert!(args.voxtral_eos_scores);
         assert_eq!(args.voxtral_stream_begin_frames, 2);
         assert_eq!(args.output_dir, Some(PathBuf::from("/tmp/voxtral-matrix")));
         assert_eq!(
@@ -1430,6 +1509,17 @@ mod tests {
         assert!(
             err.contains("--matrix-synthesis-text count (1) must match --matrix-text count (2)")
         );
+    }
+
+    #[test]
+    fn semantic_tail_helpers_summarize_generation_codes() {
+        let codes = vec![10, 11, 12, 12, 12];
+
+        assert_eq!(tail_semantic_codes(&codes, 3), vec![12, 12, 12]);
+        assert_eq!(tail_values(&codes, 2), vec![12, 12]);
+        assert_eq!(unique_count(&tail_semantic_codes(&codes, 4)), 2);
+        assert_eq!(repeated_tail_count(&codes), 3);
+        assert_eq!(repeated_tail_count(&[]), 0);
     }
 
     #[test]

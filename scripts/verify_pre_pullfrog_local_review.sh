@@ -107,6 +107,9 @@ if [[ -n "$guard_additions" && -z "$test_additions" ]]; then
 fi
 
 packages=()
+python_files=()
+python_test_modules=()
+run_python_helpers=0
 add_package() {
   local package="$1"
   local existing
@@ -114,6 +117,49 @@ add_package() {
     [[ "$existing" == "$package" ]] && return
   done
   packages+=("$package")
+}
+
+add_python_file() {
+  local file="$1"
+  local existing
+  [[ -f "$file" ]] || return
+  for existing in "${python_files[@]}"; do
+    [[ "$existing" == "$file" ]] && return
+  done
+  python_files+=("$file")
+}
+
+add_python_test_module() {
+  local module="$1"
+  local existing
+  for existing in "${python_test_modules[@]}"; do
+    [[ "$existing" == "$module" ]] && return
+  done
+  python_test_modules+=("$module")
+}
+
+module_for_python_test() {
+  local file="$1"
+  file="${file%.py}"
+  printf '%s\n' "${file//\//.}"
+}
+
+add_matching_python_test() {
+  local file="$1"
+  local base test_file
+  case "$file" in
+    tests/test_*.py)
+      add_python_test_module "$(module_for_python_test "$file")"
+      ;;
+    scripts/*.py)
+      base="$(basename "$file" .py)"
+      test_file="tests/test_${base}.py"
+      if [[ -f "$test_file" ]]; then
+        add_python_file "$test_file"
+        add_python_test_module "$(module_for_python_test "$test_file")"
+      fi
+      ;;
+  esac
 }
 
 if [[ "$run_workspace" == "1" ]]; then
@@ -157,6 +203,14 @@ else
       crates/voice-daemon/*)
         add_package voice-daemon
         ;;
+      scripts/*.py|tests/*.py)
+        add_python_file "$file"
+        add_matching_python_test "$file"
+        run_python_helpers=1
+        ;;
+      .github/workflows/*.yml|.github/workflows/*.yaml)
+        run_python_helpers=1
+        ;;
     esac
   done <<< "$changed_files"
 fi
@@ -175,6 +229,17 @@ elif [[ "${#packages[@]}" -gt 0 ]]; then
   run cargo clippy "${clippy_args[@]}" --all-targets -- -D warnings
 else
   echo "No Rust package changes detected; skipped cargo test/clippy package gates."
+fi
+
+if [[ "$run_python_helpers" == "1" ]]; then
+  if [[ "${#python_files[@]}" -gt 0 ]]; then
+    run python3 -m py_compile "${python_files[@]}"
+  fi
+  if [[ "${#python_test_modules[@]}" -gt 0 ]]; then
+    run python3 -m unittest "${python_test_modules[@]}"
+  else
+    echo "No matching Python test modules detected; skipped Python unittest gate."
+  fi
 fi
 
 cat <<EOF

@@ -21,6 +21,16 @@ from typing import Any
 
 
 DEFAULT_TEXT = "A fast reply should arrive naturally."
+DEFAULT_SUITE_TEXTS = [
+    "hello world",
+    DEFAULT_TEXT,
+    "Voxtral should pronounce its own made-up name clearly.",
+    "Please pause, then continue; do not add extra words.",
+    "Read ticket A17, version 2.4.1, at 9:30 PM.",
+    "If I ask a quick question, can you answer in one sentence?",
+    "The voice should stay steady across a longer reply, "
+    "even when the sentence reaches the realtime frame cap.",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,7 +55,26 @@ def parse_args() -> argparse.Namespace:
         default=Path("/tmp/voxtral-cold-start-stability"),
         help="directory for per-run JSON and WAV artifacts",
     )
-    parser.add_argument("--text", default=DEFAULT_TEXT)
+    parser.add_argument(
+        "--text",
+        action="append",
+        default=None,
+        help="prompt to verify; repeat for multiple prompts",
+    )
+    parser.add_argument(
+        "--prompt-file",
+        type=Path,
+        default=None,
+        help=(
+            "file containing prompts, one per line; '#', '-' bullets, "
+            "and '1.' numbering are accepted"
+        ),
+    )
+    parser.add_argument(
+        "--suite",
+        action="store_true",
+        help="use the canonical varied Voxtral prompt suite",
+    )
     parser.add_argument("--voice", default="casual_male")
     parser.add_argument("--speed", type=float, default=1.2)
     parser.add_argument("--timeout", type=float, default=180.0)
@@ -111,7 +140,41 @@ def timeout_text(value: str | bytes | None) -> str:
     return value
 
 
-def bench_command(voice_bin: Path, args: argparse.Namespace, run_dir: Path) -> list[str]:
+def collect_prompts(args: argparse.Namespace) -> list[str]:
+    prompts: list[str] = []
+    if args.suite:
+        prompts.extend(DEFAULT_SUITE_TEXTS)
+    if args.prompt_file is not None:
+        prompts.extend(read_prompt_file(args.prompt_file))
+    if args.text:
+        prompts.extend(args.text)
+    if not prompts:
+        prompts.append(DEFAULT_TEXT)
+    return prompts
+
+
+def read_prompt_file(path: Path) -> list[str]:
+    prompts: list[str] = []
+    for raw_line in path.expanduser().read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("- "):
+            line = line[2:].strip()
+        numbered = line.split(".", 1)
+        if len(numbered) == 2 and numbered[0].strip().isdigit():
+            line = numbered[1].strip()
+        if line:
+            prompts.append(line)
+    return prompts
+
+
+def bench_command(
+    voice_bin: Path,
+    args: argparse.Namespace,
+    run_dir: Path,
+    text: str,
+) -> list[str]:
     return [
         str(voice_bin),
         "bench",
@@ -132,11 +195,11 @@ def bench_command(voice_bin: Path, args: argparse.Namespace, run_dir: Path) -> l
         "--output-dir",
         str(run_dir),
         "--json",
-        args.text,
+        text,
     ]
 
 
-def read_bench(stdout: str, source: str) -> dict[str, Any]:
+def read_bench(stdout: str, source: str, prompt_index: int, text: str) -> dict[str, Any]:
     try:
         report = json.loads(stdout)
     except json.JSONDecodeError as exc:
@@ -169,6 +232,8 @@ def read_bench(stdout: str, source: str) -> dict[str, Any]:
 
     return {
         "source": source,
+        "prompt_index": prompt_index,
+        "text": text,
         "model_load_ms": engine["model_load_ms"],
         "module_load_ms": engine["module_load_ms"],
         "module_language_layers_load_ms": engine["module_language_layers_load_ms"],
@@ -180,6 +245,9 @@ def read_bench(stdout: str, source: str) -> dict[str, Any]:
         "audio_duration_ms": run["audio_duration_ms"],
         "model_audio_duration_ms": run.get("model_audio_duration_ms"),
         "voxtral_audio_frames": run.get("voxtral_audio_frames"),
+        "voxtral_max_frames": run.get("voxtral_max_frames"),
+        "voxtral_flow_steps": run.get("voxtral_flow_steps"),
+        "voxtral_stream_begin_frames": run.get("voxtral_stream_begin_frames"),
         "ended": run.get("ended"),
         "output_wav": str(wav_path),
     }
@@ -194,7 +262,10 @@ def afinfo_summary(wav_path: Path, timeout: float) -> str:
         raise RuntimeError(f"afinfo failed for {wav_path}: {result.stderr.strip()}")
     summary_lines = []
     for line in result.stdout.splitlines():
-        if any(key in line for key in ("Data format:", "Channel layout:", "estimated duration:")):
+        if any(
+            key in line
+            for key in ("Data format:", "Channel layout:", "estimated duration:")
+        ):
             summary_lines.append(line.strip())
     summary = " | ".join(summary_lines)
     if "2 ch" not in result.stdout or "Stereo (L R)" not in result.stdout:
@@ -211,6 +282,35 @@ def shape_key(row: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def did_not_end_count(rows: list[dict[str, Any]]) -> int:
+    return sum(1 for row in rows if row["ended"] is False)
+
+
+def frame_cap_hit_count(rows: list[dict[str, Any]]) -> int:
+    return sum(
+        1
+        for row in rows
+        if row.get("voxtral_max_frames") is not None
+        and row.get("voxtral_audio_frames") is not None
+        and row["voxtral_audio_frames"] >= row["voxtral_max_frames"]
+    )
+
+
+def prompt_slug(index: int, text: str) -> str:
+    slug = []
+    for char in text.lower():
+        if char.isalnum():
+            slug.append(char)
+        elif slug and slug[-1] != "-":
+            slug.append("-")
+        if len(slug) >= 42:
+            break
+    value = "".join(slug).strip("-")
+    if not value:
+        value = "prompt"
+    return f"text{index + 1}-{value}"
+
+
 def main() -> int:
     args = parse_args()
     if args.runs < 1:
@@ -219,48 +319,83 @@ def main() -> int:
     voice_bin = resolve_voice_bin(args.voice_bin)
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    prompts = collect_prompts(args)
 
     rows: list[dict[str, Any]] = []
     failures: list[str] = []
-    for run_idx in range(1, args.runs + 1):
-        run_dir = output_dir / f"run{run_idx}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        command = bench_command(voice_bin, args, run_dir)
-        result = run_command(command, args.timeout)
-        bench_json = run_dir / "bench.json"
-        bench_json.write_text(result.stdout, encoding="utf-8")
-        (run_dir / "bench.stderr").write_text(result.stderr, encoding="utf-8")
-        if result.returncode != 0:
-            failures.append(
-                f"run {run_idx}: bench failed with {result.returncode}: {result.stderr.strip()}"
-            )
-            continue
-        try:
-            row = read_bench(result.stdout, f"run {run_idx}")
-            if not args.skip_afinfo:
-                row["afinfo"] = afinfo_summary(Path(row["output_wav"]), args.timeout)
-            rows.append(row)
-        except RuntimeError as exc:
-            failures.append(str(exc))
+    for prompt_index, text in enumerate(prompts):
+        prompt_dir = output_dir / prompt_slug(prompt_index, text)
+        for run_idx in range(1, args.runs + 1):
+            run_dir = prompt_dir / f"run{run_idx}"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            command = bench_command(voice_bin, args, run_dir, text)
+            result = run_command(command, args.timeout)
+            bench_json = run_dir / "bench.json"
+            bench_json.write_text(result.stdout, encoding="utf-8")
+            (run_dir / "bench.stderr").write_text(result.stderr, encoding="utf-8")
+            if result.returncode != 0:
+                failures.append(
+                    f"prompt {prompt_index + 1} run {run_idx}: bench failed with "
+                    f"{result.returncode}: {result.stderr.strip()}"
+                )
+                continue
+            try:
+                row = read_bench(
+                    result.stdout,
+                    f"prompt {prompt_index + 1} run {run_idx}",
+                    prompt_index,
+                    text,
+                )
+                if not args.skip_afinfo:
+                    row["afinfo"] = afinfo_summary(Path(row["output_wav"]), args.timeout)
+                rows.append(row)
+            except RuntimeError as exc:
+                failures.append(str(exc))
 
     if not rows:
         for failure in failures:
             print(f"error: {failure}", file=sys.stderr)
         return 1
 
-    shape_variants = {shape_key(row) for row in rows}
-    if len(shape_variants) > 1 and not args.allow_shape_variants:
-        failures.append(
-            "audio shape varied across identical cold-start runs: "
-            + ", ".join(str(variant) for variant in sorted(shape_variants))
+    prompt_summaries = []
+    for prompt_index, text in enumerate(prompts):
+        prompt_rows = [row for row in rows if row["prompt_index"] == prompt_index]
+        if not prompt_rows:
+            failures.append(f"prompt {prompt_index + 1}: no successful runs")
+            continue
+        shape_variants = {shape_key(row) for row in prompt_rows}
+        if len(shape_variants) > 1 and not args.allow_shape_variants:
+            failures.append(
+                f"prompt {prompt_index + 1}: audio shape varied across identical cold-start runs: "
+                + ", ".join(str(variant) for variant in sorted(shape_variants))
+            )
+        prompt_summaries.append(
+            {
+                "prompt_index": prompt_index,
+                "text": text,
+                "runs_completed": len(prompt_rows),
+                "shape_variants": [list(variant) for variant in sorted(shape_variants)],
+                "did_not_end_count": did_not_end_count(prompt_rows),
+                "frame_cap_hit_count": frame_cap_hit_count(prompt_rows),
+                "model_load_ms": summarize([row["model_load_ms"] for row in prompt_rows]),
+                "module_language_layers_load_ms": summarize(
+                    [row["module_language_layers_load_ms"] for row in prompt_rows]
+                ),
+                "cold_first_code_frame_ms": summarize(
+                    [row["cold_first_code_frame_ms"] for row in prompt_rows]
+                ),
+            }
         )
 
     summary = {
         "voice_bin": str(voice_bin),
         "output_dir": str(output_dir),
+        "prompts_requested": len(prompts),
         "runs_requested": args.runs,
         "runs_completed": len(rows),
-        "shape_variants": [list(variant) for variant in sorted(shape_variants)],
+        "did_not_end_count": did_not_end_count(rows),
+        "frame_cap_hit_count": frame_cap_hit_count(rows),
+        "prompt_summaries": prompt_summaries,
         "model_load_ms": summarize([row["model_load_ms"] for row in rows]),
         "module_language_layers_load_ms": summarize(
             [row["module_language_layers_load_ms"] for row in rows]

@@ -76,6 +76,7 @@ jobs:
             scripts/macos_release_compare.py \
             scripts/verify_cli_mcp_surface.py \
             scripts/verify_hermes_voice_config.py \
+            scripts/verify_voxtral_cold_start_stability.py \
             scripts/verify_webrtc_sidecar_service.py \
             tests/test_install_hermes_voice_config.py \
             tests/test_install_webrtc_sidecar_service.py \
@@ -84,6 +85,7 @@ jobs:
             tests/test_verify_hermes_voice_config.py \
             tests/test_verify_local_hermes_voice_stack.py \
             tests/test_verify_telegram_voice_contract.py \
+            tests/test_verify_voxtral_cold_start_stability.py \
             tests/test_verify_webrtc_sidecar_service.py
 
       - run: python -m unittest discover -s tests
@@ -93,5 +95,6 @@ jobs:
             scripts/install_webrtc_sidecar_service.sh \
             scripts/verify_hermes_command_tts.sh \
             scripts/verify_local_hermes_voice_stack.sh \
+            scripts/verify_pre_pullfrog_local_review.sh \
             scripts/verify_telegram_voice_contract.sh \
             scripts/verify_whatsapp_voice_contract.sh

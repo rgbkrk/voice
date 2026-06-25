@@ -2111,11 +2111,29 @@ fn normalize_words_with_options(text: &str, options: WerOptions) -> Vec<String> 
         .split_whitespace()
         .map(str::to_string)
         .collect::<Vec<_>>();
+    let words = normalize_known_compound_tokens(words);
     if options.time_token_equivalence {
         normalize_time_tokens(words)
     } else {
         words
     }
+}
+
+fn normalize_known_compound_tokens(words: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(words.len());
+    let mut index = 0;
+    while index < words.len() {
+        if words.get(index).is_some_and(|word| word == "real")
+            && words.get(index + 1).is_some_and(|word| word == "time")
+        {
+            normalized.push("realtime".to_string());
+            index += 2;
+        } else {
+            normalized.push(words[index].clone());
+            index += 1;
+        }
+    }
+    normalized
 }
 
 fn normalize_time_tokens(words: Vec<String>) -> Vec<String> {
@@ -2228,6 +2246,29 @@ mod tests {
             normalize_words("Hello, WORLD! It isn't 1999."),
             vec!["hello", "world", "it", "isn't", "1999"]
         );
+    }
+
+    #[test]
+    fn normalizes_known_compound_tokens_for_eval() {
+        let equivalent = word_error_rate(
+            "The sentence reaches the realtime frame cap.",
+            "The sentence reaches the real-time frame cap.",
+        );
+        assert_eq!(equivalent.distance, 0);
+        assert_eq!(
+            equivalent.reference_words,
+            vec!["the", "sentence", "reaches", "the", "realtime", "frame", "cap"]
+        );
+        assert_eq!(
+            equivalent.hypothesis_words,
+            vec!["the", "sentence", "reaches", "the", "realtime", "frame", "cap"]
+        );
+
+        let spaced = word_error_rate(
+            "The sentence reaches the realtime frame cap.",
+            "The sentence reaches the real time frame cap.",
+        );
+        assert_eq!(spaced.distance, 0);
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use crate::audio_recorder;
-use crate::queue::RequestQueue;
+use crate::queue::{RequestQueue, VoiceRequest};
 use crate::ui_state::{
     snapshot_from_daemon, UiCommandResult, UiEvent, UiSnapshot, UiTransport, UiTransportState,
+    UI_INTERNAL_CLIENT_ID,
 };
 use axum::body::Body;
 use axum::extract::{Path, State};
@@ -17,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, Mutex};
+use voice_protocol::rpc::ItemStatus;
 
 #[derive(Clone)]
 struct UiServerState {
@@ -283,9 +285,11 @@ impl UiServerState {
         };
 
         let Ok(text) = std::env::var("VOICE_UI_TEST_RESPONSE_TEXT") else {
+            self.start_microphone_response(track_id.clone()).await;
             return result;
         };
         if text.trim().is_empty() {
+            self.start_microphone_response(track_id.clone()).await;
             return result;
         }
 
@@ -330,6 +334,57 @@ impl UiServerState {
             track_id: Some(track_id),
             message: (!completed).then(|| "track is not a held UI item".to_string()),
         }
+    }
+
+    async fn start_microphone_response(&self, track_id: String) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let (listen_id, completion_rx) = state
+                .queue
+                .enqueue_and_wait(
+                    UI_INTERNAL_CLIENT_ID.to_string(),
+                    VoiceRequest::Listen {
+                        max_duration_ms: ui_response_max_duration_ms(),
+                    },
+                )
+                .await;
+            state.broadcast_snapshot().await;
+
+            let finish = match completion_rx.await {
+                Ok(completion) => {
+                    if completion.status == ItemStatus::Completed {
+                        let _ = copy_answer_audio(&listen_id, &track_id).await;
+                        state
+                            .queue
+                            .complete_held_item(&track_id, completion.result)
+                            .await
+                    } else {
+                        state
+                            .queue
+                            .fail_held_item(&track_id, completion.result)
+                            .await
+                    }
+                }
+                Err(_) => {
+                    state
+                        .queue
+                        .fail_held_item(
+                            &track_id,
+                            Some("internal listen worker dropped".to_string()),
+                        )
+                        .await
+                }
+            };
+
+            if finish {
+                *state.transport.lock().await = UiTransport {
+                    state: UiTransportState::Idle,
+                    paused: true,
+                    position_seconds: 0,
+                };
+                state.broadcast_snapshot().await;
+            }
+        });
     }
 
     async fn set_transport(
@@ -435,6 +490,30 @@ fn write_synthetic_answer_audio(track_id: &str) -> Result<(), String> {
         &samples,
         sample_rate,
     )
+}
+
+fn ui_response_max_duration_ms() -> Option<u64> {
+    std::env::var("VOICE_UI_RESPONSE_MAX_DURATION_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .or(Some(30_000))
+}
+
+async fn copy_answer_audio(from_id: &str, to_id: &str) -> Result<(), String> {
+    let from = audio_recorder::answer_path(from_id);
+    let to = audio_recorder::answer_path(to_id);
+    if !from.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = to.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|err| format!("mkdir {}: {err}", parent.display()))?;
+    }
+    tokio::fs::copy(&from, &to)
+        .await
+        .map(|_| ())
+        .map_err(|err| format!("copy answer audio: {err}"))
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ use std::path::Path;
 use voice_protocol::rpc::{DaemonState, ItemStatus, QueueItem};
 
 const DEFAULT_COLORS: [&str; 5] = ["#82aaff", "#f0b878", "#e89a6a", "#9ad7c2", "#b58cff"];
+pub const UI_INTERNAL_CLIENT_ID: &str = "__voice_ui_internal";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -126,7 +127,11 @@ pub fn snapshot_from_daemon(
     ordered_items.extend(daemon.pending.iter().cloned());
     ordered_items.extend(daemon.recent.iter().cloned());
 
-    for (index, item) in ordered_items.iter().enumerate() {
+    for (index, item) in ordered_items
+        .iter()
+        .filter(|item| item.client_id != UI_INTERNAL_CLIENT_ID)
+        .enumerate()
+    {
         let track = track_from_item(item, index, active_track_id.as_deref());
         if daemon.recent.iter().any(|recent| recent.id == item.id) {
             recent_ids.push(item.id.clone());
@@ -302,5 +307,31 @@ mod tests {
         assert_eq!(snapshot.tracks["one"].intent, UiIntent::Respond);
         assert_eq!(snapshot.tracks["one"].lifecycle, UiLifecycle::Listening);
         assert_eq!(snapshot.tracks["two"].lifecycle, UiLifecycle::Completed);
+    }
+
+    #[test]
+    fn snapshot_hides_internal_ui_worker_items() {
+        let mut hidden = item("hidden", "listen", ItemStatus::Processing);
+        hidden.client_id = UI_INTERNAL_CLIENT_ID.to_string();
+        let visible = item("visible", "converse", ItemStatus::Queued);
+        let daemon = DaemonState {
+            status: "listening".to_string(),
+            current: Some(hidden),
+            pending: vec![visible],
+            recent: vec![],
+        };
+
+        let snapshot = snapshot_from_daemon(
+            &daemon,
+            Some("visible".to_string()),
+            UiTransport {
+                state: UiTransportState::Listening,
+                paused: false,
+                position_seconds: 0,
+            },
+        );
+
+        assert_eq!(snapshot.queue_ids, vec!["visible"]);
+        assert!(!snapshot.tracks.contains_key("hidden"));
     }
 }

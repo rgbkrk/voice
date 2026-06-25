@@ -349,6 +349,21 @@ impl RequestQueue {
     }
 
     pub async fn complete_held_item(&self, queue_id: &str, result: Option<String>) -> bool {
+        self.finish_held_item(queue_id, ItemStatus::Completed, result)
+            .await
+    }
+
+    pub async fn fail_held_item(&self, queue_id: &str, result: Option<String>) -> bool {
+        self.finish_held_item(queue_id, ItemStatus::Failed, result)
+            .await
+    }
+
+    async fn finish_held_item(
+        &self,
+        queue_id: &str,
+        status: ItemStatus,
+        result: Option<String>,
+    ) -> bool {
         let entry = {
             let mut items = self.items.lock().await;
             items
@@ -361,7 +376,7 @@ impl RequestQueue {
             return false;
         };
 
-        entry.status = ItemStatus::Completed;
+        entry.status = status;
         entry.result = result;
         entry.completed_at = Some(now_secs());
         self.push_recent(entry).await;

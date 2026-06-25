@@ -24,3 +24,15 @@
   - `npm run build` in `crates/voice-ui`
 - Remaining gap: production `respond` still needs daemon-owned native mic/STT completion instead of only the test response path.
 - Remaining gap: held prompt audio still depends on pre-existing question WAVs or future synthesis wiring; the worker does not yet prepare prompt WAVs for held tracks automatically.
+
+## 2026-06-24 prompt and native-response slice
+
+- Added hidden internal UI worker id `__voice_ui_internal` and filtered it out of UI snapshots so implementation jobs do not show up as playlist entries.
+- `ui_hold` socket requests for `speak` and `converse` now enqueue a hidden `Synthesize` job to write `~/.voice/audio/<track>-q.wav` without daemon autoplay.
+- Production `respond` now starts a hidden internal `Listen` job through the existing worker. When STT completes, it copies the answer WAV from the internal listen id to the held track id and completes or fails the held track.
+- Kept the `VOICE_UI_TEST_RESPONSE_TEXT` path for no-mic automated E2E.
+- Added projection coverage that hidden internal worker entries are not rendered in UI snapshots.
+- Passing check:
+  - `cargo test -p voice-daemon`
+- Remaining gap: need full supporting checks after this slice.
+- Remaining gap: no live microphone manual verification yet; automated no-mic path covers HTTP snapshot/command/audio behavior.

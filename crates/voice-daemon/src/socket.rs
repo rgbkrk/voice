@@ -8,6 +8,7 @@ use crate::queue::{
     RequestQueue, StreamSpeakRequest, StreamTranscribeRequest, SynthesizeRequest, TtsOptions,
     VoiceRequest,
 };
+use crate::ui_state::UI_INTERNAL_CLIENT_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -779,9 +780,18 @@ async fn dispatch(
                 | VoiceRequest::Converse { .. }
         );
         if ui_hold && can_hold_for_ui {
+            let prompt_request = held_prompt_request(&voice_req);
             let queue_id = queue
                 .enqueue_ui_held(client_id.to_string(), voice_req)
                 .await;
+            if let Some(mut request) = prompt_request {
+                request.output_path = crate::audio_recorder::question_path(&queue_id)
+                    .to_string_lossy()
+                    .into_owned();
+                queue
+                    .enqueue_synthesize(UI_INTERNAL_CLIENT_ID.to_string(), request)
+                    .await;
+            }
             sync_automerge(queue, automerge).await;
             return Response::success(
                 req.id,
@@ -893,6 +903,38 @@ fn ui_hold_param(req: &rpc::Request) -> Result<bool, Response> {
             )
         }),
         None => Ok(false),
+    }
+}
+
+fn held_prompt_request(request: &VoiceRequest) -> Option<SynthesizeRequest> {
+    match request {
+        VoiceRequest::Speak {
+            text,
+            voice,
+            speed,
+            options,
+        } => Some(SynthesizeRequest {
+            text: text.clone(),
+            output_path: String::new(),
+            output_format: Some(AudioOutputFormat::Wav),
+            voice: voice.clone(),
+            speed: *speed,
+            options: options.clone(),
+        }),
+        VoiceRequest::Converse {
+            text,
+            voice,
+            options,
+            ..
+        } => Some(SynthesizeRequest {
+            text: text.clone(),
+            output_path: String::new(),
+            output_format: Some(AudioOutputFormat::Wav),
+            voice: voice.clone(),
+            speed: None,
+            options: options.clone(),
+        }),
+        _ => None,
     }
 }
 
@@ -1326,7 +1368,18 @@ mod tests {
         let result = response.result.expect("response result");
         assert_eq!(result["status"], "held");
 
-        assert!(queue.dequeue().await.is_none());
+        let synth = queue.dequeue().await.expect("hidden synth job");
+        assert_eq!(synth.client_id, UI_INTERNAL_CLIENT_ID);
+        match synth.request {
+            VoiceRequest::Synthesize {
+                output_path, text, ..
+            } => {
+                assert_eq!(text, "Hold this for the playlist.");
+                assert!(output_path.ends_with("-q.wav"));
+            }
+            other => panic!("expected hidden synth job, got {other:?}"),
+        }
+
         let snapshot = queue.snapshot().await;
         assert_eq!(snapshot.pending.len(), 1);
         assert!(snapshot.pending[0].held_for_ui);

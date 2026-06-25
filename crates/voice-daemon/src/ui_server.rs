@@ -56,18 +56,22 @@ pub async fn serve(queue: Arc<RequestQueue>) {
 
     tokio::spawn(queue_event_pump(state.clone()));
 
-    let app = Router::new()
-        .route("/api/ui/snapshot", get(snapshot))
-        .route("/api/ui/events", get(event_stream))
-        .route("/api/ui/commands/:command", post(command))
-        .route("/api/ui/audio/:track_id/:part", get(audio))
-        .fallback(get(asset))
-        .with_state(state);
+    let app = router(state);
 
     eprintln!("voice daemon: UI listening on http://{addr}");
     if let Err(err) = axum::serve(listener, app).await {
         eprintln!("voice daemon: UI server stopped: {err}");
     }
+}
+
+fn router(state: UiServerState) -> Router {
+    Router::new()
+        .route("/api/ui/snapshot", get(snapshot))
+        .route("/api/ui/events", get(event_stream))
+        .route("/api/ui/commands/:command", post(command))
+        .route("/api/ui/audio/:track_id/:part", get(audio))
+        .fallback(get(asset))
+        .with_state(state)
 }
 
 fn ui_addr() -> SocketAddr {
@@ -138,11 +142,7 @@ async fn command(
         "pause" => state.set_transport(UiTransportState::Paused, true).await,
         "next" => state.step(1).await,
         "previous" => state.step(-1).await,
-        "respond" => {
-            state
-                .set_active("respond", track_id, UiTransportState::Listening, false)
-                .await
-        }
+        "respond" => state.respond(track_id).await,
         "cancel" => state.cancel(track_id).await,
         "clear-recent" => state.clear_recent(track_id).await,
         other => UiCommandResult {
@@ -270,6 +270,68 @@ impl UiServerState {
         }
     }
 
+    async fn respond(&self, requested_id: Option<String>) -> UiCommandResult {
+        let result = self
+            .set_active("respond", requested_id, UiTransportState::Listening, false)
+            .await;
+        if !result.ok {
+            return result;
+        }
+
+        let Some(track_id) = result.track_id.clone() else {
+            return result;
+        };
+
+        let Ok(text) = std::env::var("VOICE_UI_TEST_RESPONSE_TEXT") else {
+            return result;
+        };
+        if text.trim().is_empty() {
+            return result;
+        }
+
+        if let Err(err) = write_synthetic_answer_audio(&track_id) {
+            return UiCommandResult {
+                command: "respond".to_string(),
+                ok: false,
+                track_id: Some(track_id),
+                message: Some(err),
+            };
+        }
+
+        let completed = self
+            .queue
+            .complete_held_item(
+                &track_id,
+                Some(
+                    serde_json::json!({
+                        "heard": {
+                            "text": text,
+                            "sample_rate": 16_000,
+                            "audio_duration_ms": 250,
+                        },
+                        "source": "ui-test-response",
+                    })
+                    .to_string(),
+                ),
+            )
+            .await;
+        if completed {
+            *self.transport.lock().await = UiTransport {
+                state: UiTransportState::Idle,
+                paused: true,
+                position_seconds: 0,
+            };
+            self.broadcast_snapshot().await;
+        }
+
+        UiCommandResult {
+            command: "respond".to_string(),
+            ok: completed,
+            track_id: Some(track_id),
+            message: (!completed).then(|| "track is not a held UI item".to_string()),
+        }
+    }
+
     async fn set_transport(
         &self,
         transport_state: UiTransportState,
@@ -365,13 +427,218 @@ impl UiServerState {
     }
 }
 
+fn write_synthetic_answer_audio(track_id: &str) -> Result<(), String> {
+    let sample_rate = 16_000_u32;
+    let samples = vec![0.0; sample_rate as usize / 4];
+    audio_recorder::save_wav(
+        &audio_recorder::answer_path(track_id),
+        &samples,
+        sample_rate,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::queue::{TtsOptions, VoiceRequest};
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Method, Request};
+    use tower::ServiceExt;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[tokio::test]
     async fn missing_static_asset_returns_not_found_for_api_path() {
         let response = asset("/api/missing".parse().unwrap()).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_response_completes_held_track_without_microphone() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let audio_dir = std::env::temp_dir().join(format!(
+            "voice-ui-response-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let old_audio_dir = std::env::var("VOICE_AUDIO_DIR").ok();
+        let old_response = std::env::var("VOICE_UI_TEST_RESPONSE_TEXT").ok();
+        std::env::set_var("VOICE_AUDIO_DIR", &audio_dir);
+        std::env::set_var("VOICE_UI_TEST_RESPONSE_TEXT", "Run the regression suite.");
+
+        let queue = Arc::new(RequestQueue::new());
+        let (event_tx, _) = broadcast::channel(8);
+        let state = UiServerState {
+            queue: queue.clone(),
+            active_track_id: Arc::new(Mutex::new(None)),
+            transport: Arc::new(Mutex::new(UiTransport {
+                state: UiTransportState::Idle,
+                paused: true,
+                position_seconds: 0,
+            })),
+            events: event_tx,
+        };
+        let track_id = queue
+            .enqueue_ui_held(
+                "codex".to_string(),
+                VoiceRequest::Converse {
+                    text: "Should I run tests?".to_string(),
+                    voice: None,
+                    max_duration_ms: None,
+                    options: TtsOptions::default(),
+                },
+            )
+            .await;
+
+        let result = state.respond(Some(track_id.clone())).await;
+        assert!(result.ok, "{result:?}");
+
+        let snapshot = state.snapshot().await;
+        assert!(snapshot.queue_ids.is_empty());
+        assert_eq!(snapshot.recent_ids, vec![track_id.clone()]);
+        let track = &snapshot.tracks[&track_id];
+        assert_eq!(track.answer.as_deref(), Some("Run the regression suite."));
+        assert_eq!(
+            track.audio.answer_url,
+            Some(format!("/api/ui/audio/{track_id}/answer"))
+        );
+
+        match old_audio_dir {
+            Some(value) => std::env::set_var("VOICE_AUDIO_DIR", value),
+            None => std::env::remove_var("VOICE_AUDIO_DIR"),
+        }
+        match old_response {
+            Some(value) => std::env::set_var("VOICE_UI_TEST_RESPONSE_TEXT", value),
+            None => std::env::remove_var("VOICE_UI_TEST_RESPONSE_TEXT"),
+        }
+        let _ = std::fs::remove_dir_all(audio_dir);
+    }
+
+    #[tokio::test]
+    async fn http_snapshot_command_and_audio_round_trip_without_microphone() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let audio_dir = std::env::temp_dir().join(format!(
+            "voice-ui-http-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let old_audio_dir = std::env::var("VOICE_AUDIO_DIR").ok();
+        let old_response = std::env::var("VOICE_UI_TEST_RESPONSE_TEXT").ok();
+        std::env::set_var("VOICE_AUDIO_DIR", &audio_dir);
+        std::env::set_var("VOICE_UI_TEST_RESPONSE_TEXT", "Please open the PR.");
+
+        let queue = Arc::new(RequestQueue::new());
+        let (event_tx, _) = broadcast::channel(8);
+        let state = UiServerState {
+            queue: queue.clone(),
+            active_track_id: Arc::new(Mutex::new(None)),
+            transport: Arc::new(Mutex::new(UiTransport {
+                state: UiTransportState::Idle,
+                paused: true,
+                position_seconds: 0,
+            })),
+            events: event_tx,
+        };
+        let track_id = queue
+            .enqueue_ui_held(
+                "codex".to_string(),
+                VoiceRequest::Converse {
+                    text: "Should I open the PR?".to_string(),
+                    voice: None,
+                    max_duration_ms: None,
+                    options: TtsOptions::default(),
+                },
+            )
+            .await;
+        let app = router(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/ui/snapshot")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let snapshot = serde_json::from_slice::<UiSnapshot>(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(snapshot.queue_ids, vec![track_id.clone()]);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/ui/commands/respond")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(r#"{{"trackId":"{track_id}"}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result = serde_json::from_slice::<UiCommandResult>(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        assert!(result.ok, "{result:?}");
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/api/ui/snapshot")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let snapshot = serde_json::from_slice::<UiSnapshot>(
+            &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        assert!(snapshot.queue_ids.is_empty());
+        assert_eq!(snapshot.recent_ids, vec![track_id.clone()]);
+        assert_eq!(
+            snapshot.tracks[&track_id].answer.as_deref(),
+            Some("Please open the PR.")
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/api/ui/audio/{track_id}/answer"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "audio/wav"
+        );
+        assert!(!to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty());
+
+        match old_audio_dir {
+            Some(value) => std::env::set_var("VOICE_AUDIO_DIR", value),
+            None => std::env::remove_var("VOICE_AUDIO_DIR"),
+        }
+        match old_response {
+            Some(value) => std::env::set_var("VOICE_UI_TEST_RESPONSE_TEXT", value),
+            None => std::env::remove_var("VOICE_UI_TEST_RESPONSE_TEXT"),
+        }
+        let _ = std::fs::remove_dir_all(audio_dir);
     }
 }

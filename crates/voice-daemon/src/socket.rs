@@ -474,6 +474,10 @@ async fn dispatch(
         Ok(wait) => wait,
         Err(resp) => return resp,
     };
+    let ui_hold = match ui_hold_param(&req) {
+        Ok(ui_hold) => ui_hold,
+        Err(resp) => return resp,
+    };
 
     // Build the voice request from params
     let voice_req = match req.method.as_str() {
@@ -768,6 +772,23 @@ async fn dispatch(
 
     if !wait {
         // Fire-and-forget: enqueue and return immediately
+        let can_hold_for_ui = matches!(
+            voice_req,
+            VoiceRequest::Speak { .. }
+                | VoiceRequest::Listen { .. }
+                | VoiceRequest::Converse { .. }
+        );
+        if ui_hold && can_hold_for_ui {
+            let queue_id = queue
+                .enqueue_ui_held(client_id.to_string(), voice_req)
+                .await;
+            sync_automerge(queue, automerge).await;
+            return Response::success(
+                req.id,
+                serde_json::json!({ "queue_id": queue_id, "status": "held" }),
+            );
+        }
+
         let queue_id = match voice_req {
             VoiceRequest::Speak {
                 text,
@@ -859,6 +880,19 @@ fn wait_param(req: &rpc::Request) -> Result<bool, Response> {
             )
         }),
         None => Ok(req.method == "synthesize"),
+    }
+}
+
+fn ui_hold_param(req: &rpc::Request) -> Result<bool, Response> {
+    match req.params.get("ui_hold") {
+        Some(value) => value.as_bool().ok_or_else(|| {
+            Response::error(
+                req.id.clone(),
+                rpc::INVALID_PARAMS,
+                "param 'ui_hold' must be a boolean",
+            )
+        }),
+        None => Ok(false),
     }
 }
 
@@ -1263,6 +1297,43 @@ mod tests {
 
         let err = parse_stt_audio_samples(&data, "stream-1", 48_000).unwrap_err();
         assert!(err.contains("stream_id"));
+    }
+
+    #[tokio::test]
+    async fn ui_hold_request_stays_out_of_worker_queue() {
+        let queue = Arc::new(RequestQueue::new());
+        let automerge = Arc::new(tokio::sync::Mutex::new(AutomergeState::new()));
+        let request = rpc::Request::new(
+            "speak",
+            serde_json::json!({
+                "text": "Hold this for the playlist.",
+                "wait": false,
+                "ui_hold": true
+            }),
+        )
+        .with_id(1);
+
+        let response = dispatch(
+            request,
+            &queue,
+            &Arc::new(DaemonConfig::new()),
+            "agent-a",
+            &automerge,
+        )
+        .await;
+
+        assert!(response.error.is_none());
+        let result = response.result.expect("response result");
+        assert_eq!(result["status"], "held");
+
+        assert!(queue.dequeue().await.is_none());
+        let snapshot = queue.snapshot().await;
+        assert_eq!(snapshot.pending.len(), 1);
+        assert!(snapshot.pending[0].held_for_ui);
+        assert_eq!(
+            snapshot.pending[0].text_preview.as_deref(),
+            Some("Hold this for the playlist.")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

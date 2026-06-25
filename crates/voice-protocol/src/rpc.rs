@@ -130,6 +130,8 @@ pub struct QueueItem {
     pub client_id: String,
     pub method: String,
     pub status: ItemStatus,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub held_for_ui: bool,
     pub created_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_preview: Option<String>,
@@ -141,6 +143,10 @@ pub struct QueueItem {
     pub completed_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_clear_at: Option<u64>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Snapshot of daemon state — returned by the `status` method.

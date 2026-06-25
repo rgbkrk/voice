@@ -137,6 +137,7 @@ pub struct QueueEntry {
     pub client_id: String,
     pub request: VoiceRequest,
     pub status: ItemStatus,
+    pub held_for_ui: bool,
     pub created_at: u64,
     pub result: Option<String>,
     pub completed_at: Option<u64>,
@@ -152,6 +153,7 @@ impl QueueEntry {
             client_id: self.client_id.clone(),
             method: self.request.method().to_string(),
             status: self.status.clone(),
+            held_for_ui: self.held_for_ui,
             created_at: self.created_at,
             text_preview: self.request.text_preview(),
             result: self.result.clone(),
@@ -269,6 +271,7 @@ impl RequestQueue {
             client_id,
             request,
             status: ItemStatus::Queued,
+            held_for_ui: false,
             created_at: now_secs(),
             result: None,
             completed_at: None,
@@ -300,6 +303,7 @@ impl RequestQueue {
             client_id,
             request,
             status: ItemStatus::Queued,
+            held_for_ui: false,
             created_at: now_secs(),
             result: None,
             completed_at: None,
@@ -314,14 +318,55 @@ impl RequestQueue {
 
     pub async fn dequeue(&self) -> Option<QueueEntry> {
         let mut items = self.items.lock().await;
-        if let Some(mut entry) = items.pop_front() {
-            entry.status = ItemStatus::Processing;
-            *self.current.lock().await = Some(entry.clone());
-            self.notify.notify_waiters();
-            Some(entry)
-        } else {
-            None
-        }
+        let position = items.iter().position(|entry| !entry.held_for_ui)?;
+        let mut entry = items.remove(position)?;
+        entry.status = ItemStatus::Processing;
+        *self.current.lock().await = Some(entry.clone());
+        self.notify.notify_waiters();
+        Some(entry)
+    }
+
+    /// Add a playlist/mailbox item that is visible to the UI but not consumed
+    /// by the worker until a later compatibility path explicitly releases it.
+    pub async fn enqueue_ui_held(&self, client_id: String, request: VoiceRequest) -> String {
+        let id = Uuid::new_v4().to_string()[..8].to_string();
+        let entry = QueueEntry {
+            id: id.clone(),
+            client_id,
+            request,
+            status: ItemStatus::Queued,
+            held_for_ui: true,
+            created_at: now_secs(),
+            result: None,
+            completed_at: None,
+            repo: None,
+            auto_clear_at: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        self.items.lock().await.push_back(entry);
+        self.notify.notify_waiters();
+        id
+    }
+
+    pub async fn complete_held_item(&self, queue_id: &str, result: Option<String>) -> bool {
+        let entry = {
+            let mut items = self.items.lock().await;
+            items
+                .iter()
+                .position(|entry| entry.id == queue_id && entry.held_for_ui)
+                .and_then(|position| items.remove(position))
+        };
+
+        let Some(mut entry) = entry else {
+            return false;
+        };
+
+        entry.status = ItemStatus::Completed;
+        entry.result = result;
+        entry.completed_at = Some(now_secs());
+        self.push_recent(entry).await;
+        self.notify.notify_waiters();
+        true
     }
 
     pub async fn complete(&self, result: Option<String>, auto_clear_secs: Option<u64>) {
@@ -599,5 +644,66 @@ mod tests {
         let result = rx.await.unwrap();
         assert_eq!(result.status, ItemStatus::Failed);
         assert_eq!(result.result.as_deref(), Some(CANCELLED_MESSAGE));
+    }
+
+    #[tokio::test]
+    async fn dequeue_skips_ui_held_items() {
+        let queue = RequestQueue::new();
+        let held_id = queue
+            .enqueue_ui_held(
+                "agent-a".to_string(),
+                VoiceRequest::Speak {
+                    text: "hold this".to_string(),
+                    voice: None,
+                    speed: None,
+                    options: TtsOptions::default(),
+                },
+            )
+            .await;
+        let live_id = queue
+            .enqueue_speak(
+                "cli".to_string(),
+                "play this".to_string(),
+                None,
+                None,
+                TtsOptions::default(),
+            )
+            .await;
+
+        let entry = queue.dequeue().await.expect("worker item");
+        assert_eq!(entry.id, live_id);
+
+        let snapshot = queue.snapshot().await;
+        assert_eq!(snapshot.pending.len(), 1);
+        assert_eq!(snapshot.pending[0].id, held_id);
+        assert!(snapshot.pending[0].held_for_ui);
+    }
+
+    #[tokio::test]
+    async fn complete_held_item_moves_it_to_recent() {
+        let queue = RequestQueue::new();
+        let held_id = queue
+            .enqueue_ui_held(
+                "agent-a".to_string(),
+                VoiceRequest::Converse {
+                    text: "need your response".to_string(),
+                    voice: None,
+                    max_duration_ms: None,
+                    options: TtsOptions::default(),
+                },
+            )
+            .await;
+
+        assert!(
+            queue
+                .complete_held_item(&held_id, Some(r#"{"heard":{"text":"yes"}}"#.to_string()))
+                .await
+        );
+
+        let snapshot = queue.snapshot().await;
+        assert!(snapshot.pending.is_empty());
+        assert_eq!(snapshot.recent.len(), 1);
+        assert_eq!(snapshot.recent[0].id, held_id);
+        assert_eq!(snapshot.recent[0].status, ItemStatus::Completed);
     }
 }

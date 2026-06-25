@@ -123,6 +123,7 @@ export interface DaemonQueueItem {
   client_id: string;
   method: string;
   status: DaemonItemStatus;
+  held_for_ui?: boolean;
   created_at: number;
   text_preview?: string;
   result?: string;

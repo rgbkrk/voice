@@ -29,3 +29,6 @@ rodio = { version = "0.22", features = ["experimental"] }
 hound = { workspace = true }
 automerge = "0.7"
 automorph = "0.2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

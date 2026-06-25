@@ -5,6 +5,12 @@ use std::path::{Path, PathBuf};
 
 /// Audio storage directory.
 pub fn audio_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("VOICE_AUDIO_DIR") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".voice")

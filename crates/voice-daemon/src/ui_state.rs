@@ -268,6 +268,7 @@ mod tests {
             client_id: "codex.repo.main.gpt-5".to_string(),
             method: method.to_string(),
             status,
+            held_for_ui: false,
             created_at: 10,
             text_preview: Some("Need your decision.".to_string()),
             result: None,

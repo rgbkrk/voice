@@ -7220,6 +7220,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "uuid",
  "voice-audio",
  "voice-g2p",

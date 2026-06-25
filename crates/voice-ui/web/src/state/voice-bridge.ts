@@ -199,8 +199,19 @@ class VoiceBridge {
       this.audio.currentTime = 0;
       this.audioTrackId = trackId ?? null;
     }
-    voiceStore.setPlaybackPaused(false);
-    await this.audio.play();
+    try {
+      await this.audio.play();
+      voiceStore.setPlaybackPaused(false);
+    } catch (error) {
+      voiceStore.setPlaybackPaused(true);
+      voiceStore.applyEvent({
+        type: "error",
+        payload: {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+      void this.command("pause");
+    }
   }
 }
 

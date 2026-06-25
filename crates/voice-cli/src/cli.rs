@@ -1734,6 +1734,7 @@ struct TtsBenchEngineReport {
     module_language_load_ms: Option<f64>,
     module_acoustic_load_ms: Option<f64>,
     module_codec_load_ms: Option<f64>,
+    cold_first_code_frame_ms: Option<f64>,
     cold_first_audio_ms: f64,
     cold_total_ms: f64,
     runs: Vec<TtsBenchRunReport>,
@@ -1998,6 +1999,7 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
         module_language_load_ms: None,
         module_acoustic_load_ms: None,
         module_codec_load_ms: None,
+        cold_first_code_frame_ms: None,
         cold_first_audio_ms: duration_ms(cold_first_audio_ms),
         cold_total_ms: duration_ms(cold_total_ms),
         runs,
@@ -2114,9 +2116,13 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         });
     }
 
+    let first_run = &runs[0];
+    let cold_first_code_frame_ms = first_run
+        .first_code_frame_ms
+        .map(|ms| duration_ms(load_trace.total + Duration::from_secs_f64(ms / 1_000.0)));
     let cold_first_audio_ms =
-        load_trace.total + Duration::from_secs_f64(runs[0].first_audio_ms / 1_000.0);
-    let cold_total_ms = load_trace.total + Duration::from_secs_f64(runs[0].total_ms / 1_000.0);
+        load_trace.total + Duration::from_secs_f64(first_run.first_audio_ms / 1_000.0);
+    let cold_total_ms = load_trace.total + Duration::from_secs_f64(first_run.total_ms / 1_000.0);
 
     Ok(TtsBenchEngineReport {
         engine: TtsEngine::Voxtral.as_str(),
@@ -2135,6 +2141,7 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         module_language_load_ms: Some(duration_ms(load_trace.module_language_load)),
         module_acoustic_load_ms: Some(duration_ms(load_trace.module_acoustic_load)),
         module_codec_load_ms: Some(duration_ms(load_trace.module_codec_load)),
+        cold_first_code_frame_ms,
         cold_first_audio_ms: duration_ms(cold_first_audio_ms),
         cold_total_ms: duration_ms(cold_total_ms),
         runs,
@@ -2331,6 +2338,7 @@ fn bench_daemon_tts(
     }
 
     let cold_first_audio_ms = runs[0].first_audio_ms;
+    let cold_first_code_frame_ms = runs[0].first_code_frame_ms;
     let cold_total_ms = runs[0].total_ms;
     let model = match engine {
         TtsEngine::Kokoro => MODEL_REPO.to_string(),
@@ -2354,6 +2362,7 @@ fn bench_daemon_tts(
         module_language_load_ms: None,
         module_acoustic_load_ms: None,
         module_codec_load_ms: None,
+        cold_first_code_frame_ms,
         cold_first_audio_ms,
         cold_total_ms,
         runs,
@@ -2544,10 +2553,11 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
     }
     for engine in &report.engines {
         println!(
-            "tts_bench.engine={} voice={} model_load_ms={:.1} cold_first_audio_ms={:.1} cold_total_ms={:.1} device_load_ms={} model_resolve_assets_ms={} model_config_load_ms={} model_tokenizer_load_ms={} model_tokenizer_validate_ms={} model_weight_metadata_ms={} model_weight_validate_ms={} module_load_ms={} module_embeddings_load_ms={} module_language_load_ms={} module_acoustic_load_ms={} module_codec_load_ms={} model={}",
+            "tts_bench.engine={} voice={} model_load_ms={:.1} cold_first_code_frame_ms={} cold_first_audio_ms={:.1} cold_total_ms={:.1} device_load_ms={} model_resolve_assets_ms={} model_config_load_ms={} model_tokenizer_load_ms={} model_tokenizer_validate_ms={} model_weight_metadata_ms={} model_weight_validate_ms={} module_load_ms={} module_embeddings_load_ms={} module_language_load_ms={} module_acoustic_load_ms={} module_codec_load_ms={} model={}",
             engine.engine,
             engine.voice,
             engine.model_load_ms,
+            format_optional_ms(engine.cold_first_code_frame_ms),
             engine.cold_first_audio_ms,
             engine.cold_total_ms,
             format_optional_ms(engine.device_load_ms),
@@ -4544,6 +4554,7 @@ mod tests {
                 module_language_load_ms: Some(10.0),
                 module_acoustic_load_ms: Some(11.0),
                 module_codec_load_ms: Some(12.0),
+                cold_first_code_frame_ms: Some(13.0),
                 cold_first_audio_ms: 20.0,
                 cold_total_ms: 30.0,
                 runs: vec![],
@@ -4564,6 +4575,7 @@ mod tests {
         assert_eq!(engine["module_language_load_ms"], 10.0);
         assert_eq!(engine["module_acoustic_load_ms"], 11.0);
         assert_eq!(engine["module_codec_load_ms"], 12.0);
+        assert_eq!(engine["cold_first_code_frame_ms"], 13.0);
     }
 
     #[test]

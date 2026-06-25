@@ -6,7 +6,8 @@ use candle_nn::VarBuilder;
 
 use crate::{
     Result, VoxtralAssetPaths, VoxtralAssetResolver, VoxtralConfig, VoxtralError,
-    VoxtralInferenceModules, VoxtralSource, VoxtralTokenizerMetadata, VoxtralWeightMetadata,
+    VoxtralInferenceModules, VoxtralModuleLoadTrace, VoxtralSource, VoxtralTokenizerMetadata,
+    VoxtralWeightMetadata,
 };
 
 /// Boundary for a future native Candle implementation of Voxtral TTS.
@@ -192,8 +193,16 @@ impl VoxtralModel {
         dtype: DType,
         device: &Device,
     ) -> Result<VoxtralInferenceModules> {
+        Ok(self.load_inference_modules_with_trace(dtype, device)?.0)
+    }
+
+    pub fn load_inference_modules_with_trace(
+        &self,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<(VoxtralInferenceModules, VoxtralModuleLoadTrace)> {
         let vb = self.var_builder(dtype, device)?;
-        VoxtralInferenceModules::load(&self.config, vb)
+        VoxtralInferenceModules::load_with_trace(&self.config, vb)
             .map_err(|e| VoxtralError::Candle(e.to_string()))
     }
 

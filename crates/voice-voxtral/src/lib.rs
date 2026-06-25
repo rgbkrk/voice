@@ -91,8 +91,8 @@ pub use tokenizer::{
 };
 pub use transformer::{
     VoxtralAcousticTransformer, VoxtralAttention, VoxtralFeedForward, VoxtralInferenceModules,
-    VoxtralLanguageBackbone, VoxtralLanguageCache, VoxtralMultimodalEmbeddings,
-    VoxtralTransformerBlock,
+    VoxtralLanguageBackbone, VoxtralLanguageCache, VoxtralModuleLoadTrace,
+    VoxtralMultimodalEmbeddings, VoxtralTransformerBlock,
 };
 pub use voice_embedding::{
     load_voice_embedding, load_voice_embedding_with_hidden_dim, VOXTRAL_VOICE_EMBEDDING_HIDDEN_DIM,

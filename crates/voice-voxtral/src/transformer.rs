@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use candle_core::{DType, Device, Module, Result, Tensor, D};
 use candle_nn::{
     embedding, linear_no_bias, rms_norm, Activation, Embedding, Linear, RmsNorm, VarBuilder,
@@ -15,6 +17,15 @@ pub struct VoxtralInferenceModules {
     pub language: VoxtralLanguageBackbone,
     pub acoustic: VoxtralAcousticTransformer,
     pub codec: VoxtralAudioTokenizer,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct VoxtralModuleLoadTrace {
+    pub embeddings: Duration,
+    pub language: Duration,
+    pub acoustic: Duration,
+    pub codec: Duration,
+    pub total: Duration,
 }
 
 pub struct VoxtralMultimodalEmbeddings {
@@ -74,17 +85,47 @@ pub struct VoxtralFeedForward {
 
 impl VoxtralInferenceModules {
     pub fn load(config: &VoxtralConfig, vb: VarBuilder) -> Result<Self> {
-        let embeddings = VoxtralMultimodalEmbeddings::load(config, vb.clone())?;
-        let language = VoxtralLanguageBackbone::load(config, vb.clone())?;
-        let acoustic = VoxtralAcousticTransformer::load(config, vb.clone())?;
-        let codec = VoxtralAudioTokenizer::load(config, vb)?;
+        Ok(Self::load_with_trace(config, vb)?.0)
+    }
 
-        Ok(Self {
-            embeddings,
-            language,
-            acoustic,
-            codec,
-        })
+    pub fn load_with_trace(
+        config: &VoxtralConfig,
+        vb: VarBuilder,
+    ) -> Result<(Self, VoxtralModuleLoadTrace)> {
+        let total_start = Instant::now();
+        let embeddings_start = Instant::now();
+        let embeddings = VoxtralMultimodalEmbeddings::load(config, vb.clone())?;
+        let embeddings_load = embeddings_start.elapsed();
+
+        let language_start = Instant::now();
+        let language = VoxtralLanguageBackbone::load(config, vb.clone())?;
+        let language_load = language_start.elapsed();
+
+        let acoustic_start = Instant::now();
+        let acoustic = VoxtralAcousticTransformer::load(config, vb.clone())?;
+        let acoustic_load = acoustic_start.elapsed();
+
+        let codec_start = Instant::now();
+        let codec = VoxtralAudioTokenizer::load(config, vb)?;
+        let codec_load = codec_start.elapsed();
+
+        let trace = VoxtralModuleLoadTrace {
+            embeddings: embeddings_load,
+            language: language_load,
+            acoustic: acoustic_load,
+            codec: codec_load,
+            total: total_start.elapsed(),
+        };
+
+        Ok((
+            Self {
+                embeddings,
+                language,
+                acoustic,
+                codec,
+            },
+            trace,
+        ))
     }
 }
 
@@ -1089,7 +1130,12 @@ pub(crate) mod tests {
         let config = tiny_config();
         let vb = VarBuilder::zeros(DType::F32, &Device::Cpu);
 
-        let modules = VoxtralInferenceModules::load(&config, vb).unwrap();
+        let (modules, trace) = VoxtralInferenceModules::load_with_trace(&config, vb).unwrap();
+
+        assert!(trace.total >= trace.embeddings);
+        assert!(trace.total >= trace.language);
+        assert!(trace.total >= trace.acoustic);
+        assert!(trace.total >= trace.codec);
 
         assert_eq!(modules.embeddings.tok_embeddings.hidden_size(), 8);
         assert_eq!(modules.embeddings.audio_vocab_size, 128);

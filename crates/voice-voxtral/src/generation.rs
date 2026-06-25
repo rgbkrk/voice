@@ -74,6 +74,10 @@ pub struct VoxtralRuntimeLoadTrace {
     pub model_weight_metadata: Duration,
     pub model_weight_validate: Duration,
     pub module_load: Duration,
+    pub module_embeddings_load: Duration,
+    pub module_language_load: Duration,
+    pub module_acoustic_load: Duration,
+    pub module_codec_load: Duration,
     pub total: Duration,
 }
 
@@ -219,7 +223,7 @@ impl VoxtralTtsRuntime {
         model_trace: VoxtralModelLoadTrace,
     ) -> Result<(Self, VoxtralRuntimeLoadTrace)> {
         let module_start = Instant::now();
-        let modules = model.load_inference_modules(dtype, &device)?;
+        let (modules, module_trace) = model.load_inference_modules_with_trace(dtype, &device)?;
         let module_load = module_start.elapsed();
         let trace = VoxtralRuntimeLoadTrace {
             device_load,
@@ -231,6 +235,10 @@ impl VoxtralTtsRuntime {
             model_weight_metadata: model_trace.weight_metadata,
             model_weight_validate: model_trace.weight_validate,
             module_load,
+            module_embeddings_load: module_trace.embeddings,
+            module_language_load: module_trace.language,
+            module_acoustic_load: module_trace.acoustic,
+            module_codec_load: module_trace.codec,
             total: total_start.elapsed(),
         };
 

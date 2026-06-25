@@ -1674,7 +1674,7 @@ fn voxtral_quality_flags(
     if diagnostics.active_segment_count == 0 {
         flags.push(QualityFlag::NoActiveAudio);
     } else {
-        if diagnostics.active_segment_count > 1 {
+        if has_extra_active_segment_artifact(diagnostics) {
             flags.push(QualityFlag::ExtraActiveSegments);
         }
         if diagnostics.long_gap_count > 0 {
@@ -1691,6 +1691,14 @@ fn voxtral_quality_flags(
         }
     }
     flags
+}
+
+fn has_extra_active_segment_artifact(diagnostics: &AudioDiagnostics) -> bool {
+    diagnostics.active_segment_count > 1
+        && (diagnostics.active_segment_count > 2
+            || diagnostics.long_gap_count > 0
+            || diagnostics.leading_fragment_seconds.is_some()
+            || diagnostics.trailing_fragment_seconds.is_some())
 }
 
 fn has_irregular_spectral_flux(diagnostics: &AudioDiagnostics) -> bool {
@@ -2978,6 +2986,24 @@ mod tests {
             format_quality_flags(&[QualityFlag::WordError, QualityFlag::DidNotEnd]),
             "word_error,did_not_end"
         );
+    }
+
+    #[test]
+    fn voxtral_quality_flags_allow_single_short_internal_phrase_pause() {
+        let sample_rate = 1_000;
+        let mut samples = Vec::new();
+        samples.extend(tone_samples(sample_rate, 0.70, 0.5));
+        samples.extend(silence_samples(sample_rate, 0.15));
+        samples.extend(tone_samples(sample_rate, 0.80, 0.5));
+        let diagnostics = analyze_audio(&samples, sample_rate);
+
+        assert_eq!(diagnostics.active_segment_count, 2);
+        assert!(diagnostics.longest_internal_gap_seconds > 0.10);
+        assert!(diagnostics.longest_internal_gap_seconds < 0.25);
+        assert_eq!(diagnostics.long_gap_count, 0);
+        assert!(diagnostics.leading_fragment_seconds.is_none());
+        assert!(diagnostics.trailing_fragment_seconds.is_none());
+        assert_eq!(voxtral_quality_flags(0, true, &diagnostics), Vec::new());
     }
 
     #[test]

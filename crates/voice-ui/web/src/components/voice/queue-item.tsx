@@ -7,6 +7,7 @@ import { AgentAvatar } from "./agent-avatar";
 import { MessageIdentity } from "./message-identity";
 
 const stateLabels = {
+  listening: "listening",
   skipped: "skipped",
 } as const;
 
@@ -71,13 +72,18 @@ export function QueueItem({
           size="sm"
           type="button"
           variant="outline"
+          disabled={message.state === "listening"}
           onClick={(event) => {
             event.stopPropagation();
             onSelect();
           }}
         >
           {isConverse ? <MessageCircle size={14} /> : <Play size={14} />}
-          {isConverse ? "Respond" : "Play"}
+          {message.state === "listening"
+            ? "Listening"
+            : isConverse
+              ? "Respond"
+              : "Play"}
         </Button>
       </span>
     </div>

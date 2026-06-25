@@ -1,5 +1,5 @@
 export type VoiceIntent = "converse" | "play";
-export type VoiceState = "queued" | "awaiting-user" | "picked-up" | "skipped";
+export type VoiceState = "queued" | "awaiting-user" | "listening" | "picked-up" | "skipped";
 
 export interface TranscriptionSegment {
   startSecond: number;
@@ -112,8 +112,10 @@ export interface VoiceUiState {
   snapshot: UiSnapshot;
   messages: VoiceMessage[];
   currentId?: string;
+  respondingTrackId?: string;
   positionSeconds: number;
   paused: boolean;
+  durationOverrides: Record<string, number>;
 }
 
 export type DaemonItemStatus = "queued" | "processing" | "completed" | "failed";

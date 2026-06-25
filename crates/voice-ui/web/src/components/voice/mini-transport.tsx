@@ -25,6 +25,17 @@ export function MiniTransport({
   onPrevious: () => void;
   onTogglePause: () => void;
 }) {
+  const promptFinished = current.intent === "converse" && position >= current.durationSeconds;
+  const status = current.state === "listening"
+    ? "listening"
+    : promptFinished
+      ? "response needed"
+      : paused
+        ? "paused"
+        : current.intent === "converse"
+          ? "response needed"
+          : "playing";
+
   return (
     <footer
       className="fixed bottom-0 left-1/2 z-20 grid w-[calc(100%_-_2rem)] max-w-[45rem] -translate-x-1/2 grid-cols-[minmax(0,1fr)_minmax(16rem,21rem)_minmax(0,1fr)] items-center gap-4 rounded-t-lg border border-b-0 border-border bg-background/85 px-4 py-3 shadow-2xl backdrop-blur supports-[backdrop-filter]:bg-background/75 max-sm:grid-cols-1"
@@ -73,13 +84,7 @@ export function MiniTransport({
         </div>
       </div>
       <div className="relative justify-self-end text-right max-sm:hidden">
-        <strong className="block text-sm text-foreground">
-          {paused
-            ? "paused"
-            : current.intent === "converse"
-              ? "response needed"
-              : "playing"}
-        </strong>
+        <strong className="block text-sm text-foreground">{status}</strong>
         <span className="font-mono text-xs text-muted-foreground">{queueCount} waiting</span>
       </div>
     </footer>

@@ -9,13 +9,29 @@ class VoiceBridge {
   private eventSource: EventSource | null = null;
   private generation = 0;
   private readonly audio = new Audio();
+  private audioTrackId: string | null = null;
 
   constructor() {
+    this.audio.addEventListener("loadedmetadata", () => {
+      if (this.audioTrackId) {
+        voiceStore.setDuration(this.audioTrackId, this.audio.duration);
+      }
+    });
     this.audio.addEventListener("timeupdate", () => {
       voiceStore.setPosition(this.audio.currentTime);
     });
     this.audio.addEventListener("ended", () => {
-      void this.command("next");
+      const state = voiceStore.snapshot();
+      const current = state.messages.find((message) => message.id === state.currentId);
+      if (current) {
+        voiceStore.setPosition(current.durationSeconds);
+      }
+      if (current?.intent === "converse") {
+        voiceStore.setPlaybackPaused(true);
+        void this.command("pause");
+      } else {
+        void this.next();
+      }
     });
   }
 
@@ -34,7 +50,7 @@ class VoiceBridge {
   async play(trackId?: string) {
     const result = await this.command("play", trackId);
     if (result.ok) {
-      await this.playCurrentPrompt();
+      await this.playCurrentPrompt(result.trackId ?? trackId);
     }
     return result;
   }
@@ -51,7 +67,7 @@ class VoiceBridge {
   async next() {
     const result = await this.command("next");
     if (result.ok) {
-      await this.playCurrentPrompt();
+      await this.playCurrentPrompt(result.trackId);
     }
     return result;
   }
@@ -59,7 +75,7 @@ class VoiceBridge {
   async previous() {
     const result = await this.command("previous");
     if (result.ok) {
-      await this.playCurrentPrompt();
+      await this.playCurrentPrompt(result.trackId);
     }
     return result;
   }
@@ -169,9 +185,9 @@ class VoiceBridge {
     return result;
   }
 
-  private async playCurrentPrompt() {
+  private async playCurrentPrompt(trackIdOverride?: string | null) {
     const state = voiceStore.snapshot();
-    const trackId = state.currentId;
+    const trackId = trackIdOverride ?? state.currentId;
     const track = trackId ? state.snapshot.tracks[trackId] : undefined;
     const promptUrl = track?.audio.promptUrl;
     if (!promptUrl) {
@@ -181,7 +197,9 @@ class VoiceBridge {
     if (!this.audio.src.endsWith(promptUrl)) {
       this.audio.src = promptUrl;
       this.audio.currentTime = 0;
+      this.audioTrackId = trackId ?? null;
     }
+    voiceStore.setPlaybackPaused(false);
     await this.audio.play();
   }
 }

@@ -21,15 +21,26 @@ export function NowPlaying({
   onPrimaryAction: () => void;
 }) {
   const isConverse = message.intent === "converse";
+  const promptFinished = isConverse && position >= message.durationSeconds;
+  const sectionLabel = message.state === "listening"
+    ? "Listening"
+    : promptFinished
+      ? "Response needed"
+      : "Now playing";
+  const heading = message.state === "listening"
+    ? "Listening for response"
+    : promptFinished
+      ? "Waiting for your response"
+      : "Current message";
 
   return (
     <section style={{ "--agent-color": message.color } as CSSProperties}>
       <div className="mb-3 flex items-end justify-between gap-4">
         <div>
           <p className="mb-1 text-xs font-bold uppercase tracking-[0.12em] text-muted-foreground">
-            Now playing
+            {sectionLabel}
           </p>
-          <h2 className="text-lg font-semibold">Current message</h2>
+          <h2 className="text-lg font-semibold">{heading}</h2>
         </div>
       </div>
       <Card className="relative overflow-hidden bg-card/95 shadow-[0_1px_0_rgba(255,255,255,0.04)_inset,0_18px_40px_-24px_rgba(0,0,0,0.8)]">
@@ -65,12 +76,17 @@ export function NowPlaying({
           />
           <Button
             className="h-12 w-full text-base text-neutral-950"
+            disabled={message.state === "listening"}
             style={{ backgroundColor: isConverse ? "hsl(var(--voice-converse))" : "hsl(var(--voice-play))" }}
             type="button"
             onClick={onPrimaryAction}
           >
             {isConverse ? <Mic size={17} /> : <Play size={17} />}
-            {isConverse ? `Respond to ${message.agentName}` : `Play ${message.agentName}`}
+            {message.state === "listening"
+              ? "Listening..."
+              : isConverse
+                ? `Respond to ${message.agentName}`
+                : `Play ${message.agentName}`}
           </Button>
         </CardContent>
       </Card>

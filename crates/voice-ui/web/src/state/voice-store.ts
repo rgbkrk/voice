@@ -33,8 +33,10 @@ const initialState: VoiceUiState = {
   snapshot: EMPTY_SNAPSHOT,
   messages: voiceMessages,
   currentId: voiceMessages[0]?.id,
+  respondingTrackId: undefined,
   positionSeconds: voiceMessages[0]?.positionSeconds ?? 0,
   paused: true,
+  durationOverrides: {},
 };
 
 export class VoiceStore {
@@ -98,7 +100,12 @@ export class VoiceStore {
         });
         break;
       case "command_result":
-        if (!event.payload.ok) {
+        if (event.payload.ok && event.payload.command === "respond" && event.payload.trackId) {
+          this.publish({
+            ...state,
+            respondingTrackId: event.payload.trackId,
+          });
+        } else if (!event.payload.ok) {
           this.publish({ ...state, error: event.payload.message ?? "Command failed" });
         }
         break;
@@ -131,6 +138,37 @@ export class VoiceStore {
     });
   }
 
+  setPlaybackPaused(paused: boolean) {
+    const state = this.snapshot();
+    this.publish({
+      ...state,
+      paused,
+    });
+  }
+
+  setDuration(trackId: string, seconds: number) {
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      return;
+    }
+    const rounded = Math.max(1, Math.round(seconds));
+    const state = this.snapshot();
+    if (state.durationOverrides[trackId] === rounded) {
+      return;
+    }
+    this.publish({
+      ...state,
+      durationOverrides: {
+        ...state.durationOverrides,
+        [trackId]: rounded,
+      },
+      messages: state.messages.map((message) =>
+        message.id === trackId
+          ? withDuration(message, rounded)
+          : message,
+      ),
+    });
+  }
+
   private publish(state: VoiceUiState) {
     this.stateSubject.next(state);
   }
@@ -151,12 +189,23 @@ function fromSnapshot(snapshot: UiSnapshot, previous: VoiceUiState): VoiceUiStat
     connected: snapshot.connected,
     ready: snapshot.ready,
     snapshot,
-    messages,
+    messages: messages.map((message) => {
+      const duration = previous.durationOverrides[message.id];
+      const withActualDuration = duration ? withDuration(message, duration) : message;
+      return previous.respondingTrackId === message.id
+        ? { ...withActualDuration, state: "listening" }
+        : withActualDuration;
+    }),
     currentId,
+    respondingTrackId:
+      previous.respondingTrackId && snapshot.tracks[previous.respondingTrackId]
+        ? previous.respondingTrackId
+        : undefined,
     positionSeconds: sameTrack
       ? previous.positionSeconds
       : current?.positionSeconds ?? snapshot.transport.positionSeconds,
     paused: snapshot.transport.paused,
+    durationOverrides: previous.durationOverrides,
   };
 }
 
@@ -211,6 +260,14 @@ function trackToMessage(track: UiTrack): VoiceMessage {
       : [],
     durationSeconds,
     positionSeconds: 0,
+  };
+}
+
+function withDuration(message: VoiceMessage, durationSeconds: number): VoiceMessage {
+  return {
+    ...message,
+    durationSeconds,
+    transcript: transcriptForText(message.message, durationSeconds),
   };
 }
 

@@ -36,3 +36,14 @@
   - `cargo test -p voice-daemon`
 - Remaining gap: need full supporting checks after this slice.
 - Remaining gap: no live microphone manual verification yet; automated no-mic path covers HTTP snapshot/command/audio behavior.
+
+## 2026-06-24 MCP default-held slice
+
+- Added `DaemonClient::speak_with_options_held_for_ui` and `DaemonClient::converse_held_for_ui`.
+- Added protocol tests that the held helpers send `wait: false` and `ui_hold: true`.
+- MCP `speak` and `converse` now default to held UI playlist items when connected to the daemon.
+- Added `immediate: true` to MCP tool schemas to preserve old immediate daemon playback/listen behavior.
+- Passing checks:
+  - `cargo test -p voice-protocol`
+  - `cargo check -p voice`
+- Remaining gap: need full supporting checks after this slice.

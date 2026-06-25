@@ -376,14 +376,15 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
         "tools": [
             {
                 "name": "speak",
-                "description": "Speak text aloud using text-to-speech. Plays audio through the default output device.",
+                "description": "Queue text for voice playback in the daemon UI. Set immediate=true to play through the daemon now.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "text": { "type": "string", "description": "Text to speak" },
                         "voice": { "type": "string", "description": "Voice name override for this utterance" },
                         "speed": { "type": "number", "description": "Speed override for this utterance" },
-                        "markdown": { "type": "boolean", "description": "Strip markdown formatting before speaking" }
+                        "markdown": { "type": "boolean", "description": "Strip markdown formatting before speaking" },
+                        "immediate": { "type": "boolean", "description": "Play immediately instead of leaving a UI playlist item" }
                     },
                     "required": ["text"]
                 }
@@ -408,7 +409,7 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
             // },
             {
                 "name": "converse",
-                "description": "Speak text aloud, then immediately listen for a response. Combines speak and listen into a single turn-based exchange, reducing round trips.",
+                "description": "Queue a voice prompt that needs a user response in the daemon UI. Set immediate=true to speak and listen in one blocking turn.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -420,7 +421,8 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
                         "silence_timeout_ms": { "type": "number", "description": "Stop listening after this many ms of silence following speech (default: 2000)" },
                         "silence_threshold": { "type": "number", "description": "Minimum amplitude for voice activity detection (default: 0.01)" },
                         "noise_multiplier": { "type": "number", "description": "Multiplier for calibrated noise floor (default: 3.0)" },
-                        "calibration_ms": { "type": "number", "description": "Duration in ms to calibrate noise floor (default: 500)" }
+                        "calibration_ms": { "type": "number", "description": "Duration in ms to calibrate noise floor (default: 500)" },
+                        "immediate": { "type": "boolean", "description": "Speak and listen immediately instead of leaving a UI playlist item" }
                     },
                     "required": ["text"]
                 }
@@ -524,11 +526,24 @@ fn handle_tools_call(
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 let text = preprocess_for_daemon(raw, markdown, &session.subs);
-                Some(daemon.speak(
-                    &text,
-                    arguments.get("voice").and_then(|v| v.as_str()),
-                    arguments.get("speed").and_then(|v| v.as_f64()),
-                ))
+                let immediate = arguments
+                    .get("immediate")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if immediate {
+                    Some(daemon.speak(
+                        &text,
+                        arguments.get("voice").and_then(|v| v.as_str()),
+                        arguments.get("speed").and_then(|v| v.as_f64()),
+                    ))
+                } else {
+                    Some(daemon.speak_with_options_held_for_ui(
+                        &text,
+                        arguments.get("voice").and_then(|v| v.as_str()),
+                        arguments.get("speed").and_then(|v| v.as_f64()),
+                        voice_protocol::client::TtsRequestOptions::default(),
+                    ))
+                }
             }
             "listen" => {
                 Some(daemon.listen(arguments.get("max_duration_ms").and_then(|v| v.as_u64())))
@@ -540,11 +555,23 @@ fn handle_tools_call(
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 let text = preprocess_for_daemon(raw, markdown, &session.subs);
-                Some(daemon.converse_with_duration(
-                    &text,
-                    arguments.get("voice").and_then(|v| v.as_str()),
-                    arguments.get("max_duration_ms").and_then(|v| v.as_u64()),
-                ))
+                let immediate = arguments
+                    .get("immediate")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if immediate {
+                    Some(daemon.converse_with_duration(
+                        &text,
+                        arguments.get("voice").and_then(|v| v.as_str()),
+                        arguments.get("max_duration_ms").and_then(|v| v.as_u64()),
+                    ))
+                } else {
+                    Some(daemon.converse_held_for_ui(
+                        &text,
+                        arguments.get("voice").and_then(|v| v.as_str()),
+                        arguments.get("max_duration_ms").and_then(|v| v.as_u64()),
+                    ))
+                }
             }
             _ => None,
         };

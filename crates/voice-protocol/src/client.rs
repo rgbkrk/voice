@@ -146,6 +146,30 @@ impl DaemonClient {
         self.speak_with_options_and_wait(text, voice, speed, options, false)
     }
 
+    /// Convenience: add a speak request to the daemon UI playlist without
+    /// immediate daemon playback.
+    pub fn speak_with_options_held_for_ui(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        speed: Option<f64>,
+        options: TtsRequestOptions<'_>,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({
+            "text": text,
+            "wait": false,
+            "ui_hold": true,
+        });
+        if let Some(v) = voice {
+            params["voice"] = Value::String(v.to_string());
+        }
+        if let Some(s) = speed {
+            params["speed"] = serde_json::json!(s);
+        }
+        insert_tts_options(&mut params, options);
+        self.call("speak", params)
+    }
+
     /// Convenience: send a speak request and optionally wait for playback completion.
     pub fn speak_with_options_and_wait(
         &mut self,
@@ -527,6 +551,28 @@ impl DaemonClient {
         self.call_with_read_timeout("converse", params, read_timeout)
     }
 
+    /// Convenience: add a converse request to the daemon UI playlist without
+    /// speaking or opening the microphone immediately.
+    pub fn converse_held_for_ui(
+        &mut self,
+        text: &str,
+        voice: Option<&str>,
+        max_duration_ms: Option<u64>,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({
+            "text": text,
+            "wait": false,
+            "ui_hold": true,
+        });
+        if let Some(v) = voice {
+            params["voice"] = Value::String(v.to_string());
+        }
+        if let Some(ms) = max_duration_ms {
+            params["max_duration_ms"] = serde_json::json!(ms);
+        }
+        self.call("converse", params)
+    }
+
     /// Convenience: cancel all pending requests from this client.
     pub fn cancel(&mut self) -> Result<Response, String> {
         self.call("cancel", serde_json::json!({}))
@@ -773,6 +819,55 @@ mod tests {
     }
 
     #[test]
+    fn converse_held_for_ui_sends_ui_hold_without_waiting() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "voice-protocol-converse-ui-hold-test-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let frame = read_frame_sync(&mut stream).unwrap().unwrap();
+            let request = frame.json::<Request>().unwrap();
+            assert_eq!(request.method, "converse");
+            assert_eq!(request.params["text"], "question");
+            assert_eq!(request.params["max_duration_ms"], 1500);
+            assert_eq!(request.params["wait"], false);
+            assert_eq!(request.params["ui_hold"], true);
+
+            let response = Response::success(
+                Some(1.into()),
+                serde_json::json!({"queue_id": "q", "status": "held"}),
+            );
+            write_frame_sync(
+                &mut stream,
+                &Frame::response(&serde_json::to_vec(&response).unwrap()),
+            )
+            .unwrap();
+        });
+
+        let old = std::env::var(SOCKET_ENV).ok();
+        std::env::set_var(SOCKET_ENV, &path);
+
+        let mut client = DaemonClient::connect().unwrap();
+        let response = client
+            .converse_held_for_ui("question", None, Some(1500))
+            .unwrap();
+
+        assert!(response.error.is_none());
+
+        match old {
+            Some(value) => std::env::set_var(SOCKET_ENV, value),
+            None => std::env::remove_var(SOCKET_ENV),
+        }
+        let _ = std::fs::remove_file(path);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn speak_with_options_and_wait_sends_wait_true() {
         let _guard = ENV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir();
@@ -829,6 +924,52 @@ mod tests {
             )
             .unwrap();
 
+        assert!(response.error.is_none());
+
+        match old {
+            Some(value) => std::env::set_var(SOCKET_ENV, value),
+            None => std::env::remove_var(SOCKET_ENV),
+        }
+        let _ = std::fs::remove_file(path);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn speak_held_for_ui_sends_ui_hold_without_waiting() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "voice-protocol-speak-ui-hold-test-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let frame = read_frame_sync(&mut stream).unwrap().unwrap();
+            let request = frame.json::<Request>().unwrap();
+            assert_eq!(request.method, "speak");
+            assert_eq!(request.params["text"], "hello");
+            assert_eq!(request.params["wait"], false);
+            assert_eq!(request.params["ui_hold"], true);
+
+            let response = Response::success(
+                Some(1.into()),
+                serde_json::json!({"queue_id": "q", "status": "held"}),
+            );
+            write_frame_sync(
+                &mut stream,
+                &Frame::response(&serde_json::to_vec(&response).unwrap()),
+            )
+            .unwrap();
+        });
+
+        let old = std::env::var(SOCKET_ENV).ok();
+        std::env::set_var(SOCKET_ENV, &path);
+        let mut client = DaemonClient::connect().unwrap();
+        let response = client
+            .speak_with_options_held_for_ui("hello", None, None, TtsRequestOptions::default())
+            .unwrap();
         assert!(response.error.is_none());
 
         match old {

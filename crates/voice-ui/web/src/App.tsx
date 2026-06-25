@@ -17,6 +17,9 @@ export default function App() {
   const currentId = useVoiceSelector((state) => state.currentId);
   const position = useVoiceSelector((state) => state.positionSeconds);
   const paused = useVoiceSelector((state) => state.paused);
+  const connected = useVoiceSelector((state) => state.connected);
+  const ready = useVoiceSelector((state) => state.ready);
+  const error = useVoiceSelector((state) => state.error);
 
   const current = messages.find((message) => message.id === currentId) ?? messages[0];
   const queuedMessages = current
@@ -29,7 +32,9 @@ export default function App() {
         <VoiceHeader waitingCount={0} />
         <main className="mx-auto grid w-[calc(100%_-_2rem)] max-w-[45rem] gap-8">
           <section className="rounded-lg border border-border bg-card p-5 text-muted-foreground">
-            Waiting for daemon state.
+            {connected && ready
+              ? "No voice messages."
+              : error ?? "Waiting for daemon state."}
           </section>
         </main>
       </div>

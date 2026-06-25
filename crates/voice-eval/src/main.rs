@@ -220,6 +220,12 @@ struct AudioDiagnostics {
     energy_peak_rate_hz: Option<f64>,
     energy_peak_interval_mean_seconds: Option<f64>,
     energy_peak_interval_cv: Option<f64>,
+    spectral_flux_peak_count: usize,
+    spectral_flux_peak_rate_hz: Option<f64>,
+    spectral_flux_interval_mean_seconds: Option<f64>,
+    spectral_flux_interval_cv: Option<f64>,
+    spectral_flux_mean: Option<f64>,
+    spectral_flux_cv: Option<f64>,
     segments: Vec<AudioSegment>,
 }
 
@@ -328,6 +334,7 @@ enum QualityFlag {
     LongInternalGap,
     LeadingFragment,
     TrailingFragment,
+    IrregularSpectralFlux,
 }
 
 impl Serialize for QualityFlag {
@@ -349,6 +356,7 @@ impl QualityFlag {
             QualityFlag::LongInternalGap => "long_internal_gap",
             QualityFlag::LeadingFragment => "leading_fragment",
             QualityFlag::TrailingFragment => "trailing_fragment",
+            QualityFlag::IrregularSpectralFlux => "irregular_spectral_flux",
         }
     }
 }
@@ -1109,6 +1117,12 @@ fn analyze_audio(samples: &[f32], sample_rate: u32) -> AudioDiagnostics {
             energy_peak_rate_hz: None,
             energy_peak_interval_mean_seconds: None,
             energy_peak_interval_cv: None,
+            spectral_flux_peak_count: 0,
+            spectral_flux_peak_rate_hz: None,
+            spectral_flux_interval_mean_seconds: None,
+            spectral_flux_interval_cv: None,
+            spectral_flux_mean: None,
+            spectral_flux_cv: None,
             segments: Vec::new(),
         };
     }
@@ -1218,6 +1232,12 @@ fn analyze_audio(samples: &[f32], sample_rate: u32) -> AudioDiagnostics {
             (segment.duration_seconds < FRAGMENT_SECONDS).then_some(segment.duration_seconds)
         });
     let rhythm = rhythm_diagnostics(&energy_frames, active_threshold_dbfs, active_span_seconds);
+    let spectral_flux = spectral_flux_diagnostics(
+        samples,
+        sample_rate,
+        active_threshold_dbfs,
+        active_span_seconds,
+    );
 
     AudioDiagnostics {
         duration_seconds,
@@ -1240,6 +1260,12 @@ fn analyze_audio(samples: &[f32], sample_rate: u32) -> AudioDiagnostics {
         energy_peak_rate_hz: rhythm.energy_peak_rate_hz,
         energy_peak_interval_mean_seconds: rhythm.energy_peak_interval_mean_seconds,
         energy_peak_interval_cv: rhythm.energy_peak_interval_cv,
+        spectral_flux_peak_count: spectral_flux.peak_count,
+        spectral_flux_peak_rate_hz: spectral_flux.peak_rate_hz,
+        spectral_flux_interval_mean_seconds: spectral_flux.interval_mean_seconds,
+        spectral_flux_interval_cv: spectral_flux.interval_cv,
+        spectral_flux_mean: spectral_flux.mean,
+        spectral_flux_cv: spectral_flux.cv,
         segments,
     }
 }
@@ -1250,6 +1276,16 @@ struct RhythmDiagnostics {
     energy_peak_rate_hz: Option<f64>,
     energy_peak_interval_mean_seconds: Option<f64>,
     energy_peak_interval_cv: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SpectralFluxDiagnostics {
+    peak_count: usize,
+    peak_rate_hz: Option<f64>,
+    interval_mean_seconds: Option<f64>,
+    interval_cv: Option<f64>,
+    mean: Option<f64>,
+    cv: Option<f64>,
 }
 
 fn rhythm_diagnostics(
@@ -1289,19 +1325,7 @@ fn rhythm_diagnostics(
         .map(|pair| pair[1].0 - pair[0].0)
         .collect::<Vec<_>>();
     let interval_mean = mean(&intervals);
-    let interval_cv = interval_mean.and_then(|mean| {
-        (mean > 0.0).then(|| {
-            let variance = intervals
-                .iter()
-                .map(|interval| {
-                    let delta = interval - mean;
-                    delta * delta
-                })
-                .sum::<f64>()
-                / intervals.len() as f64;
-            variance.sqrt() / mean
-        })
-    });
+    let interval_cv = coefficient_of_variation(&intervals);
 
     RhythmDiagnostics {
         energy_peak_count: peaks.len(),
@@ -1314,6 +1338,134 @@ fn rhythm_diagnostics(
 
 fn mean(values: &[f64]) -> Option<f64> {
     (!values.is_empty()).then_some(values.iter().sum::<f64>() / values.len() as f64)
+}
+
+fn coefficient_of_variation(values: &[f64]) -> Option<f64> {
+    let mean = mean(values)?;
+    (mean > 0.0).then(|| {
+        let variance = values
+            .iter()
+            .map(|value| {
+                let delta = value - mean;
+                delta * delta
+            })
+            .sum::<f64>()
+            / values.len() as f64;
+        variance.sqrt() / mean
+    })
+}
+
+fn spectral_flux_diagnostics(
+    samples: &[f32],
+    sample_rate: u32,
+    active_threshold_dbfs: f64,
+    active_span_seconds: f64,
+) -> SpectralFluxDiagnostics {
+    const WINDOW_SIZE: usize = 512;
+    const HOP_SIZE: usize = 128;
+    const BINS: usize = 96;
+    const MIN_PEAK_DISTANCE_SECONDS: f64 = 0.08;
+
+    if samples.is_empty() || sample_rate == 0 {
+        return SpectralFluxDiagnostics::default();
+    }
+
+    let frame_count = ((samples.len().saturating_sub(1)) / HOP_SIZE) + 1;
+    if frame_count < 3 {
+        return SpectralFluxDiagnostics::default();
+    }
+
+    let mut previous: Option<Vec<f64>> = None;
+    let mut frames = Vec::<(f64, f64, f64)>::with_capacity(frame_count);
+    for frame in 0..frame_count {
+        let start = frame * HOP_SIZE;
+        let end = (start + WINDOW_SIZE).min(samples.len());
+        let frame_rms_dbfs = dbfs_amplitude(rms_amplitude(&samples[start..end]));
+        let magnitudes = log_spectrum(samples, start, WINDOW_SIZE, BINS);
+        let Some(previous_magnitudes) = previous.as_ref() else {
+            previous = Some(magnitudes);
+            continue;
+        };
+        let flux = magnitudes
+            .iter()
+            .zip(previous_magnitudes.iter())
+            .map(|(current, previous)| (current - previous).max(0.0))
+            .sum::<f64>();
+        previous = Some(magnitudes);
+        frames.push((
+            seconds(start + (WINDOW_SIZE / 2), sample_rate),
+            flux,
+            frame_rms_dbfs,
+        ));
+    }
+
+    let active_flux = frames
+        .iter()
+        .filter(|(_, _, dbfs)| *dbfs >= active_threshold_dbfs)
+        .map(|(_, flux, _)| *flux)
+        .collect::<Vec<_>>();
+    let Some(flux_mean) = mean(&active_flux) else {
+        return SpectralFluxDiagnostics::default();
+    };
+    let flux_cv = coefficient_of_variation(&active_flux);
+    let flux_stddev = flux_cv.map(|cv| cv * flux_mean).unwrap_or(0.0);
+    let peak_threshold = flux_mean + (flux_stddev * 0.5);
+
+    let mut peaks = Vec::<(f64, f64)>::new();
+    for window in frames.windows(3) {
+        let previous = window[0];
+        let current = window[1];
+        let next = window[2];
+        let is_peak = current.2 >= active_threshold_dbfs
+            && current.1 >= peak_threshold
+            && current.1 >= previous.1
+            && current.1 > next.1;
+        if !is_peak {
+            continue;
+        }
+        if let Some(last) = peaks.last_mut() {
+            if current.0 - last.0 < MIN_PEAK_DISTANCE_SECONDS {
+                if current.1 > last.1 {
+                    *last = (current.0, current.1);
+                }
+                continue;
+            }
+        }
+        peaks.push((current.0, current.1));
+    }
+
+    let intervals = peaks
+        .windows(2)
+        .map(|pair| pair[1].0 - pair[0].0)
+        .collect::<Vec<_>>();
+
+    SpectralFluxDiagnostics {
+        peak_count: peaks.len(),
+        peak_rate_hz: (active_span_seconds > 0.0)
+            .then_some(peaks.len() as f64 / active_span_seconds),
+        interval_mean_seconds: mean(&intervals),
+        interval_cv: coefficient_of_variation(&intervals),
+        mean: Some(flux_mean),
+        cv: flux_cv,
+    }
+}
+
+fn log_spectrum(samples: &[f32], start: usize, window_size: usize, bins: usize) -> Vec<f64> {
+    let mut magnitudes = Vec::with_capacity(bins);
+    for bin in 0..bins {
+        let mut real = 0.0_f64;
+        let mut imag = 0.0_f64;
+        for n in 0..window_size {
+            let sample = samples.get(start + n).copied().unwrap_or(0.0) as f64;
+            let window = 0.5 - 0.5 * ((2.0 * PI * n as f64) / (window_size - 1) as f64).cos();
+            let angle = 2.0 * PI * bin as f64 * n as f64 / window_size as f64;
+            real += sample * window * angle.cos();
+            imag -= sample * window * angle.sin();
+        }
+        let magnitude = (real.mul_add(real, imag * imag)).sqrt();
+        magnitudes.push((magnitude + 1.0e-9).ln());
+    }
+    magnitudes
 }
 
 fn push_raw_segment(
@@ -1449,7 +1601,10 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
                 "best_eos_rank={} best_eos_margin={} ",
                 "segments={} long_gaps={} longest_gap_s={:.3} active_ratio={} ",
                 "lead_frag_s={} trail_frag_s={} energy_peaks={} energy_peak_rate_hz={} ",
-                "energy_peak_interval_s={} energy_peak_interval_cv={} spectrogram={} transcript={:?}"
+                "energy_peak_interval_s={} energy_peak_interval_cv={} ",
+                "spectral_flux_peaks={} spectral_flux_rate_hz={} spectral_flux_interval_s={} ",
+                "spectral_flux_interval_cv={} spectral_flux_mean={} spectral_flux_cv={} ",
+                "spectrogram={} transcript={:?}"
             ),
             row.text_index,
             row.voice,
@@ -1492,6 +1647,12 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
             format_optional_f64(row.audio_diagnostics.energy_peak_rate_hz),
             format_optional_f64(row.audio_diagnostics.energy_peak_interval_mean_seconds),
             format_optional_f64(row.audio_diagnostics.energy_peak_interval_cv),
+            row.audio_diagnostics.spectral_flux_peak_count,
+            format_optional_f64(row.audio_diagnostics.spectral_flux_peak_rate_hz),
+            format_optional_f64(row.audio_diagnostics.spectral_flux_interval_mean_seconds),
+            format_optional_f64(row.audio_diagnostics.spectral_flux_interval_cv),
+            format_optional_f64(row.audio_diagnostics.spectral_flux_mean),
+            format_optional_f64(row.audio_diagnostics.spectral_flux_cv),
             format_optional_path(row.spectrogram_pgm.as_ref()),
             row.transcription
         );
@@ -1525,8 +1686,25 @@ fn voxtral_quality_flags(
         if diagnostics.trailing_fragment_seconds.is_some() {
             flags.push(QualityFlag::TrailingFragment);
         }
+        if has_irregular_spectral_flux(diagnostics) {
+            flags.push(QualityFlag::IrregularSpectralFlux);
+        }
     }
     flags
+}
+
+fn has_irregular_spectral_flux(diagnostics: &AudioDiagnostics) -> bool {
+    const MIN_PEAKS: usize = 8;
+    const MIN_INTERVAL_CV: f64 = 0.55;
+    const MIN_FLUX_CV: f64 = 0.60;
+
+    diagnostics.spectral_flux_peak_count >= MIN_PEAKS
+        && diagnostics
+            .spectral_flux_interval_cv
+            .is_some_and(|cv| cv >= MIN_INTERVAL_CV)
+        && diagnostics
+            .spectral_flux_cv
+            .is_some_and(|cv| cv >= MIN_FLUX_CV)
 }
 
 #[derive(Debug, Default)]
@@ -1674,6 +1852,7 @@ fn artifact_quality_flags(flags: &[QualityFlag]) -> bool {
                 | QualityFlag::LongInternalGap
                 | QualityFlag::LeadingFragment
                 | QualityFlag::TrailingFragment
+                | QualityFlag::IrregularSpectralFlux
         )
     })
 }
@@ -1830,7 +2009,9 @@ fn print_text_report(report: &EvalReport) {
             "segments={} active_ratio={} long_gaps={} longest_gap_s={:.3} ",
             "first_active_s={} leading_silence_s={:.3} trailing_silence_s={:.3} ",
             "lead_frag_s={} trail_frag_s={} energy_peaks={} energy_peak_rate_hz={} ",
-            "energy_peak_interval_s={} energy_peak_interval_cv={}"
+            "energy_peak_interval_s={} energy_peak_interval_cv={} ",
+            "spectral_flux_peaks={} spectral_flux_rate_hz={} spectral_flux_interval_s={} ",
+            "spectral_flux_interval_cv={} spectral_flux_mean={} spectral_flux_cv={}"
         ),
         report.audio_diagnostics.peak_dbfs,
         report.audio_diagnostics.rms_dbfs,
@@ -1847,7 +2028,13 @@ fn print_text_report(report: &EvalReport) {
         report.audio_diagnostics.energy_peak_count,
         format_optional_f64(report.audio_diagnostics.energy_peak_rate_hz),
         format_optional_f64(report.audio_diagnostics.energy_peak_interval_mean_seconds),
-        format_optional_f64(report.audio_diagnostics.energy_peak_interval_cv)
+        format_optional_f64(report.audio_diagnostics.energy_peak_interval_cv),
+        report.audio_diagnostics.spectral_flux_peak_count,
+        format_optional_f64(report.audio_diagnostics.spectral_flux_peak_rate_hz),
+        format_optional_f64(report.audio_diagnostics.spectral_flux_interval_mean_seconds),
+        format_optional_f64(report.audio_diagnostics.spectral_flux_interval_cv),
+        format_optional_f64(report.audio_diagnostics.spectral_flux_mean),
+        format_optional_f64(report.audio_diagnostics.spectral_flux_cv)
     );
     println!(
         "stt: {} ({} Hz) using {}",
@@ -2677,6 +2864,27 @@ mod tests {
     }
 
     #[test]
+    fn audio_diagnostics_report_spectral_flux_onsets() {
+        let sample_rate = 8_000;
+        let mut samples = Vec::new();
+        for _ in 0..6 {
+            samples.extend(tone_samples(sample_rate, 0.08, 0.5));
+            samples.extend(silence_samples(sample_rate, 0.12));
+        }
+        let diagnostics = analyze_audio(&samples, sample_rate);
+
+        assert!(diagnostics.spectral_flux_peak_count >= 4);
+        assert!(diagnostics.spectral_flux_peak_rate_hz.unwrap_or(0.0) > 2.0);
+        assert!(
+            diagnostics
+                .spectral_flux_interval_mean_seconds
+                .unwrap_or(0.0)
+                > 0.05
+        );
+        assert!(diagnostics.spectral_flux_mean.unwrap_or(0.0) > 0.0);
+    }
+
+    #[test]
     fn voxtral_quality_flags_keep_clean_rows_unflagged() {
         let sample_rate = 1_000;
         let diagnostics = analyze_audio(&tone_samples(sample_rate, 1.0, 0.5), sample_rate);
@@ -2719,6 +2927,19 @@ mod tests {
                 QualityFlag::LeadingFragment,
                 QualityFlag::TrailingFragment
             ]
+        );
+    }
+
+    #[test]
+    fn voxtral_quality_flags_mark_irregular_spectral_flux() {
+        let mut diagnostics = audio_diagnostics_for_test();
+        diagnostics.spectral_flux_peak_count = 12;
+        diagnostics.spectral_flux_interval_cv = Some(0.70);
+        diagnostics.spectral_flux_cv = Some(0.80);
+
+        assert_eq!(
+            voxtral_quality_flags(0, true, &diagnostics),
+            vec![QualityFlag::IrregularSpectralFlux]
         );
     }
 
@@ -3003,6 +3224,12 @@ mod tests {
             energy_peak_rate_hz: None,
             energy_peak_interval_mean_seconds: None,
             energy_peak_interval_cv: None,
+            spectral_flux_peak_count: 0,
+            spectral_flux_peak_rate_hz: None,
+            spectral_flux_interval_mean_seconds: None,
+            spectral_flux_interval_cv: None,
+            spectral_flux_mean: None,
+            spectral_flux_cv: None,
             segments: vec![AudioSegment {
                 start_seconds: 0.0,
                 end_seconds: 1.0,

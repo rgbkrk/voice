@@ -72,6 +72,10 @@ struct Args {
     #[arg(long = "time-token-equivalence")]
     time_token_equivalence: bool,
 
+    /// Treat listed normalized words as the same canonical word for WER.
+    #[arg(long = "word-equivalence", value_name = "CANONICAL=VARIANT[,VARIANT]")]
+    word_equivalences: Vec<String>,
+
     /// Speech speed factor.
     #[arg(short, long, default_value_t = 1.0)]
     speed: f32,
@@ -253,6 +257,7 @@ struct EvalReport {
     phoneme_chunks: Vec<String>,
     transcription: String,
     time_token_equivalence: bool,
+    word_equivalences: Vec<String>,
     normalized_reference: String,
     normalized_hypothesis: String,
     reference_word_count: usize,
@@ -288,6 +293,7 @@ struct VoxtralMatrixReport {
     eos_guard_max_rank: usize,
     eos_guard_max_margin: f32,
     time_token_equivalence: bool,
+    word_equivalences: Vec<String>,
     seed: u64,
     output_dir: Option<PathBuf>,
     spectrogram_dir: Option<PathBuf>,
@@ -421,6 +427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_voxtral_matrix(&args);
     }
 
+    let wer_options = wer_options(&args)?;
     let tts_model_path = tts_model_path(&args);
     let tts_voice = tts_voice(&args);
     if args.input_wav.is_some() && args.synthesis_text.is_some() {
@@ -490,8 +497,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stt_model.set_max_new_tokens(max_new_tokens);
     }
     let transcription = stt_model.transcribe_audio(&samples, sample_rate)?;
-    let wer =
-        word_error_rate_with_options(&reference_text, &transcription.text, wer_options(&args));
+    let wer = word_error_rate_with_options(&reference_text, &transcription.text, wer_options);
     let duration_seconds = if sample_rate == 0 {
         0.0
     } else {
@@ -523,6 +529,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         phoneme_chunks,
         transcription: transcription.text,
         time_token_equivalence: args.time_token_equivalence,
+        word_equivalences: args.word_equivalences.clone(),
         normalized_reference: wer.reference_words.join(" "),
         normalized_hypothesis: wer.hypothesis_words.join(" "),
         reference_word_count: wer.reference_words.len(),
@@ -586,6 +593,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     let matrix_voices = matrix_voices(args)?;
     let matrix_speeds = matrix_speeds(args)?;
+    let wer_options = wer_options(args)?;
     if args.voxtral_stream_begin_frames == 0 {
         return Err("--voxtral-stream-begin-frames must be greater than zero".into());
     }
@@ -679,7 +687,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                         let wer = word_error_rate_with_options(
                             &case.reference_text,
                             &transcription.text,
-                            wer_options(args),
+                            wer_options.clone(),
                         );
                         let audio_diagnostics = analyze_audio(&samples, audio.sample_rate);
                         let total_ms = duration_ms(total);
@@ -783,6 +791,7 @@ fn run_voxtral_matrix(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         eos_guard_max_rank: args.voxtral_eos_guard_rank,
         eos_guard_max_margin: args.voxtral_eos_guard_margin,
         time_token_equivalence: args.time_token_equivalence,
+        word_equivalences: args.word_equivalences.clone(),
         seed: args.seed,
         output_dir: args.output_dir.clone(),
         spectrogram_dir: args.spectrogram_dir.clone(),
@@ -1540,7 +1549,7 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
         report.quality_summary.transcript_correct_artifact_rows
     );
     println!(
-        "voxtral_matrix.voices={:?} speeds={:?} max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} pronunciation_aliases={} auto_max_frames={} eos_scores={} eos_guard_frames={} eos_guard_max_rank={} eos_guard_max_margin={:.3} time_token_equivalence={}",
+        "voxtral_matrix.voices={:?} speeds={:?} max_frames={:?} flow_steps={:?} stream_begin_frames={} kv_cache={} sync_trace={} text_normalization={} pronunciation_aliases={} auto_max_frames={} eos_scores={} eos_guard_frames={} eos_guard_max_rank={} eos_guard_max_margin={:.3} time_token_equivalence={} word_equivalences={:?}",
         report.matrix_voices,
         report.matrix_speeds,
         report.matrix_max_frames,
@@ -1555,7 +1564,8 @@ fn print_voxtral_matrix_report(report: &VoxtralMatrixReport) {
         report.eos_guard_frames,
         report.eos_guard_max_rank,
         report.eos_guard_max_margin,
-        report.time_token_equivalence
+        report.time_token_equivalence,
+        report.word_equivalences
     );
     if let Some(output_dir) = &report.output_dir {
         println!("voxtral_matrix.output_dir={}", output_dir.display());
@@ -1995,6 +2005,9 @@ fn print_text_report(report: &EvalReport) {
     if report.time_token_equivalence {
         println!("time token equivalence: enabled");
     }
+    if !report.word_equivalences.is_empty() {
+        println!("word equivalences: {:?}", report.word_equivalences);
+    }
     println!("hypothesis: {}", report.transcription);
     println!("normalized reference: {}", report.normalized_reference);
     println!("normalized hypothesis: {}", report.normalized_hypothesis);
@@ -2067,15 +2080,63 @@ struct Wer {
     rate: Option<f32>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct WerOptions {
     time_token_equivalence: bool,
+    word_equivalences: Vec<WordEquivalence>,
 }
 
-fn wer_options(args: &Args) -> WerOptions {
-    WerOptions {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WordEquivalence {
+    canonical: String,
+    variants: Vec<String>,
+}
+
+fn wer_options(args: &Args) -> Result<WerOptions, Box<dyn std::error::Error>> {
+    Ok(WerOptions {
         time_token_equivalence: args.time_token_equivalence,
+        word_equivalences: parse_word_equivalences(&args.word_equivalences)?,
+    })
+}
+
+fn parse_word_equivalences(
+    raw_equivalences: &[String],
+) -> Result<Vec<WordEquivalence>, Box<dyn std::error::Error>> {
+    let mut equivalences = Vec::with_capacity(raw_equivalences.len());
+    for raw in raw_equivalences {
+        let (canonical_raw, variants_raw) = raw.split_once('=').ok_or_else(|| {
+            format!("--word-equivalence must be CANONICAL=VARIANT[,VARIANT], got {raw:?}")
+        })?;
+        let canonical =
+            parse_single_equivalence_word(canonical_raw, "--word-equivalence canonical")?;
+        let variants = variants_raw
+            .split(',')
+            .map(str::trim)
+            .filter(|variant| !variant.is_empty())
+            .map(|variant| parse_single_equivalence_word(variant, "--word-equivalence variant"))
+            .collect::<Result<Vec<_>, _>>()?;
+        if variants.is_empty() {
+            return Err(
+                format!("--word-equivalence {raw:?} must include at least one variant").into(),
+            );
+        }
+        equivalences.push(WordEquivalence {
+            canonical,
+            variants,
+        });
     }
+    Ok(equivalences)
+}
+
+fn parse_single_equivalence_word(
+    raw: &str,
+    label: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let words = normalize_words(raw);
+    if words.len() != 1 {
+        return Err(format!("{label} must normalize to exactly one word, got {raw:?}").into());
+    }
+    Ok(words[0].clone())
 }
 
 #[cfg(test)]
@@ -2084,7 +2145,7 @@ fn word_error_rate(reference: &str, hypothesis: &str) -> Wer {
 }
 
 fn word_error_rate_with_options(reference: &str, hypothesis: &str, options: WerOptions) -> Wer {
-    let reference_words = normalize_words_with_options(reference, options);
+    let reference_words = normalize_words_with_options(reference, options.clone());
     let hypothesis_words = normalize_words_with_options(hypothesis, options);
     let distance = levenshtein_words(&reference_words, &hypothesis_words);
     let rate = if reference_words.is_empty() {
@@ -2101,7 +2162,6 @@ fn word_error_rate_with_options(reference: &str, hypothesis: &str, options: WerO
     }
 }
 
-#[cfg(test)]
 fn normalize_words(text: &str) -> Vec<String> {
     normalize_words_with_options(text, WerOptions::default())
 }
@@ -2120,6 +2180,7 @@ fn normalize_words_with_options(text: &str, options: WerOptions) -> Vec<String> 
         .map(str::to_string)
         .collect::<Vec<_>>();
     let words = normalize_known_compound_tokens(words);
+    let words = normalize_word_equivalences(words, &options.word_equivalences);
     if options.time_token_equivalence {
         normalize_time_tokens(words)
     } else {
@@ -2142,6 +2203,25 @@ fn normalize_known_compound_tokens(words: Vec<String>) -> Vec<String> {
         }
     }
     normalized
+}
+
+fn normalize_word_equivalences(
+    words: Vec<String>,
+    equivalences: &[WordEquivalence],
+) -> Vec<String> {
+    if equivalences.is_empty() {
+        return words;
+    }
+    words
+        .into_iter()
+        .map(|word| {
+            equivalences
+                .iter()
+                .find(|equivalence| equivalence.variants.iter().any(|variant| variant == &word))
+                .map(|equivalence| equivalence.canonical.clone())
+                .unwrap_or(word)
+        })
+        .collect()
 }
 
 fn normalize_time_tokens(words: Vec<String>) -> Vec<String> {
@@ -2280,6 +2360,79 @@ mod tests {
     }
 
     #[test]
+    fn parses_word_equivalence_options() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--word-equivalence",
+            "Voxtral=Voxtrell,Voxtrall",
+        ])
+        .unwrap();
+        let options = wer_options(&args).unwrap();
+
+        assert_eq!(
+            options.word_equivalences,
+            vec![WordEquivalence {
+                canonical: "voxtral".to_string(),
+                variants: vec!["voxtrell".to_string(), "voxtrall".to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn word_equivalence_options_are_explicit_for_eval() {
+        let default = word_error_rate(
+            "Voxtral should pronounce its own made-up name clearly.",
+            "Voxtrell should pronounce its own made-up name clearly.",
+        );
+        assert_eq!(default.distance, 1);
+
+        let equivalent = word_error_rate_with_options(
+            "Voxtral should pronounce its own made-up name clearly.",
+            "Voxtrell should pronounce its own made-up name clearly.",
+            WerOptions {
+                word_equivalences: vec![WordEquivalence {
+                    canonical: "voxtral".to_string(),
+                    variants: vec!["voxtrell".to_string()],
+                }],
+                ..Default::default()
+            },
+        );
+        assert_eq!(equivalent.distance, 0);
+        assert_eq!(
+            equivalent.reference_words,
+            vec![
+                "voxtral",
+                "should",
+                "pronounce",
+                "its",
+                "own",
+                "made",
+                "up",
+                "name",
+                "clearly"
+            ]
+        );
+        assert_eq!(equivalent.reference_words, equivalent.hypothesis_words);
+    }
+
+    #[test]
+    fn word_equivalence_rejects_multi_word_entries() {
+        let args = Args::try_parse_from(["voice-eval", "--word-equivalence", "Voxtral=Vox trell"])
+            .unwrap();
+
+        let err = wer_options(&args).unwrap_err().to_string();
+        assert!(err.contains("variant must normalize to exactly one word"));
+    }
+
+    #[test]
+    fn word_equivalence_rejects_empty_variants() {
+        let args = Args::try_parse_from(["voice-eval", "--word-equivalence", "Voxtral="]).unwrap();
+
+        let err = wer_options(&args).unwrap_err().to_string();
+        assert!(err.contains("must include at least one variant"));
+    }
+
+    #[test]
     fn time_token_equivalence_is_opt_in_for_eval() {
         let default = word_error_rate("Use API on CPU at 12:05 AM.", "Use API on CPU at 1205 a.m.");
         assert_ne!(default.distance, 0);
@@ -2297,6 +2450,7 @@ mod tests {
             "Use API on CPU at 1205 a.m.",
             WerOptions {
                 time_token_equivalence: true,
+                ..Default::default()
             },
         );
         assert_eq!(equivalent.distance, 0);
@@ -2317,6 +2471,7 @@ mod tests {
                 "Ticket 100, room 2000, agent 007, code 05.",
                 WerOptions {
                     time_token_equivalence: true,
+                    ..Default::default()
                 },
             ),
             vec!["ticket", "100", "room", "2000", "agent", "007", "code", "05"]
@@ -2330,6 +2485,7 @@ mod tests {
             "Use API on CPU at 1205 pm.",
             WerOptions {
                 time_token_equivalence: true,
+                ..Default::default()
             },
         );
         assert_eq!(equivalent.distance, 0);
@@ -2350,6 +2506,7 @@ mod tests {
             "Start at 1205 PM.",
             WerOptions {
                 time_token_equivalence: true,
+                ..Default::default()
             },
         );
         assert_eq!(equivalent.distance, 0);

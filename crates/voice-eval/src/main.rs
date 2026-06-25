@@ -2603,6 +2603,37 @@ mod tests {
     }
 
     #[test]
+    fn voxtral_quality_suite_applies_opt_in_synthesis_rewrites() {
+        let args = Args::try_parse_from([
+            "voice-eval",
+            "--tts-backend",
+            "voxtral",
+            "--voxtral-quality-suite",
+            "--voxtral-normalize-text",
+            "--voxtral-pronunciation-aliases",
+        ])
+        .unwrap();
+
+        let cases = matrix_cases(&args).unwrap();
+        assert_eq!(
+            cases[2].reference_text,
+            "Voxtral should pronounce its own made-up name clearly."
+        );
+        assert_eq!(
+            cases[2].synthesis_text,
+            "Vox trell should pronounce its own made-up name clearly."
+        );
+        assert_eq!(
+            cases[4].reference_text,
+            "Read ticket A17, version 2.4.1, at 9:30 PM."
+        );
+        assert_eq!(
+            cases[4].synthesis_text,
+            "Read ticket A seventeen, version two point four point one, at nine thirty PM."
+        );
+    }
+
+    #[test]
     fn voxtral_quality_suite_rejects_custom_matrix_texts() {
         let args = Args::try_parse_from([
             "voice-eval",

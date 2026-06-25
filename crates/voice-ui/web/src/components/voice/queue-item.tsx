@@ -1,5 +1,5 @@
 import type { CSSProperties, KeyboardEvent } from "react";
-import { MessageCircle, Play } from "lucide-react";
+import { MessageCircle, Play, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { VoiceMessage } from "@/types";
@@ -72,15 +72,20 @@ export function QueueItem({
           size="sm"
           type="button"
           variant="outline"
-          disabled={message.state === "listening"}
           onClick={(event) => {
             event.stopPropagation();
             onSelect();
           }}
         >
-          {isConverse ? <MessageCircle size={14} /> : <Play size={14} />}
+          {message.state === "listening" ? (
+            <Square size={14} />
+          ) : isConverse ? (
+            <MessageCircle size={14} />
+          ) : (
+            <Play size={14} />
+          )}
           {message.state === "listening"
-            ? "Listening"
+            ? "Stop"
             : isConverse
               ? "Respond"
               : "Play"}

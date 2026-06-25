@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,6 +25,7 @@ use voice_protocol::rpc::ItemStatus;
 struct UiServerState {
     queue: Arc<RequestQueue>,
     active_track_id: Arc<Mutex<Option<String>>>,
+    active_response_listens: Arc<Mutex<BTreeMap<String, Option<String>>>>,
     transport: Arc<Mutex<UiTransport>>,
     events: broadcast::Sender<UiEvent>,
 }
@@ -48,6 +50,7 @@ pub async fn serve(queue: Arc<RequestQueue>) {
     let state = UiServerState {
         queue,
         active_track_id: Arc::new(Mutex::new(None)),
+        active_response_listens: Arc::new(Mutex::new(BTreeMap::new())),
         transport: Arc::new(Mutex::new(UiTransport {
             state: UiTransportState::Idle,
             paused: true,
@@ -337,6 +340,10 @@ impl UiServerState {
     }
 
     async fn start_microphone_response(&self, track_id: String) {
+        self.active_response_listens
+            .lock()
+            .await
+            .insert(track_id.clone(), None);
         let state = self.clone();
         tokio::spawn(async move {
             let (listen_id, completion_rx) = state
@@ -348,10 +355,33 @@ impl UiServerState {
                     },
                 )
                 .await;
+            let still_active = {
+                let mut active_listens = state.active_response_listens.lock().await;
+                if let Some(active_listen_id) = active_listens.get_mut(&track_id) {
+                    *active_listen_id = Some(listen_id.clone());
+                    true
+                } else {
+                    false
+                }
+            };
+            if !still_active {
+                let _ = state.queue.cancel_item(&listen_id).await;
+                state.set_response_transport_idle().await;
+                state.broadcast_snapshot().await;
+                return;
+            }
             state.broadcast_snapshot().await;
 
             let finish = match completion_rx.await {
                 Ok(completion) => {
+                    if !state
+                        .take_active_response_listen(&track_id, &listen_id)
+                        .await
+                    {
+                        state.set_response_transport_idle().await;
+                        state.broadcast_snapshot().await;
+                        return;
+                    }
                     if completion.status == ItemStatus::Completed {
                         let _ = copy_answer_audio(&listen_id, &track_id).await;
                         state
@@ -366,6 +396,14 @@ impl UiServerState {
                     }
                 }
                 Err(_) => {
+                    if !state
+                        .take_active_response_listen(&track_id, &listen_id)
+                        .await
+                    {
+                        state.set_response_transport_idle().await;
+                        state.broadcast_snapshot().await;
+                        return;
+                    }
                     state
                         .queue
                         .fail_held_item(
@@ -377,14 +415,31 @@ impl UiServerState {
             };
 
             if finish {
-                *state.transport.lock().await = UiTransport {
-                    state: UiTransportState::Idle,
-                    paused: true,
-                    position_seconds: 0,
-                };
+                state.set_response_transport_idle().await;
                 state.broadcast_snapshot().await;
             }
         });
+    }
+
+    async fn take_active_response_listen(&self, track_id: &str, listen_id: &str) -> bool {
+        let mut active_listens = self.active_response_listens.lock().await;
+        let Some(Some(active_listen_id)) = active_listens.get(track_id) else {
+            return false;
+        };
+        if active_listen_id != listen_id {
+            return false;
+        }
+        active_listens.remove(track_id);
+        true
+    }
+
+    async fn set_response_transport_idle(&self) {
+        *self.active_track_id.lock().await = None;
+        *self.transport.lock().await = UiTransport {
+            state: UiTransportState::Idle,
+            paused: true,
+            position_seconds: 0,
+        };
     }
 
     async fn set_transport(
@@ -452,6 +507,23 @@ impl UiServerState {
                 message: Some("no active track".to_string()),
             };
         };
+
+        let response_listen_id = self.active_response_listens.lock().await.remove(&track_id);
+        if let Some(response_listen_id) = response_listen_id {
+            let listen_cancelled = if let Some(response_listen_id) = response_listen_id {
+                self.queue.cancel_item(&response_listen_id).await
+            } else {
+                true
+            };
+            self.set_response_transport_idle().await;
+            self.broadcast_snapshot().await;
+            return UiCommandResult {
+                command: "cancel".to_string(),
+                ok: listen_cancelled,
+                track_id: Some(track_id),
+                message: None,
+            };
+        }
 
         let ok = self.queue.cancel_item(&track_id).await;
         UiCommandResult {
@@ -550,6 +622,7 @@ mod tests {
         let state = UiServerState {
             queue: queue.clone(),
             active_track_id: Arc::new(Mutex::new(None)),
+            active_response_listens: Arc::new(Mutex::new(BTreeMap::new())),
             transport: Arc::new(Mutex::new(UiTransport {
                 state: UiTransportState::Idle,
                 paused: true,
@@ -594,6 +667,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_response_listen_keeps_visible_track_queued() {
+        let queue = Arc::new(RequestQueue::new());
+        let (event_tx, _) = broadcast::channel(8);
+        let state = UiServerState {
+            queue: queue.clone(),
+            active_track_id: Arc::new(Mutex::new(None)),
+            active_response_listens: Arc::new(Mutex::new(BTreeMap::new())),
+            transport: Arc::new(Mutex::new(UiTransport {
+                state: UiTransportState::Idle,
+                paused: true,
+                position_seconds: 0,
+            })),
+            events: event_tx,
+        };
+        let track_id = queue
+            .enqueue_ui_held(
+                "codex".to_string(),
+                VoiceRequest::Converse {
+                    text: "Should I keep listening?".to_string(),
+                    voice: None,
+                    max_duration_ms: None,
+                    options: TtsOptions::default(),
+                },
+            )
+            .await;
+        let (listen_id, completion_rx) = queue
+            .enqueue_and_wait(
+                UI_INTERNAL_CLIENT_ID.to_string(),
+                VoiceRequest::Listen {
+                    max_duration_ms: Some(1_000),
+                },
+            )
+            .await;
+        *state.active_track_id.lock().await = Some(track_id.clone());
+        *state.transport.lock().await = UiTransport {
+            state: UiTransportState::Listening,
+            paused: false,
+            position_seconds: 0,
+        };
+        state
+            .active_response_listens
+            .lock()
+            .await
+            .insert(track_id.clone(), Some(listen_id));
+
+        let result = state.cancel(Some(track_id.clone())).await;
+        assert!(result.ok, "{result:?}");
+
+        let completion = tokio::time::timeout(Duration::from_secs(1), completion_rx)
+            .await
+            .expect("listen cancellation should signal waiter")
+            .expect("listen waiter should receive cancellation");
+        assert_eq!(completion.status, ItemStatus::Failed);
+
+        let snapshot = state.snapshot().await;
+        assert_eq!(snapshot.active_track_id, None);
+        assert_eq!(snapshot.transport.state, UiTransportState::Idle);
+        assert_eq!(snapshot.queue_ids, vec![track_id.clone()]);
+        assert_eq!(
+            snapshot.tracks[&track_id].lifecycle,
+            crate::ui_state::UiLifecycle::Queued
+        );
+    }
+
+    #[tokio::test]
     async fn http_snapshot_command_and_audio_round_trip_without_microphone() {
         let _guard = ENV_LOCK.lock().unwrap();
         let audio_dir = std::env::temp_dir().join(format!(
@@ -611,6 +749,7 @@ mod tests {
         let state = UiServerState {
             queue: queue.clone(),
             active_track_id: Arc::new(Mutex::new(None)),
+            active_response_listens: Arc::new(Mutex::new(BTreeMap::new())),
             transport: Arc::new(Mutex::new(UiTransport {
                 state: UiTransportState::Idle,
                 paused: true,

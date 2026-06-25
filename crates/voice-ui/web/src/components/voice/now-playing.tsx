@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { Mic, Play } from "lucide-react";
+import { Mic, Play, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
@@ -76,14 +76,19 @@ export function NowPlaying({
           />
           <Button
             className="h-12 w-full text-base text-neutral-950"
-            disabled={message.state === "listening"}
             style={{ backgroundColor: isConverse ? "hsl(var(--voice-converse))" : "hsl(var(--voice-play))" }}
             type="button"
             onClick={onPrimaryAction}
           >
-            {isConverse ? <Mic size={17} /> : <Play size={17} />}
+            {message.state === "listening" ? (
+              <Square size={17} />
+            ) : isConverse ? (
+              <Mic size={17} />
+            ) : (
+              <Play size={17} />
+            )}
             {message.state === "listening"
-              ? "Listening..."
+              ? "Stop listening"
               : isConverse
                 ? `Respond to ${message.agentName}`
                 : `Play ${message.agentName}`}

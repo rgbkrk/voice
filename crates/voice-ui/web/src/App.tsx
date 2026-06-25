@@ -74,6 +74,10 @@ export default function App() {
 }
 
 function activate(message: VoiceMessage) {
+  if (message.state === "listening") {
+    return voiceActions.cancel(message.id);
+  }
+
   return message.intent === "converse"
     ? voiceActions.respond(message.id)
     : voiceActions.play(message.id);

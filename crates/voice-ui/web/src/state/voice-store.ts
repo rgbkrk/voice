@@ -105,6 +105,14 @@ export class VoiceStore {
             ...state,
             respondingTrackId: event.payload.trackId,
           });
+        } else if (event.payload.ok && event.payload.command === "cancel") {
+          this.publish({
+            ...state,
+            respondingTrackId:
+              event.payload.trackId && state.respondingTrackId === event.payload.trackId
+                ? undefined
+                : state.respondingTrackId,
+          });
         } else if (!event.payload.ok) {
           this.publish({ ...state, error: event.payload.message ?? "Command failed" });
         }

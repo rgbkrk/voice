@@ -80,7 +80,10 @@ class VoxtralColdStartStabilityVerifierTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(prompts[: len(self.script.DEFAULT_SUITE_TEXTS)], self.script.DEFAULT_SUITE_TEXTS)
+        self.assertEqual(
+            prompts[: len(self.script.DEFAULT_SUITE_TEXTS)],
+            self.script.DEFAULT_SUITE_TEXTS,
+        )
         self.assertEqual(prompts[-3:], ["from file", "first explicit", "second explicit"])
 
     def test_shape_and_failure_counters_are_prompt_aware(self):
@@ -114,6 +117,21 @@ class VoxtralColdStartStabilityVerifierTests(unittest.TestCase):
         )
         self.assertEqual(self.script.did_not_end_count(rows), 2)
         self.assertEqual(self.script.frame_cap_hit_count(rows), 1)
+
+    def test_bench_command_can_enable_auto_max_frames(self):
+        command = self.script.bench_command(
+            Path("/tmp/voice"),
+            argparse.Namespace(
+                voice="casual_male",
+                speed=1.2,
+                auto_max_frames=True,
+            ),
+            Path("/tmp/out"),
+            "hello world",
+        )
+
+        self.assertIn("--voxtral-auto-max-frames", command)
+        self.assertEqual(command[-1], "hello world")
 
     def test_prompt_slug_is_stable_and_has_fallback(self):
         self.assertEqual(

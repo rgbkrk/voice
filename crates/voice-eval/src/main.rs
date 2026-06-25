@@ -3086,6 +3086,7 @@ mod tests {
         vec![0.0; (sample_rate as f64 * duration_seconds).round() as usize]
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn matrix_row_for_test(
         max_frames: usize,
         flow_steps: usize,

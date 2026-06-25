@@ -178,6 +178,8 @@ else
         ;;
       crates/voice-voxtral/*)
         add_package voice-voxtral
+        add_package voice
+        add_package voice-eval
         ;;
       crates/voice-tts/*)
         add_package voice-tts

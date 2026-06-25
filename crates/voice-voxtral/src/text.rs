@@ -7,7 +7,8 @@ pub struct VoxtralTextNormalizationOptions {
 }
 
 pub const DEFAULT_SUGGESTED_MAX_FRAMES: usize = 32;
-pub const SUGGESTED_MAX_FRAMES_CAP: usize = 64;
+pub const SUGGESTED_MAX_FRAMES_CAP: usize = 72;
+const STRONG_PAUSE_FRAME_BONUS: usize = 16;
 
 /// Normalize numeric text forms that Voxtral currently handles poorly when
 /// they are left as compact written forms.
@@ -40,11 +41,14 @@ pub fn normalize_tts_text_with_options(
 
 pub fn suggest_max_frames_for_text(text: &str) -> usize {
     let word_count = count_speech_tokens(text);
-    let raw_frames = if word_count <= 4 {
+    let mut raw_frames = if word_count <= 4 {
         DEFAULT_SUGGESTED_MAX_FRAMES
     } else {
         DEFAULT_SUGGESTED_MAX_FRAMES + (word_count - 4) * 3
     };
+    if word_count >= 6 && has_strong_pause(text) {
+        raw_frames += STRONG_PAUSE_FRAME_BONUS;
+    }
     round_up_to_multiple(raw_frames, 8)
         .clamp(DEFAULT_SUGGESTED_MAX_FRAMES, SUGGESTED_MAX_FRAMES_CAP)
 }
@@ -63,6 +67,10 @@ fn count_speech_tokens(text: &str) -> usize {
         }
     }
     count
+}
+
+fn has_strong_pause(text: &str) -> bool {
+    text.as_bytes().contains(&b';')
 }
 
 fn round_up_to_multiple(value: usize, multiple: usize) -> usize {
@@ -491,7 +499,17 @@ mod tests {
         );
         assert_eq!(
             suggest_max_frames_for_text("one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen"),
+            72
+        );
+        assert_eq!(
+            suggest_max_frames_for_text("Please pause, then continue; do not add extra words."),
             64
+        );
+        assert_eq!(
+            suggest_max_frames_for_text(
+                "The voice should stay steady across a longer reply, even when the sentence reaches the realtime frame cap."
+            ),
+            72
         );
     }
 }

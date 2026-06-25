@@ -77,6 +77,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--voice", default="casual_male")
     parser.add_argument("--speed", type=float, default=1.2)
+    parser.add_argument(
+        "--auto-max-frames",
+        action="store_true",
+        help="enable voice bench tts --voxtral-auto-max-frames",
+    )
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument(
         "--allow-shape-variants",
@@ -175,7 +180,7 @@ def bench_command(
     run_dir: Path,
     text: str,
 ) -> list[str]:
-    return [
+    command = [
         str(voice_bin),
         "bench",
         "tts",
@@ -192,11 +197,18 @@ def bench_command(
         "--voxtral-pronunciation-aliases",
         "--speed",
         str(args.speed),
-        "--output-dir",
-        str(run_dir),
-        "--json",
-        text,
     ]
+    if args.auto_max_frames:
+        command.append("--voxtral-auto-max-frames")
+    command.extend(
+        [
+            "--output-dir",
+            str(run_dir),
+            "--json",
+            text,
+        ]
+    )
+    return command
 
 
 def read_bench(stdout: str, source: str, prompt_index: int, text: str) -> dict[str, Any]:

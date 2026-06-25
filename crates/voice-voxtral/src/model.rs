@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
@@ -18,6 +19,17 @@ pub struct VoxtralModel {
     weights: Option<VoxtralWeightMetadata>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct VoxtralModelLoadTrace {
+    pub resolve_assets: Duration,
+    pub config_load: Duration,
+    pub tokenizer_load: Duration,
+    pub tokenizer_validate: Duration,
+    pub weight_metadata: Duration,
+    pub weight_validate: Duration,
+    pub total: Duration,
+}
+
 impl VoxtralModel {
     pub fn new(config: VoxtralConfig) -> Self {
         Self {
@@ -35,38 +47,86 @@ impl VoxtralModel {
     /// against `params.json`. It does not instantiate the full generation graph yet.
     pub fn load(path_or_repo: &str) -> Result<Self> {
         let resolver = VoxtralAssetResolver::new(VoxtralSource::from_path_or_repo(path_or_repo));
-        Self::load_from_resolver(&resolver)
+        Ok(Self::load_from_resolver_with_trace(&resolver)?.0)
+    }
+
+    pub fn load_with_trace(path_or_repo: &str) -> Result<(Self, VoxtralModelLoadTrace)> {
+        let resolver = VoxtralAssetResolver::new(VoxtralSource::from_path_or_repo(path_or_repo));
+        Self::load_from_resolver_with_trace(&resolver)
     }
 
     pub fn load_from_dir(dir: impl AsRef<Path>) -> Result<Self> {
         let resolver = VoxtralAssetResolver::new(VoxtralSource::Local(dir.as_ref().to_path_buf()));
-        Self::load_from_resolver(&resolver)
+        Ok(Self::load_from_resolver_with_trace(&resolver)?.0)
+    }
+
+    pub fn load_from_dir_with_trace(
+        dir: impl AsRef<Path>,
+    ) -> Result<(Self, VoxtralModelLoadTrace)> {
+        let resolver = VoxtralAssetResolver::new(VoxtralSource::Local(dir.as_ref().to_path_buf()));
+        Self::load_from_resolver_with_trace(&resolver)
     }
 
     pub fn load_from_resolver(resolver: &VoxtralAssetResolver) -> Result<Self> {
+        Ok(Self::load_from_resolver_with_trace(resolver)?.0)
+    }
+
+    pub fn load_from_resolver_with_trace(
+        resolver: &VoxtralAssetResolver,
+    ) -> Result<(Self, VoxtralModelLoadTrace)> {
+        let total_start = Instant::now();
+        let resolve_start = Instant::now();
         let assets = resolver.resolve_all()?;
+        let resolve_assets = resolve_start.elapsed();
+
+        let config_start = Instant::now();
         let config = VoxtralConfig::from_path(&assets.params_json)?;
+        let config_load = config_start.elapsed();
+
+        let tokenizer_start = Instant::now();
         let tokenizer = assets
             .tokenizer_json
             .as_ref()
             .map(VoxtralTokenizerMetadata::from_path)
             .transpose()?;
+        let tokenizer_load = tokenizer_start.elapsed();
+
+        let tokenizer_validate_start = Instant::now();
         if let Some(tokenizer) = &tokenizer {
             tokenizer.validate_for_config(&config)?;
         }
+        let tokenizer_validate = tokenizer_validate_start.elapsed();
+
         let weights_path = assets.weights.as_ref().ok_or_else(|| {
             VoxtralError::InvalidCheckpoint("missing consolidated.safetensors".to_string())
         })?;
+        let weight_metadata_start = Instant::now();
         let weights = VoxtralWeightMetadata::from_safetensors_file(weights_path)?;
+        let weight_metadata = weight_metadata_start.elapsed();
+        let weight_validate_start = Instant::now();
         weights.validate_for_config(&config)?;
+        let weight_validate = weight_validate_start.elapsed();
 
-        Ok(Self {
-            config,
-            resolver: Some(resolver.clone()),
-            assets: Some(assets),
-            tokenizer,
-            weights: Some(weights),
-        })
+        let trace = VoxtralModelLoadTrace {
+            resolve_assets,
+            config_load,
+            tokenizer_load,
+            tokenizer_validate,
+            weight_metadata,
+            weight_validate,
+            total: total_start.elapsed(),
+        };
+
+        Ok((
+            Self {
+                config,
+                resolver: Some(resolver.clone()),
+                assets: Some(assets),
+                tokenizer,
+                weights: Some(weights),
+            },
+            trace,
+        ))
     }
 
     pub fn config(&self) -> &VoxtralConfig {
@@ -157,7 +217,14 @@ mod tests {
             return;
         };
 
-        let model = VoxtralModel::load_from_dir(dir).unwrap();
+        let (model, trace) = VoxtralModel::load_from_dir_with_trace(dir).unwrap();
+        assert!(trace.total >= trace.resolve_assets);
+        assert!(trace.total >= trace.config_load);
+        assert!(trace.total >= trace.tokenizer_load);
+        assert!(trace.total >= trace.tokenizer_validate);
+        assert!(trace.total >= trace.weight_metadata);
+        assert!(trace.total >= trace.weight_validate);
+
         let assets = model.assets().unwrap();
         assert_eq!(assets.voice_embeddings.len(), 20);
         assert!(assets.voice_embeddings.contains_key("casual_male"));

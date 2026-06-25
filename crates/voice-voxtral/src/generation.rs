@@ -7,7 +7,7 @@ use candle_core::{DType, Device, Tensor};
 use crate::{
     build_prompt_embeddings, build_prompt_token_ids, load_voice_embedding, plan_codec_chunk,
     Result, VoxtralCodecChunk, VoxtralError, VoxtralInferenceModules, VoxtralModel,
-    VoxtralStreamingConfig, VoxtralTokenizerMetadata,
+    VoxtralModelLoadTrace, VoxtralStreamingConfig, VoxtralTokenizerMetadata,
 };
 
 #[derive(Debug, Clone)]
@@ -65,7 +65,14 @@ pub struct VoxtralGenerationTrace {
 
 #[derive(Debug, Clone, Default)]
 pub struct VoxtralRuntimeLoadTrace {
+    pub device_load: Duration,
     pub model_load: Duration,
+    pub model_resolve_assets: Duration,
+    pub model_config_load: Duration,
+    pub model_tokenizer_load: Duration,
+    pub model_tokenizer_validate: Duration,
+    pub model_weight_metadata: Duration,
+    pub model_weight_validate: Duration,
     pub module_load: Duration,
     pub total: Duration,
 }
@@ -107,9 +114,17 @@ impl VoxtralTtsRuntime {
     ) -> Result<(Self, VoxtralRuntimeLoadTrace)> {
         let total_start = Instant::now();
         let model_start = Instant::now();
-        let model = VoxtralModel::load(path_or_repo)?;
+        let (model, model_trace) = VoxtralModel::load_with_trace(path_or_repo)?;
         let model_load = model_start.elapsed();
-        Self::from_model_with_trace(model, dtype, device, total_start, model_load)
+        Self::from_model_with_trace(
+            model,
+            dtype,
+            device,
+            total_start,
+            Duration::ZERO,
+            model_load,
+            model_trace,
+        )
     }
 
     pub fn load_from_dir(
@@ -127,9 +142,17 @@ impl VoxtralTtsRuntime {
     ) -> Result<(Self, VoxtralRuntimeLoadTrace)> {
         let total_start = Instant::now();
         let model_start = Instant::now();
-        let model = VoxtralModel::load_from_dir(dir)?;
+        let (model, model_trace) = VoxtralModel::load_from_dir_with_trace(dir)?;
         let model_load = model_start.elapsed();
-        Self::from_model_with_trace(model, dtype, device, total_start, model_load)
+        Self::from_model_with_trace(
+            model,
+            dtype,
+            device,
+            total_start,
+            Duration::ZERO,
+            model_load,
+            model_trace,
+        )
     }
 
     pub fn load_default(path_or_repo: &str) -> Result<Self> {
@@ -139,14 +162,51 @@ impl VoxtralTtsRuntime {
     pub fn load_default_with_trace(path_or_repo: &str) -> Result<(Self, VoxtralRuntimeLoadTrace)> {
         #[cfg(target_os = "macos")]
         {
+            let total_start = Instant::now();
+            let device_start = Instant::now();
             let device = Device::new_metal(0).map_err(|e| VoxtralError::Candle(e.to_string()))?;
-            Self::load_with_trace(path_or_repo, DType::F16, device)
+            let device_load = device_start.elapsed();
+            Self::load_with_trace_after_device(
+                path_or_repo,
+                DType::F16,
+                device,
+                total_start,
+                device_load,
+            )
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            Self::load_with_trace(path_or_repo, DType::F32, Device::Cpu)
+            let total_start = Instant::now();
+            Self::load_with_trace_after_device(
+                path_or_repo,
+                DType::F32,
+                Device::Cpu,
+                total_start,
+                Duration::ZERO,
+            )
         }
+    }
+
+    fn load_with_trace_after_device(
+        path_or_repo: &str,
+        dtype: DType,
+        device: Device,
+        total_start: Instant,
+        device_load: Duration,
+    ) -> Result<(Self, VoxtralRuntimeLoadTrace)> {
+        let model_start = Instant::now();
+        let (model, model_trace) = VoxtralModel::load_with_trace(path_or_repo)?;
+        let model_load = model_start.elapsed();
+        Self::from_model_with_trace(
+            model,
+            dtype,
+            device,
+            total_start,
+            device_load,
+            model_load,
+            model_trace,
+        )
     }
 
     fn from_model_with_trace(
@@ -154,13 +214,22 @@ impl VoxtralTtsRuntime {
         dtype: DType,
         device: Device,
         total_start: Instant,
+        device_load: Duration,
         model_load: Duration,
+        model_trace: VoxtralModelLoadTrace,
     ) -> Result<(Self, VoxtralRuntimeLoadTrace)> {
         let module_start = Instant::now();
         let modules = model.load_inference_modules(dtype, &device)?;
         let module_load = module_start.elapsed();
         let trace = VoxtralRuntimeLoadTrace {
+            device_load,
             model_load,
+            model_resolve_assets: model_trace.resolve_assets,
+            model_config_load: model_trace.config_load,
+            model_tokenizer_load: model_trace.tokenizer_load,
+            model_tokenizer_validate: model_trace.tokenizer_validate,
+            model_weight_metadata: model_trace.weight_metadata,
+            model_weight_validate: model_trace.weight_validate,
             module_load,
             total: total_start.elapsed(),
         };

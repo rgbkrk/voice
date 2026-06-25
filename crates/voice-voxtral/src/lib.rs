@@ -40,7 +40,7 @@ pub use generation::{
     VoxtralGeneratedAudio, VoxtralGeneratedAudioChunk, VoxtralGenerationOptions,
     VoxtralGenerationTrace, VoxtralRuntimeLoadTrace, VoxtralTtsRuntime,
 };
-pub use model::VoxtralModel;
+pub use model::{VoxtralModel, VoxtralModelLoadTrace};
 pub use prompt::{
     build_prompt_embeddings, build_prompt_token_ids, VoxtralPrompt,
     VOXTRAL_NEXT_AUDIO_TEXT_TOKEN_ID, VOXTRAL_REPEAT_AUDIO_TEXT_TOKEN_ID,

@@ -1722,6 +1722,14 @@ struct TtsBenchEngineReport {
     voice: String,
     model: String,
     model_load_ms: f64,
+    device_load_ms: Option<f64>,
+    model_resolve_assets_ms: Option<f64>,
+    model_config_load_ms: Option<f64>,
+    model_tokenizer_load_ms: Option<f64>,
+    model_tokenizer_validate_ms: Option<f64>,
+    model_weight_metadata_ms: Option<f64>,
+    model_weight_validate_ms: Option<f64>,
+    module_load_ms: Option<f64>,
     cold_first_audio_ms: f64,
     cold_total_ms: f64,
     runs: Vec<TtsBenchRunReport>,
@@ -1974,6 +1982,14 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
         voice: args.kokoro_voice.clone(),
         model: MODEL_REPO.to_string(),
         model_load_ms: duration_ms(model_load),
+        device_load_ms: None,
+        model_resolve_assets_ms: None,
+        model_config_load_ms: None,
+        model_tokenizer_load_ms: None,
+        model_tokenizer_validate_ms: None,
+        model_weight_metadata_ms: None,
+        model_weight_validate_ms: None,
+        module_load_ms: None,
         cold_first_audio_ms: duration_ms(cold_first_audio_ms),
         cold_total_ms: duration_ms(cold_total_ms),
         runs,
@@ -2099,6 +2115,14 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         voice: args.voxtral_voice.clone(),
         model: args.voxtral_model.clone(),
         model_load_ms: duration_ms(load_trace.total),
+        device_load_ms: Some(duration_ms(load_trace.device_load)),
+        model_resolve_assets_ms: Some(duration_ms(load_trace.model_resolve_assets)),
+        model_config_load_ms: Some(duration_ms(load_trace.model_config_load)),
+        model_tokenizer_load_ms: Some(duration_ms(load_trace.model_tokenizer_load)),
+        model_tokenizer_validate_ms: Some(duration_ms(load_trace.model_tokenizer_validate)),
+        model_weight_metadata_ms: Some(duration_ms(load_trace.model_weight_metadata)),
+        model_weight_validate_ms: Some(duration_ms(load_trace.model_weight_validate)),
+        module_load_ms: Some(duration_ms(load_trace.module_load)),
         cold_first_audio_ms: duration_ms(cold_first_audio_ms),
         cold_total_ms: duration_ms(cold_total_ms),
         runs,
@@ -2306,6 +2330,14 @@ fn bench_daemon_tts(
         voice: voice.to_string(),
         model,
         model_load_ms: 0.0,
+        device_load_ms: None,
+        model_resolve_assets_ms: None,
+        model_config_load_ms: None,
+        model_tokenizer_load_ms: None,
+        model_tokenizer_validate_ms: None,
+        model_weight_metadata_ms: None,
+        model_weight_validate_ms: None,
+        module_load_ms: None,
         cold_first_audio_ms,
         cold_total_ms,
         runs,
@@ -2480,6 +2512,12 @@ fn per_unit(total_ms: f64, units: usize) -> Option<f64> {
     (units > 0).then_some(total_ms / units as f64)
 }
 
+fn format_optional_ms(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.1}"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
 fn print_tts_bench_report(report: &TtsBenchReport) {
     println!("tts_bench.text={}", report.text);
     println!("tts_bench.mode={}", report.mode);
@@ -2490,12 +2528,20 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
     }
     for engine in &report.engines {
         println!(
-            "tts_bench.engine={} voice={} model_load_ms={:.1} cold_first_audio_ms={:.1} cold_total_ms={:.1} model={}",
+            "tts_bench.engine={} voice={} model_load_ms={:.1} cold_first_audio_ms={:.1} cold_total_ms={:.1} device_load_ms={} model_resolve_assets_ms={} model_config_load_ms={} model_tokenizer_load_ms={} model_tokenizer_validate_ms={} model_weight_metadata_ms={} model_weight_validate_ms={} module_load_ms={} model={}",
             engine.engine,
             engine.voice,
             engine.model_load_ms,
             engine.cold_first_audio_ms,
             engine.cold_total_ms,
+            format_optional_ms(engine.device_load_ms),
+            format_optional_ms(engine.model_resolve_assets_ms),
+            format_optional_ms(engine.model_config_load_ms),
+            format_optional_ms(engine.model_tokenizer_load_ms),
+            format_optional_ms(engine.model_tokenizer_validate_ms),
+            format_optional_ms(engine.model_weight_metadata_ms),
+            format_optional_ms(engine.model_weight_validate_ms),
+            format_optional_ms(engine.module_load_ms),
             engine.model
         );
         for run in &engine.runs {
@@ -2507,9 +2553,7 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
                 run.total_ms,
                 run.synth_ms,
                 run.audio_duration_ms,
-                run.model_audio_duration_ms
-                    .map(|value| format!("{value:.1}"))
-                    .unwrap_or_else(|| "-".to_string()),
+                format_optional_ms(run.model_audio_duration_ms),
                 run.realtime_factor
                     .map(|value| format!("{value:.3}"))
                     .unwrap_or_else(|| "-".to_string()),
@@ -2522,12 +2566,8 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
                 run.first_audio_model_realtime_factor
                     .map(|value| format!("{value:.3}"))
                     .unwrap_or_else(|| "-".to_string()),
-                run.phoneme_ms
-                    .map(|value| format!("{value:.1}"))
-                    .unwrap_or_else(|| "-".to_string()),
-                run.first_code_frame_ms
-                    .map(|value| format!("{value:.1}"))
-                    .unwrap_or_else(|| "-".to_string()),
+                format_optional_ms(run.phoneme_ms),
+                format_optional_ms(run.first_code_frame_ms),
                 run.voxtral_realtime
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
@@ -2552,32 +2592,18 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
                 run.voxtral_codec_chunks_per_second
                     .map(|value| format!("{value:.2}"))
                     .unwrap_or_else(|| "-".to_string()),
-                run.voxtral_language_ms_per_frame
-                    .map(|value| format!("{value:.1}"))
-                    .unwrap_or_else(|| "-".to_string()),
-                run.voxtral_acoustic_ms_per_frame
-                    .map(|value| format!("{value:.1}"))
-                    .unwrap_or_else(|| "-".to_string()),
-                run.voxtral_decode_loop_ms_per_frame
-                    .map(|value| format!("{value:.1}"))
-                    .unwrap_or_else(|| "-".to_string()),
-                run.voxtral_codec_ms_per_chunk
-                    .map(|value| format!("{value:.1}"))
-                    .unwrap_or_else(|| "-".to_string()),
+                format_optional_ms(run.voxtral_language_ms_per_frame),
+                format_optional_ms(run.voxtral_acoustic_ms_per_frame),
+                format_optional_ms(run.voxtral_decode_loop_ms_per_frame),
+                format_optional_ms(run.voxtral_codec_ms_per_chunk),
                 run.output_wav.as_deref().unwrap_or("")
             );
             if let Some(first_pcm_ms) = run.daemon_first_pcm_ms {
                 line.push_str(&format!(
                     " daemon_response_ms={} daemon_started_ms={} daemon_first_pcm_ms={first_pcm_ms:.1} daemon_stream_elapsed_ms={} daemon_queue_id={} daemon_stream_id={}",
-                    run.daemon_response_ms
-                        .map(|value| format!("{value:.1}"))
-                        .unwrap_or_else(|| "-".to_string()),
-                    run.daemon_started_ms
-                        .map(|value| format!("{value:.1}"))
-                        .unwrap_or_else(|| "-".to_string()),
-                    run.daemon_stream_elapsed_ms
-                        .map(|value| format!("{value:.1}"))
-                        .unwrap_or_else(|| "-".to_string()),
+                    format_optional_ms(run.daemon_response_ms),
+                    format_optional_ms(run.daemon_started_ms),
+                    format_optional_ms(run.daemon_stream_elapsed_ms),
                     run.daemon_queue_id.as_deref().unwrap_or(""),
                     run.daemon_stream_id.as_deref().unwrap_or("")
                 ));
@@ -4471,6 +4497,45 @@ mod tests {
             prepare_bench_text(text, &args, TtsEngine::Voxtral).0,
             "Read ticket A seventeen."
         );
+    }
+
+    #[test]
+    fn tts_bench_report_serializes_load_trace_fields() {
+        let report = TtsBenchReport {
+            text: "hello".to_string(),
+            mode: "local",
+            runs: 1,
+            speed: 1.0,
+            output_dir: None,
+            engines: vec![TtsBenchEngineReport {
+                engine: "voxtral",
+                voice: "casual_male".to_string(),
+                model: "mistralai/Voxtral-4B-TTS-2603".to_string(),
+                model_load_ms: 12.0,
+                device_load_ms: Some(1.0),
+                model_resolve_assets_ms: Some(2.0),
+                model_config_load_ms: Some(3.0),
+                model_tokenizer_load_ms: Some(4.0),
+                model_tokenizer_validate_ms: Some(5.0),
+                model_weight_metadata_ms: Some(6.0),
+                model_weight_validate_ms: Some(7.0),
+                module_load_ms: Some(8.0),
+                cold_first_audio_ms: 20.0,
+                cold_total_ms: 30.0,
+                runs: vec![],
+            }],
+        };
+
+        let value = serde_json::to_value(report).unwrap();
+        let engine = &value["engines"][0];
+        assert_eq!(engine["device_load_ms"], 1.0);
+        assert_eq!(engine["model_resolve_assets_ms"], 2.0);
+        assert_eq!(engine["model_config_load_ms"], 3.0);
+        assert_eq!(engine["model_tokenizer_load_ms"], 4.0);
+        assert_eq!(engine["model_tokenizer_validate_ms"], 5.0);
+        assert_eq!(engine["model_weight_metadata_ms"], 6.0);
+        assert_eq!(engine["model_weight_validate_ms"], 7.0);
+        assert_eq!(engine["module_load_ms"], 8.0);
     }
 
     #[test]

@@ -68,6 +68,9 @@ class VoiceBridge {
     const result = await this.command("next");
     if (result.ok) {
       await this.playCurrentPrompt(result.trackId);
+    } else {
+      this.audio.pause();
+      voiceStore.setPlaybackPaused(true);
     }
     return result;
   }
@@ -76,6 +79,9 @@ class VoiceBridge {
     const result = await this.command("previous");
     if (result.ok) {
       await this.playCurrentPrompt(result.trackId);
+    } else {
+      this.audio.pause();
+      voiceStore.setPlaybackPaused(true);
     }
     return result;
   }

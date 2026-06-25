@@ -467,9 +467,10 @@ impl UiServerState {
         let snapshot = self.snapshot().await;
         let mut ids = snapshot.queue_ids.clone();
         ids.extend(snapshot.recent_ids.iter().cloned());
+        let command = if direction > 0 { "next" } else { "previous" };
         if ids.is_empty() {
             return UiCommandResult {
-                command: if direction > 0 { "next" } else { "previous" }.to_string(),
+                command: command.to_string(),
                 ok: false,
                 track_id: None,
                 message: Some("no tracks available".to_string()),
@@ -481,11 +482,26 @@ impl UiServerState {
             .as_ref()
             .and_then(|id| ids.iter().position(|candidate| candidate == id))
             .unwrap_or(0);
-        let next_index = (current_index as isize + direction)
-            .clamp(0, ids.len().saturating_sub(1) as isize) as usize;
+        let next_index = current_index as isize + direction;
+        if next_index < 0 || next_index >= ids.len() as isize {
+            *self.transport.lock().await = UiTransport {
+                state: UiTransportState::Idle,
+                paused: true,
+                position_seconds: 0,
+            };
+            let _ = self.events.send(UiEvent::TransportChanged(
+                self.transport.lock().await.clone(),
+            ));
+            return UiCommandResult {
+                command: command.to_string(),
+                ok: false,
+                track_id: snapshot.active_track_id,
+                message: None,
+            };
+        }
         self.set_active(
-            if direction > 0 { "next" } else { "previous" },
-            Some(ids[next_index].clone()),
+            command,
+            Some(ids[next_index as usize].clone()),
             UiTransportState::Playing,
             false,
         )
@@ -728,6 +744,53 @@ mod tests {
         assert_eq!(
             snapshot.tracks[&track_id].lifecycle,
             crate::ui_state::UiLifecycle::Queued
+        );
+    }
+
+    #[tokio::test]
+    async fn next_at_queue_end_stops_instead_of_replaying_last_track() {
+        let queue = Arc::new(RequestQueue::new());
+        let (event_tx, _) = broadcast::channel(8);
+        let state = UiServerState {
+            queue: queue.clone(),
+            active_track_id: Arc::new(Mutex::new(None)),
+            active_response_listens: Arc::new(Mutex::new(BTreeMap::new())),
+            transport: Arc::new(Mutex::new(UiTransport {
+                state: UiTransportState::Idle,
+                paused: true,
+                position_seconds: 0,
+            })),
+            events: event_tx,
+        };
+        let track_id = queue
+            .enqueue_ui_held(
+                "codex".to_string(),
+                VoiceRequest::Speak {
+                    text: "Only track.".to_string(),
+                    voice: None,
+                    speed: None,
+                    options: TtsOptions::default(),
+                },
+            )
+            .await;
+        *state.active_track_id.lock().await = Some(track_id.clone());
+        *state.transport.lock().await = UiTransport {
+            state: UiTransportState::Playing,
+            paused: false,
+            position_seconds: 0,
+        };
+
+        let result = state.step(1).await;
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.track_id.as_deref(), Some(track_id.as_str()));
+        assert_eq!(*state.active_track_id.lock().await, Some(track_id));
+        assert_eq!(
+            *state.transport.lock().await,
+            UiTransport {
+                state: UiTransportState::Idle,
+                paused: true,
+                position_seconds: 0,
+            }
         );
     }
 

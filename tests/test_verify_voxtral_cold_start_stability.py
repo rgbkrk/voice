@@ -7,6 +7,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 
 SCRIPT_PATH = (
@@ -142,6 +143,12 @@ class VoxtralColdStartStabilityVerifierTests(unittest.TestCase):
             self.script.prompt_slug(1, "!!!"),
             "text2-prompt",
         )
+
+    def test_afinfo_summary_skips_when_afinfo_is_unavailable(self):
+        with mock.patch.object(self.script.shutil, "which", return_value=None):
+            summary = self.script.afinfo_summary(Path("/tmp/missing.wav"), timeout=1)
+
+        self.assertIn("afinfo unavailable", summary)
 
 
 if __name__ == "__main__":

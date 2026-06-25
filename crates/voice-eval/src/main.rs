@@ -2132,7 +2132,7 @@ fn parse_single_equivalence_word(
     raw: &str,
     label: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let words = normalize_words(raw);
+    let words = normalize_words_with_options(raw, WerOptions::default());
     if words.len() != 1 {
         return Err(format!("{label} must normalize to exactly one word, got {raw:?}").into());
     }
@@ -2160,10 +2160,6 @@ fn word_error_rate_with_options(reference: &str, hypothesis: &str, options: WerO
         distance,
         rate,
     }
-}
-
-fn normalize_words(text: &str) -> Vec<String> {
-    normalize_words_with_options(text, WerOptions::default())
 }
 
 fn normalize_words_with_options(text: &str, options: WerOptions) -> Vec<String> {
@@ -2222,6 +2218,11 @@ fn normalize_word_equivalences(
                 .unwrap_or(word)
         })
         .collect()
+}
+
+#[cfg(test)]
+fn normalize_words(text: &str) -> Vec<String> {
+    normalize_words_with_options(text, WerOptions::default())
 }
 
 fn normalize_time_tokens(words: Vec<String>) -> Vec<String> {

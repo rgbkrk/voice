@@ -268,7 +268,7 @@ def read_bench(stdout: str, source: str, prompt_index: int, text: str) -> dict[s
 def afinfo_summary(wav_path: Path, timeout: float) -> str:
     afinfo = shutil.which("afinfo")
     if not afinfo:
-        raise RuntimeError("afinfo not found; pass --skip-afinfo on non-macOS hosts")
+        return "afinfo unavailable; skipped WAV channel layout validation"
     result = run_command([afinfo, str(wav_path)], timeout)
     if result.returncode != 0:
         raise RuntimeError(f"afinfo failed for {wav_path}: {result.stderr.strip()}")

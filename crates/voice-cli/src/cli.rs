@@ -1732,6 +1732,10 @@ struct TtsBenchEngineReport {
     module_load_ms: Option<f64>,
     module_embeddings_load_ms: Option<f64>,
     module_language_load_ms: Option<f64>,
+    module_language_layers_load_ms: Option<f64>,
+    module_language_norm_load_ms: Option<f64>,
+    module_language_layer_count: Option<usize>,
+    module_language_ms_per_layer: Option<f64>,
     module_acoustic_load_ms: Option<f64>,
     module_codec_load_ms: Option<f64>,
     cold_first_code_frame_ms: Option<f64>,
@@ -1997,6 +2001,10 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
         module_load_ms: None,
         module_embeddings_load_ms: None,
         module_language_load_ms: None,
+        module_language_layers_load_ms: None,
+        module_language_norm_load_ms: None,
+        module_language_layer_count: None,
+        module_language_ms_per_layer: None,
         module_acoustic_load_ms: None,
         module_codec_load_ms: None,
         cold_first_code_frame_ms: None,
@@ -2139,6 +2147,13 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         module_load_ms: Some(duration_ms(load_trace.module_load)),
         module_embeddings_load_ms: Some(duration_ms(load_trace.module_embeddings_load)),
         module_language_load_ms: Some(duration_ms(load_trace.module_language_load)),
+        module_language_layers_load_ms: Some(duration_ms(load_trace.module_language_layers_load)),
+        module_language_norm_load_ms: Some(duration_ms(load_trace.module_language_norm_load)),
+        module_language_layer_count: Some(load_trace.module_language_layer_count),
+        module_language_ms_per_layer: per_unit(
+            duration_ms(load_trace.module_language_layers_load),
+            load_trace.module_language_layer_count,
+        ),
         module_acoustic_load_ms: Some(duration_ms(load_trace.module_acoustic_load)),
         module_codec_load_ms: Some(duration_ms(load_trace.module_codec_load)),
         cold_first_code_frame_ms,
@@ -2360,6 +2375,10 @@ fn bench_daemon_tts(
         module_load_ms: None,
         module_embeddings_load_ms: None,
         module_language_load_ms: None,
+        module_language_layers_load_ms: None,
+        module_language_norm_load_ms: None,
+        module_language_layer_count: None,
+        module_language_ms_per_layer: None,
         module_acoustic_load_ms: None,
         module_codec_load_ms: None,
         cold_first_code_frame_ms,
@@ -2553,7 +2572,7 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
     }
     for engine in &report.engines {
         println!(
-            "tts_bench.engine={} voice={} model_load_ms={:.1} cold_first_code_frame_ms={} cold_first_audio_ms={:.1} cold_total_ms={:.1} device_load_ms={} model_resolve_assets_ms={} model_config_load_ms={} model_tokenizer_load_ms={} model_tokenizer_validate_ms={} model_weight_metadata_ms={} model_weight_validate_ms={} module_load_ms={} module_embeddings_load_ms={} module_language_load_ms={} module_acoustic_load_ms={} module_codec_load_ms={} model={}",
+            "tts_bench.engine={} voice={} model_load_ms={:.1} cold_first_code_frame_ms={} cold_first_audio_ms={:.1} cold_total_ms={:.1} device_load_ms={} model_resolve_assets_ms={} model_config_load_ms={} model_tokenizer_load_ms={} model_tokenizer_validate_ms={} model_weight_metadata_ms={} model_weight_validate_ms={} module_load_ms={} module_embeddings_load_ms={} module_language_load_ms={} module_language_layers_load_ms={} module_language_norm_load_ms={} module_language_layer_count={} module_language_ms_per_layer={} module_acoustic_load_ms={} module_codec_load_ms={} model={}",
             engine.engine,
             engine.voice,
             engine.model_load_ms,
@@ -2570,6 +2589,13 @@ fn print_tts_bench_report(report: &TtsBenchReport) {
             format_optional_ms(engine.module_load_ms),
             format_optional_ms(engine.module_embeddings_load_ms),
             format_optional_ms(engine.module_language_load_ms),
+            format_optional_ms(engine.module_language_layers_load_ms),
+            format_optional_ms(engine.module_language_norm_load_ms),
+            engine
+                .module_language_layer_count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            format_optional_ms(engine.module_language_ms_per_layer),
             format_optional_ms(engine.module_acoustic_load_ms),
             format_optional_ms(engine.module_codec_load_ms),
             engine.model
@@ -4555,6 +4581,10 @@ mod tests {
                 module_acoustic_load_ms: Some(11.0),
                 module_codec_load_ms: Some(12.0),
                 cold_first_code_frame_ms: Some(13.0),
+                module_language_layers_load_ms: Some(14.0),
+                module_language_norm_load_ms: Some(15.0),
+                module_language_layer_count: Some(16),
+                module_language_ms_per_layer: Some(17.0),
                 cold_first_audio_ms: 20.0,
                 cold_total_ms: 30.0,
                 runs: vec![],
@@ -4576,6 +4606,10 @@ mod tests {
         assert_eq!(engine["module_acoustic_load_ms"], 11.0);
         assert_eq!(engine["module_codec_load_ms"], 12.0);
         assert_eq!(engine["cold_first_code_frame_ms"], 13.0);
+        assert_eq!(engine["module_language_layers_load_ms"], 14.0);
+        assert_eq!(engine["module_language_norm_load_ms"], 15.0);
+        assert_eq!(engine["module_language_layer_count"], 16);
+        assert_eq!(engine["module_language_ms_per_layer"], 17.0);
     }
 
     #[test]

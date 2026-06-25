@@ -23,8 +23,19 @@ pub struct VoxtralInferenceModules {
 pub struct VoxtralModuleLoadTrace {
     pub embeddings: Duration,
     pub language: Duration,
+    pub language_layers: Duration,
+    pub language_norm: Duration,
+    pub language_layer_count: usize,
     pub acoustic: Duration,
     pub codec: Duration,
+    pub total: Duration,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct VoxtralLanguageLoadTrace {
+    pub layers: Duration,
+    pub norm: Duration,
+    pub layer_count: usize,
     pub total: Duration,
 }
 
@@ -98,7 +109,8 @@ impl VoxtralInferenceModules {
         let embeddings_load = embeddings_start.elapsed();
 
         let language_start = Instant::now();
-        let language = VoxtralLanguageBackbone::load(config, vb.clone())?;
+        let (language, language_trace) =
+            VoxtralLanguageBackbone::load_with_trace(config, vb.clone())?;
         let language_load = language_start.elapsed();
 
         let acoustic_start = Instant::now();
@@ -112,6 +124,9 @@ impl VoxtralInferenceModules {
         let trace = VoxtralModuleLoadTrace {
             embeddings: embeddings_load,
             language: language_load,
+            language_layers: language_trace.layers,
+            language_norm: language_trace.norm,
+            language_layer_count: language_trace.layer_count,
             acoustic: acoustic_load,
             codec: codec_load,
             total: total_start.elapsed(),
@@ -183,6 +198,15 @@ impl VoxtralMultimodalEmbeddings {
 
 impl VoxtralLanguageBackbone {
     pub fn load(config: &VoxtralConfig, vb: VarBuilder) -> Result<Self> {
+        Ok(Self::load_with_trace(config, vb)?.0)
+    }
+
+    pub fn load_with_trace(
+        config: &VoxtralConfig,
+        vb: VarBuilder,
+    ) -> Result<(Self, VoxtralLanguageLoadTrace)> {
+        let total_start = Instant::now();
+        let layers_start = Instant::now();
         let mut layers = Vec::with_capacity(config.n_layers);
         for layer_idx in 0..config.n_layers {
             layers.push(VoxtralTransformerBlock::load(
@@ -195,9 +219,20 @@ impl VoxtralLanguageBackbone {
                 vb.pp(format!("layers.{layer_idx}")),
             )?);
         }
-        let norm = rms_norm(config.dim, config.norm_eps, vb.pp("norm"))?;
+        let layers_load = layers_start.elapsed();
 
-        Ok(Self { layers, norm })
+        let norm_start = Instant::now();
+        let norm = rms_norm(config.dim, config.norm_eps, vb.pp("norm"))?;
+        let norm_load = norm_start.elapsed();
+
+        let trace = VoxtralLanguageLoadTrace {
+            layers: layers_load,
+            norm: norm_load,
+            layer_count: config.n_layers,
+            total: total_start.elapsed(),
+        };
+
+        Ok((Self { layers, norm }, trace))
     }
 
     pub fn forward_causal(
@@ -1134,6 +1169,9 @@ pub(crate) mod tests {
 
         assert!(trace.total >= trace.embeddings);
         assert!(trace.total >= trace.language);
+        assert!(trace.language >= trace.language_layers);
+        assert!(trace.language >= trace.language_norm);
+        assert_eq!(trace.language_layer_count, config.n_layers);
         assert!(trace.total >= trace.acoustic);
         assert!(trace.total >= trace.codec);
 

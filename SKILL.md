@@ -11,7 +11,7 @@
 voice Hello, I finished the task.
 
 # Explicit say subcommand with options
-voice say -v am_michael "Switching to a male voice."
+voice say -v af_sky "Switching to a brighter voice."
 
 # Speak from a pipe
 echo "Build complete." | voice say
@@ -33,7 +33,7 @@ voice say --phonemes "həlˈO wˈɜɹld"
 voice converse "How are you today?"
 
 # With voice and speed options
-voice converse -v am_michael -s 1.2 "What do you think about that?"
+voice converse -v af_sky -s 1.2 "What do you think about that?"
 ```
 
 ### Daemon UI queue

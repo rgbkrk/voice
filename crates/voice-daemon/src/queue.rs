@@ -317,6 +317,7 @@ impl RequestQueue {
         if let Some(mut entry) = items.pop_front() {
             entry.status = ItemStatus::Processing;
             *self.current.lock().await = Some(entry.clone());
+            self.notify.notify_waiters();
             Some(entry)
         } else {
             None
@@ -345,6 +346,7 @@ impl RequestQueue {
                 },
             )
             .await;
+            self.notify.notify_waiters();
         }
     }
 
@@ -362,6 +364,7 @@ impl RequestQueue {
                 },
             )
             .await;
+            self.notify.notify_waiters();
         }
     }
 
@@ -504,11 +507,13 @@ impl RequestQueue {
             },
         )
         .await;
+        self.notify.notify_waiters();
     }
 
     /// Remove a completed item from the recent list by ID.
     pub async fn remove_recent(&self, id: &str) {
         self.recent.lock().await.retain(|item| item.id != id);
+        self.notify.notify_waiters();
     }
 }
 

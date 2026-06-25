@@ -9,6 +9,8 @@ mod cleanup;
 mod config;
 mod queue;
 mod socket;
+mod ui_server;
+mod ui_state;
 mod worker;
 
 use automerge_state::AutomergeState;
@@ -103,6 +105,11 @@ pub async fn run(options: DaemonOptions) {
     let cleanup_automerge = automerge.clone();
     tokio::spawn(async move {
         cleanup::run(cleanup_queue, cleanup_automerge).await;
+    });
+
+    let ui_queue = queue.clone();
+    tokio::spawn(async move {
+        ui_server::serve(ui_queue).await;
     });
 
     socket::serve(queue, config, automerge).await;

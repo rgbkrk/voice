@@ -1,125 +1,75 @@
-import { useEffect, useMemo, useState } from "react";
-import { voiceMessages } from "@/data";
-import { fetchDaemonMessages } from "@/lib/daemon";
-import type { VoiceMessage } from "@/types";
+import { useEffect } from "react";
 import { MiniTransport } from "@/components/voice/mini-transport";
 import { NowPlaying } from "@/components/voice/now-playing";
 import { VoiceHeader } from "@/components/voice/voice-header";
 import { VoiceQueue } from "@/components/voice/voice-queue";
+import { voiceActions, voiceBridge } from "@/state/voice-bridge";
+import { useVoiceSelector } from "@/state/react";
+import type { VoiceMessage } from "@/types";
 
 export default function App() {
-  const [messages, setMessages] = useState<VoiceMessage[]>(voiceMessages);
-  const [currentId, setCurrentId] = useState(voiceMessages[0].id);
-  const [paused, setPaused] = useState(false);
-  const [position, setPosition] = useState(voiceMessages[0].positionSeconds);
-
   useEffect(() => {
-    let active = true;
-    let timer: number | undefined;
-
-    async function refreshDaemonState() {
-      const daemonMessages = await fetchDaemonMessages();
-      if (!active || !daemonMessages) {
-        return false;
-      }
-
-      setMessages(daemonMessages);
-      setCurrentId((value) => {
-        const currentMessage = daemonMessages.find((message) => message.id === value);
-        const nextMessage = currentMessage ?? daemonMessages[0];
-        if (!currentMessage) {
-          setPosition(nextMessage.positionSeconds);
-        }
-        return nextMessage.id;
-      });
-      return true;
-    }
-
-    void refreshDaemonState().then((connected) => {
-      if (active && connected) {
-        timer = window.setInterval(refreshDaemonState, 2_000);
-      }
-    });
-
-    return () => {
-      active = false;
-      if (timer) {
-        window.clearInterval(timer);
-      }
-    };
+    voiceBridge.start();
+    return () => voiceBridge.stop();
   }, []);
 
-  const current = useMemo(
-    () => messages.find((message) => message.id === currentId) ?? messages[0],
-    [currentId, messages],
-  );
+  const messages = useVoiceSelector((state) => state.messages);
+  const currentId = useVoiceSelector((state) => state.currentId);
+  const position = useVoiceSelector((state) => state.positionSeconds);
+  const paused = useVoiceSelector((state) => state.paused);
 
-  const queuedMessages = useMemo(
-    () => messages.filter((message) => message.id !== current.id),
-    [current.id, messages],
-  );
+  const current = messages.find((message) => message.id === currentId) ?? messages[0];
+  const queuedMessages = current
+    ? messages.filter((message) => message.id !== current.id)
+    : [];
 
-  useEffect(() => {
-    if (paused) {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      setPosition((value) => {
-        const nextValue = Math.min(value + 0.5, current.durationSeconds);
-        if (nextValue >= current.durationSeconds) {
-          setPaused(true);
-        }
-        return nextValue;
-      });
-    }, 500);
-
-    return () => window.clearInterval(timer);
-  }, [current.durationSeconds, current.id, paused]);
-
-  function selectMessage(message: VoiceMessage) {
-    setCurrentId(message.id);
-    setPosition(message.positionSeconds);
-    setPaused(false);
-    setMessages((items) =>
-      items.map((item) =>
-        item.id === message.id && item.state !== "skipped"
-          ? { ...item, state: "picked-up" }
-          : item,
-      ),
+  if (!current) {
+    return (
+      <div className="min-h-screen text-foreground">
+        <VoiceHeader waitingCount={0} />
+        <main className="mx-auto grid w-[calc(100%_-_2rem)] max-w-[45rem] gap-8">
+          <section className="rounded-lg border border-border bg-card p-5 text-muted-foreground">
+            Waiting for daemon state.
+          </section>
+        </main>
+      </div>
     );
-  }
-
-  function step(direction: 1 | -1) {
-    const index = messages.findIndex((message) => message.id === current.id);
-    const nextIndex = Math.min(Math.max(index + direction, 0), messages.length - 1);
-    selectMessage(messages[nextIndex]);
   }
 
   return (
     <div className="min-h-screen pb-36 text-foreground" data-paused={paused}>
-      <VoiceHeader
-        waitingCount={queuedMessages.length}
-      />
+      <VoiceHeader waitingCount={queuedMessages.length} />
       <main className="mx-auto grid w-[calc(100%_-_2rem)] max-w-[45rem] gap-8">
         <NowPlaying
           message={current}
           position={position}
-          onPositionChange={setPosition}
-          onPrimaryAction={() => setPaused(false)}
+          onPositionChange={voiceActions.seek}
+          onPrimaryAction={() => void activate(current)}
         />
-        <VoiceQueue messages={queuedMessages} onSelect={selectMessage} />
+        <VoiceQueue messages={queuedMessages} onSelect={(message) => void activate(message)} />
       </main>
       <MiniTransport
         current={current}
         paused={paused}
         position={position}
         queueCount={queuedMessages.length}
-        onNext={() => step(1)}
-        onPositionChange={setPosition}
-        onPrevious={() => step(-1)}
-        onTogglePause={() => setPaused((value) => !value)}
+        onNext={() => void voiceActions.next()}
+        onPositionChange={voiceActions.seek}
+        onPrevious={() => void voiceActions.previous()}
+        onTogglePause={() => {
+          if (paused) {
+            void voiceActions.play(current.id);
+          } else {
+            void voiceActions.pause();
+          }
+        }}
       />
     </div>
   );
+}
+
+function activate(message: VoiceMessage) {
+  return message.intent === "converse"
+    ? voiceActions.respond(message.id)
+    : voiceActions.play(message.id);
 }

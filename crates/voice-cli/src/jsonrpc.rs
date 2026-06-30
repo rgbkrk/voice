@@ -432,7 +432,7 @@ fn handle_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> 
     // Lazily load STT model on first listen call
     if session.stt_model.is_none() {
         let repo = std::env::var("STT_MODEL")
-            .unwrap_or_else(|_| "distil-whisper/distil-large-v3".to_string());
+            .unwrap_or_else(|_| voice_stt::builtin::DEFAULT_MODEL_REPO.to_string());
 
         if !QUIET.load(Ordering::Relaxed) {
             eprintln!("Loading STT model ({repo})...");

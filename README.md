@@ -1,6 +1,6 @@
 # voice
 
-Rust TTS & STT powered by [candle](https://github.com/huggingface/candle), with Metal GPU acceleration on Apple Silicon and CPU fallback on Linux. Ships the [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) 82M-parameter TTS model with a full English G2P pipeline, and [Whisper](https://huggingface.co/distil-whisper/distil-large-v3) for speech-to-text.
+Rust TTS & STT powered by [candle](https://github.com/huggingface/candle), with Metal GPU acceleration on Apple Silicon and CPU fallback on Linux. Ships the [Kokoro](https://huggingface.co/prince-canuma/Kokoro-82M) 82M-parameter TTS model with a full English G2P pipeline, and [Whisper](https://huggingface.co/distil-whisper/distil-large-v3.5) for speech-to-text.
 
 Faster time-to-first-speech than macOS `say`, with dramatically better audio quality. STT runs at ~50× real-time on Apple Silicon.
 
@@ -244,18 +244,20 @@ Options:
 
 ## Speech-to-text
 
-STT uses [distil-whisper](https://huggingface.co/distil-whisper/distil-large-v3) models via candle — knowledge-distilled versions of OpenAI's Whisper optimized for fast on-device transcription. On macOS, STT runs on Metal by default. On Linux and other non-macOS hosts, STT runs on CPU.
+STT uses [distil-whisper](https://huggingface.co/distil-whisper/distil-large-v3.5) models via candle — knowledge-distilled versions of OpenAI's Whisper optimized for fast on-device transcription. On macOS, STT runs on Metal by default. On Linux and other non-macOS hosts, STT runs on CPU.
 
 | Model | Repo ID | Params | Notes |
 |-------|---------|--------|-------|
-| Distil Large v3 | `distil-whisper/distil-large-v3` | 756M | Multilingual (default) |
-| Distil Medium English | `distil-whisper/distil-medium.en` | 394M | English-only, faster |
+| Distil Large v3.5 | `distil-whisper/distil-large-v3.5` | 756M | English, best accuracy (default) |
+| Distil Large v3 | `distil-whisper/distil-large-v3` | 756M | English, previous default |
+| Distil Medium English | `distil-whisper/distil-medium.en` | 394M | English, smaller/faster |
+| Whisper Large v3 | `openai/whisper-large-v3` | 1.5B | Multilingual, slower |
 
-Performance is ~50× real-time on Apple Silicon (a 10-second recording transcribes in ~200ms). CPU transcription is supported for portability but is much slower; use `distil-whisper/distil-medium.en` for faster CPU experiments. Configs and tokenizers for known models are embedded in the binary.
+The distil models are English-only (distilled from Whisper large-v3 for English). For other languages, set `STT_MODEL=openai/whisper-large-v3`. Performance is ~50× real-time on Apple Silicon (a 10-second recording transcribes in ~200ms). CPU transcription is supported for portability but is much slower; use `distil-whisper/distil-medium.en` for faster CPU experiments. Configs and tokenizers for the distil models are embedded in the binary.
 
 **Adaptive noise floor**: Before recording, `voice listen` calibrates against ambient noise for ~500ms, then sets a silence threshold relative to the noise floor. This avoids false triggers in noisy environments and missed speech in quiet ones. A **ding** sound plays when the mic is ready.
 
-**Model selection**: The default model is `distil-whisper/distil-large-v3`. Override with the `STT_MODEL` environment variable:
+**Model selection**: The default model is `distil-whisper/distil-large-v3.5`. Override with the `STT_MODEL` environment variable:
 
 ```bash
 STT_MODEL=distil-whisper/distil-medium.en voice listen
@@ -696,7 +698,7 @@ fn main() -> voice_tts::Result<()> {
 
 ```rust
 fn main() -> voice_stt::Result<()> {
-    let mut model = voice_stt::load_model("distil-whisper/distil-large-v3")?;
+    let mut model = voice_stt::load_model("distil-whisper/distil-large-v3.5")?;
     let result = voice_stt::transcribe(&mut model, "audio.ogg")?;
     println!("{}", result.text);
     Ok(())
@@ -717,7 +719,7 @@ fn main() -> voice_stt::Result<()> {
 - **Scope**: Parses Voxtral `params.json`, exposes the official preset voice IDs, and resolves local or HuggingFace metadata without downloading the 8 GB weights by default.
 - **Next milestones**: Mistral/Tekken tokenizer parity, audio codebook parsing, acoustic transformer inference, and the audio tokenizer decoder.
 
-### STT: Whisper (distil-large-v3 / distil-medium.en)
+### STT: Whisper (distil-large-v3.5 / distil-medium.en)
 
 - **Mel spectrogram**: Preprocessing runs on Metal GPU via candle on macOS, with CPU mel preprocessing on CPU-only hosts
 - **Encoder-decoder transformer**: Standard Whisper architecture with knowledge distillation for faster inference

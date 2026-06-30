@@ -1290,12 +1290,13 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 
 // ── STT model helpers ──────────────────────────────────────────────────
 
-/// Default STT model. Override with `STT_MODEL` env var.
-/// distil-large-v3: best accuracy. Use distil-whisper/distil-medium.en for smaller/faster.
-const DEFAULT_STT_MODEL: &str = "distil-whisper/distil-large-v3";
-
+/// STT model the CLI loads. Defaults to the shared
+/// [`voice_stt::builtin::DEFAULT_MODEL_REPO`] (distil-large-v3.5). Override with
+/// `STT_MODEL`, e.g. `distil-whisper/distil-medium.en` for smaller/faster or
+/// `openai/whisper-large-v3` for multilingual.
 fn stt_model_repo() -> String {
-    std::env::var("STT_MODEL").unwrap_or_else(|_| DEFAULT_STT_MODEL.to_string())
+    std::env::var("STT_MODEL")
+        .unwrap_or_else(|_| voice_stt::builtin::DEFAULT_MODEL_REPO.to_string())
 }
 
 /// Load STT model. Prints progress to stderr unless quiet.

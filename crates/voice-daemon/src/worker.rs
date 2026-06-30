@@ -24,14 +24,15 @@ use voice_tts::KokoroModel;
 use voice_voxtral::{VoxtralGenerationOptions, VoxtralStreamingConfig, VoxtralTtsRuntime};
 
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
-const STT_REPO: &str = "distil-whisper/distil-large-v3";
 
-/// STT model the daemon loads. Defaults to [`STT_REPO`] but is overridable with
-/// the `STT_MODEL` env var, so the service file can pin a larger/different model
+/// STT model the daemon loads. Defaults to the shared
+/// [`voice_stt::builtin::DEFAULT_MODEL_REPO`] but is overridable with the
+/// `STT_MODEL` env var, so the service file can pin a larger/different model
 /// (e.g. `openai/whisper-large-v3`) without recompiling. Mirrors the CLI's
 /// `listen::stt_model_repo`.
 fn stt_repo() -> String {
-    std::env::var("STT_MODEL").unwrap_or_else(|_| STT_REPO.to_string())
+    std::env::var("STT_MODEL")
+        .unwrap_or_else(|_| voice_stt::builtin::DEFAULT_MODEL_REPO.to_string())
 }
 const KOKORO_ENGINE: &str = "kokoro";
 const VOXTRAL_ENGINE: &str = "voxtral";

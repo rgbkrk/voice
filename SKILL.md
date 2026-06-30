@@ -112,8 +112,8 @@ voice mcp
 - A ding sound plays when the mic is ready — wait for it before speaking
 - Bluetooth mics (AirPods) have ~0.5s latency; the ding helps you time it
 - Noise floor is calibrated automatically — works with MacBook mic or AirPods
-- Default model is `distil-whisper/distil-large-v3`
-- Use `STT_MODEL=distil-whisper/distil-medium.en` for a faster English-only fallback
+- Default model is `distil-whisper/distil-large-v3.5` (English; fewer repetition errors than v3)
+- Use `STT_MODEL=distil-whisper/distil-medium.en` for a smaller/faster model, or `STT_MODEL=openai/whisper-large-v3` for multilingual
 
 ### Daemon/MCP tips
 

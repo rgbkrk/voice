@@ -6,7 +6,7 @@ A Rust TTS and STT toolkit for Apple Silicon, implementing [Kokoro](https://hugg
 
 ## Current state
 
-Production-quality TTS audio output. STT via distil-whisper (distil-large-v3 default). G2P handles dictionary lookup, embedded perceptron POS tagger, number handling, stress assignment, and espeak-ng fallback. 7 voices embedded in the binary for zero-network startup; 50+ downloadable from HuggingFace.
+Production-quality TTS audio output. STT via distil-whisper (distil-large-v3.5 default). G2P handles dictionary lookup, embedded perceptron POS tagger, number handling, stress assignment, and espeak-ng fallback. 7 voices embedded in the binary for zero-network startup; 50+ downloadable from HuggingFace.
 
 ## Workspace layout
 
@@ -77,9 +77,9 @@ Ported from [misaki](https://github.com/hexgrad/misaki)'s `en.py`:
 
 ### STT (voice-stt / voice-whisper)
 
-- Default model: `distil-whisper/distil-large-v3` (multilingual)
-- Fallback: `distil-whisper/distil-medium.en` (English-only, faster)
-- Configs and tokenizers embedded in binary for known models
+- Default model: `distil-whisper/distil-large-v3.5` (English; drop-in upgrade over v3 with far fewer repetition errors). Override with `STT_MODEL`, e.g. `openai/whisper-large-v3` for multilingual.
+- Smaller/faster: `distil-whisper/distil-medium.en` (English-only)
+- Configs and tokenizers embedded in binary for known models (medium.en, large-v3, large-v3.5)
 - GPU mel spectrogram preprocessing on Metal
 - Greedy decoding with KV-caching
 

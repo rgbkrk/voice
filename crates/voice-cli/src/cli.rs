@@ -928,6 +928,15 @@ enum DaemonCommand {
         /// Install the service file without starting the daemon immediately
         #[arg(long)]
         no_start: bool,
+
+        /// Accept defaults without prompting (also implied when stdin is not a TTY)
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// STT model to pin in the service (HuggingFace repo id). Skips the
+        /// interactive model prompt. e.g. openai/whisper-large-v3 for multilingual
+        #[arg(long, value_name = "REPO")]
+        stt_model: Option<String>,
     },
 
     /// Stop and remove the voice daemon system service
@@ -1504,8 +1513,12 @@ fn run_daemon(args: DaemonArgs) {
         DaemonCommand::Start { tts_only } => {
             voice_daemon::run_blocking(voice_daemon::DaemonOptions { tts_only });
         }
-        DaemonCommand::Install { no_start } => {
-            run_daemon_install(no_start);
+        DaemonCommand::Install {
+            no_start,
+            yes,
+            stt_model,
+        } => {
+            run_daemon_install(no_start, yes, stt_model);
         }
         DaemonCommand::Uninstall => {
             run_daemon_uninstall();
@@ -3860,8 +3873,200 @@ fn find_voice_binary() -> Option<std::path::PathBuf> {
     })
 }
 
+/// Candidate STT models offered during interactive install. The first entry is
+/// the compiled default (selecting it pins nothing, so the service tracks future
+/// default bumps). The rest set `STT_MODEL` explicitly in the service file.
+const INSTALL_STT_CHOICES: &[(Option<&str>, &str, &str)] = &[
+    (
+        None,
+        "distil-large-v3.5",
+        "English, ~1.5 GB download, fast (default)",
+    ),
+    (
+        Some("distil-whisper/distil-medium.en"),
+        "distil-medium.en",
+        "English, ~400 MB download, fastest",
+    ),
+    (
+        Some("openai/whisper-large-v3"),
+        "whisper-large-v3",
+        "Multilingual, ~3 GB download, slower",
+    ),
+];
+
+struct MachineInfo {
+    ram_gb: Option<u64>,
+    chip: Option<String>,
+}
+
 #[cfg(target_os = "macos")]
-fn run_daemon_install(no_start: bool) {
+fn detect_machine() -> MachineInfo {
+    let sysctl = |key: &str| {
+        std::process::Command::new("sysctl")
+            .args(["-n", key])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let ram_gb = sysctl("hw.memsize")
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|b| b / 1_073_741_824);
+    MachineInfo {
+        ram_gb,
+        chip: sysctl("machdep.cpu.brand_string"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn detect_machine() -> MachineInfo {
+    let ram_gb = std::fs::read_to_string("/proc/meminfo").ok().and_then(|m| {
+        m.lines()
+            .find_map(|l| l.strip_prefix("MemTotal:"))
+            .and_then(|v| v.split_whitespace().next())
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .map(|kb| kb / 1_048_576)
+    });
+    let chip = std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|c| {
+        c.lines()
+            .find_map(|l| l.strip_prefix("model name").map(|_| l))
+            .and_then(|l| l.split(':').nth(1))
+            .map(|s| s.trim().to_string())
+    });
+    MachineInfo { ram_gb, chip }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn detect_machine() -> MachineInfo {
+    MachineInfo {
+        ram_gb: None,
+        chip: None,
+    }
+}
+
+/// Resolve which STT model to pin in the service file. An explicit `--stt-model`
+/// wins; otherwise prompt on an interactive terminal, else fall back to the
+/// compiled default (`None`, no `STT_MODEL` env in the service).
+fn resolve_install_stt_model(yes: bool, explicit: Option<String>) -> Option<String> {
+    if let Some(model) = explicit {
+        let model = model.trim().to_string();
+        if model.is_empty() {
+            eprintln!("error: --stt-model must be a non-empty HuggingFace repo id");
+            std::process::exit(1);
+        }
+        return Some(model);
+    }
+    let interactive = !yes && io::stdin().is_terminal() && io::stdout().is_terminal();
+    if interactive {
+        prompt_install_stt_model()
+    } else {
+        None
+    }
+}
+
+/// Interactive STT model picker. Returns `Some(repo)` for a non-default choice,
+/// `None` to track the compiled default.
+fn prompt_install_stt_model() -> Option<String> {
+    let machine = detect_machine();
+    let mut summary = String::new();
+    if let Some(chip) = &machine.chip {
+        summary.push_str(chip);
+    }
+    if let Some(ram) = machine.ram_gb {
+        if !summary.is_empty() {
+            summary.push_str(", ");
+        }
+        summary.push_str(&format!("{ram} GB RAM"));
+    }
+    if !summary.is_empty() {
+        println!("Detected: {summary}");
+    }
+
+    println!("\nSpeech-to-text model (weights download on first transcription):");
+    for (i, (_, name, note)) in INSTALL_STT_CHOICES.iter().enumerate() {
+        println!("  {}) {name:<18} {note}", i + 1);
+    }
+    print!("Choose [1]: ");
+    let _ = io::stdout().flush();
+
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).is_err() {
+        return None;
+    }
+    let choice = line.trim();
+    let idx = if choice.is_empty() {
+        0
+    } else {
+        match choice.parse::<usize>() {
+            Ok(n) if n >= 1 && n <= INSTALL_STT_CHOICES.len() => n - 1,
+            _ => {
+                println!("Unrecognized choice, using the default.");
+                0
+            }
+        }
+    };
+    let (repo, name, _) = INSTALL_STT_CHOICES[idx];
+    println!("Using {name}.");
+    repo.map(|r| r.to_string())
+}
+
+fn run_daemon_install(no_start: bool, yes: bool, stt_model_arg: Option<String>) {
+    let stt_model = resolve_install_stt_model(yes, stt_model_arg);
+    install_service(no_start, stt_model.as_deref());
+}
+
+/// Escape a string for inclusion in an XML text node (plist `<string>` value).
+#[cfg(target_os = "macos")]
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Render the LaunchAgent plist. When `stt_model` is set, the daemon's
+/// environment pins `STT_MODEL`; otherwise it tracks the compiled default.
+#[cfg(target_os = "macos")]
+fn render_launch_agent_plist(voice_str: &str, stt_model: Option<&str>) -> String {
+    let env_block = match stt_model {
+        Some(model) => format!(
+            "  <key>EnvironmentVariables</key>\n  <dict>\n    <key>STT_MODEL</key>\n    <string>{}</string>\n  </dict>\n",
+            xml_escape(model)
+        ),
+        None => String::new(),
+    };
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.rgbkrk.voice.voiced</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{voice_str}</string>
+    <string>daemon</string>
+    <string>start</string>
+    <string>--tts-only</string>
+  </array>
+{env_block}  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/voiced.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/voiced.err.log</string>
+</dict>
+</plist>
+"#
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn install_service(no_start: bool, stt_model: Option<&str>) {
     let voice_path = match find_voice_binary() {
         Some(p) => p,
         None => {
@@ -3881,33 +4086,7 @@ fn run_daemon_install(no_start: bool) {
     let plist_path = agents_dir.join("com.rgbkrk.voice.voiced.plist");
     let voice_str = voice_path.display().to_string();
 
-    let plist = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.rgbkrk.voice.voiced</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{voice_str}</string>
-    <string>daemon</string>
-    <string>start</string>
-    <string>--tts-only</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>/tmp/voiced.out.log</string>
-  <key>StandardErrorPath</key>
-  <string>/tmp/voiced.err.log</string>
-</dict>
-</plist>
-"#
-    );
+    let plist = render_launch_agent_plist(&voice_str, stt_model);
 
     std::fs::write(&plist_path, &plist).unwrap_or_else(|e| {
         eprintln!("error: could not write {}: {e}", plist_path.display());
@@ -3917,6 +4096,10 @@ fn run_daemon_install(no_start: bool) {
     println!("Installing voice daemon as a LaunchAgent...");
     println!("  voice:   {voice_str}");
     println!("  plist:   {}", plist_path.display());
+    println!(
+        "  stt:     {}",
+        stt_model.unwrap_or(voice_stt::builtin::DEFAULT_MODEL_REPO)
+    );
 
     let uid = unsafe { libc::getuid() };
     let target = format!("gui/{uid}");
@@ -3979,8 +4162,24 @@ fn run_daemon_install(no_start: bool) {
     }
 }
 
+/// Render the systemd user unit. When `stt_model` is set, the service pins
+/// `STT_MODEL`; otherwise the daemon tracks the compiled default.
 #[cfg(target_os = "linux")]
-fn run_daemon_install(no_start: bool) {
+fn render_systemd_unit(voice_str: &str, stt_model: Option<&str>) -> String {
+    let env_line = match stt_model {
+        Some(model) => format!("Environment=STT_MODEL={model}\n"),
+        None => String::new(),
+    };
+
+    format!(
+        "[Unit]\nDescription=Voice daemon\nAfter=default.target\n\n\
+         [Service]\nType=simple\n{env_line}ExecStart={voice_str} daemon start --tts-only\nRestart=on-failure\nRestartSec=2\n\n\
+         [Install]\nWantedBy=default.target\n"
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn install_service(no_start: bool, stt_model: Option<&str>) {
     let voice_path = match find_voice_binary() {
         Some(p) => p,
         None => {
@@ -4005,11 +4204,7 @@ fn run_daemon_install(no_start: bool) {
     let legacy_unit_path = systemd_dir.join("voice-daemon.service");
     let voice_str = voice_path.display().to_string();
 
-    let unit = format!(
-        "[Unit]\nDescription=Voice daemon\nAfter=default.target\n\n\
-         [Service]\nType=simple\nExecStart={voice_str} daemon start --tts-only\nRestart=on-failure\nRestartSec=2\n\n\
-         [Install]\nWantedBy=default.target\n"
-    );
+    let unit = render_systemd_unit(&voice_str, stt_model);
 
     std::fs::write(&unit_path, &unit).unwrap_or_else(|e| {
         eprintln!("error: could not write {}: {e}", unit_path.display());
@@ -4019,6 +4214,10 @@ fn run_daemon_install(no_start: bool) {
     println!("Installing voice daemon as a systemd user service...");
     println!("  voice:   {voice_str}");
     println!("  unit:    {}", unit_path.display());
+    println!(
+        "  stt:     {}",
+        stt_model.unwrap_or(voice_stt::builtin::DEFAULT_MODEL_REPO)
+    );
 
     if legacy_unit_path.exists() {
         println!("  legacy: disabling voice-daemon.service");
@@ -4077,7 +4276,7 @@ fn run_daemon_install(no_start: bool) {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn run_daemon_install(_no_start: bool) {
+fn install_service(_no_start: bool, _stt_model: Option<&str>) {
     eprintln!("error: voice daemon install is not supported on this platform");
     eprintln!("See docs/daemon.md for manual setup instructions.");
     std::process::exit(1);
@@ -4652,5 +4851,55 @@ mod tests {
             .arg("-version")
             .output()
             .is_ok()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launch_agent_plist_omits_env_for_default_model() {
+        let plist = render_launch_agent_plist("/usr/local/bin/voice", None);
+        assert!(!plist.contains("EnvironmentVariables"));
+        assert!(!plist.contains("STT_MODEL"));
+        // The ProgramArguments array still flows straight into RunAtLoad.
+        assert!(plist.contains("</array>\n  <key>RunAtLoad</key>"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launch_agent_plist_pins_explicit_model() {
+        let plist =
+            render_launch_agent_plist("/usr/local/bin/voice", Some("openai/whisper-large-v3"));
+        assert!(plist.contains("<key>EnvironmentVariables</key>"));
+        assert!(
+            plist.contains("<key>STT_MODEL</key>\n    <string>openai/whisper-large-v3</string>")
+        );
+        // Env block sits between the args array and RunAtLoad.
+        let env_at = plist.find("EnvironmentVariables").unwrap();
+        let run_at = plist.find("RunAtLoad").unwrap();
+        assert!(env_at < run_at);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launch_agent_plist_escapes_model_value() {
+        let plist = render_launch_agent_plist("/usr/local/bin/voice", Some("a&b<c>d"));
+        assert!(plist.contains("<string>a&amp;b&lt;c&gt;d</string>"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn systemd_unit_omits_env_for_default_model() {
+        let unit = render_systemd_unit("/home/u/.cargo/bin/voice", None);
+        assert!(!unit.contains("Environment="));
+        assert!(unit.contains("\n[Service]\nType=simple\nExecStart=/home/u/.cargo/bin/voice daemon start --tts-only\n"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn systemd_unit_pins_explicit_model() {
+        let unit = render_systemd_unit("/home/u/.cargo/bin/voice", Some("openai/whisper-large-v3"));
+        // Environment line precedes ExecStart inside [Service].
+        assert!(
+            unit.contains("Type=simple\nEnvironment=STT_MODEL=openai/whisper-large-v3\nExecStart=")
+        );
     }
 }

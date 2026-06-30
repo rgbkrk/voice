@@ -35,6 +35,25 @@ starts the daemon. It also prints `voice daemon status` output on success.
 On Linux, it disables the older `voice-daemon.service` unit if one exists so
 only the current `voiced.service` registration owns the daemon socket.
 
+On an interactive terminal it prints the detected chip and RAM, then prompts
+for the speech-to-text model. Pressing Enter takes the default
+(`distil-whisper/distil-large-v3.5`, English). When stdin is not a TTY (CI,
+piped input, a provisioning script) it skips the prompt and installs the
+default, so unattended installs just work.
+
+To pick a model up front and skip the prompt, or to pin a model in an
+unattended install:
+
+```bash
+voice daemon install --stt-model openai/whisper-large-v3   # multilingual
+voice daemon install --yes                                 # accept defaults, no prompt
+```
+
+A non-default `--stt-model` is written into the service environment as
+`STT_MODEL`, so the daemon loads it on every restart. The default tracks the
+compiled-in default and writes no `STT_MODEL`, so future upgrades move with the
+binary.
+
 To install the service file without starting immediately:
 
 ```bash
@@ -120,7 +139,8 @@ WantedBy=default.target
 ```
 
 If `voice` is installed somewhere else, replace `ExecStart` with the absolute
-path from `command -v voice`.
+path from `command -v voice`. To pin a non-default STT model, add
+`Environment=STT_MODEL=openai/whisper-large-v3` under `[Service]`.
 
 Enable and start it:
 
@@ -168,7 +188,16 @@ Create `~/Library/LaunchAgents/com.rgbkrk.voice.voiced.plist`:
 ```
 
 Replace `/Users/YOU/.cargo/bin/voice` with the absolute path from
-`command -v voice`.
+`command -v voice`. To pin a non-default STT model, add an
+`EnvironmentVariables` dict:
+
+```xml
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>STT_MODEL</key>
+    <string>openai/whisper-large-v3</string>
+  </dict>
+```
 
 Load and start it:
 

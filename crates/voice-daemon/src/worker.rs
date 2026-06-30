@@ -25,6 +25,14 @@ use voice_voxtral::{VoxtralGenerationOptions, VoxtralStreamingConfig, VoxtralTts
 
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
 const STT_REPO: &str = "distil-whisper/distil-large-v3";
+
+/// STT model the daemon loads. Defaults to [`STT_REPO`] but is overridable with
+/// the `STT_MODEL` env var, so the service file can pin a larger/different model
+/// (e.g. `openai/whisper-large-v3`) without recompiling. Mirrors the CLI's
+/// `listen::stt_model_repo`.
+fn stt_repo() -> String {
+    std::env::var("STT_MODEL").unwrap_or_else(|_| STT_REPO.to_string())
+}
 const KOKORO_ENGINE: &str = "kokoro";
 const VOXTRAL_ENGINE: &str = "voxtral";
 const KOKORO_DEFAULT_VOICE: &str = "af_heart";
@@ -114,10 +122,11 @@ pub async fn run(
         Arc::new(Mutex::new(None))
     } else {
         // Eagerly load STT model — daemon is long-lived, pay the cost once
-        eprintln!("voice daemon: loading STT model...");
+        let repo = stt_repo();
+        eprintln!("voice daemon: loading STT model ({})...", repo);
         let stt_start = Instant::now();
-        match tokio::task::spawn_blocking(|| {
-            voice_stt::load_model(STT_REPO).map_err(|e| format!("stt: {}", e))
+        match tokio::task::spawn_blocking(move || {
+            voice_stt::load_model(&repo).map_err(|e| format!("stt: {}", e))
         })
         .await
         {
@@ -1047,10 +1056,10 @@ fn send_stream_event(
 fn ensure_stt(stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>) -> Result<(), String> {
     let mut guard = stt.lock().map_err(|e| format!("stt lock: {}", e))?;
     if guard.is_none() {
-        eprintln!("voice daemon: loading STT model ({})...", STT_REPO);
+        let repo = stt_repo();
+        eprintln!("voice daemon: loading STT model ({})...", repo);
         let start = Instant::now();
-        let model =
-            voice_stt::load_model(STT_REPO).map_err(|e| format!("stt load_model: {}", e))?;
+        let model = voice_stt::load_model(&repo).map_err(|e| format!("stt load_model: {}", e))?;
         eprintln!(
             "voice daemon: STT model loaded in {:.1}s",
             start.elapsed().as_secs_f32()

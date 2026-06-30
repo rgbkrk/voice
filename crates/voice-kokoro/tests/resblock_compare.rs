@@ -16,7 +16,7 @@ fn compare_resblock_with_python() {
     let x = load_npy_f32(&x_npy, &device);
     let s = load_npy_f32(&s_npy, &device);
     let expected_out = load_npy_f32(&out_npy, &Device::Cpu);
-    let expected_adain0 = load_npy_f32(&adain0_npy, &Device::Cpu);
+    let _expected_adain0 = load_npy_f32(&adain0_npy, &Device::Cpu);
 
     eprintln!("x: {:?}, s: {:?}", x.shape(), s.shape());
 

@@ -13,8 +13,6 @@ pub enum FrameType {
     Response = 0x02,
     /// Daemon-initiated event/notification (daemon → client).
     Event = 0x03,
-    /// Automerge sync message (bidirectional, future).
-    Sync = 0x04,
 }
 
 impl FrameType {
@@ -23,7 +21,6 @@ impl FrameType {
             0x01 => Some(Self::Request),
             0x02 => Some(Self::Response),
             0x03 => Some(Self::Event),
-            0x04 => Some(Self::Sync),
             _ => None,
         }
     }

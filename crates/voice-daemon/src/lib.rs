@@ -3,21 +3,14 @@
 //! The daemon listens on `~/.voice/daemon.sock` for TTS/STT requests and
 //! processes them sequentially so multiple MCP clients never overlap audio.
 
-mod audio_recorder;
-mod automerge_state;
-mod cleanup;
 mod config;
 mod queue;
 mod socket;
-mod ui_server;
-mod ui_state;
 mod worker;
 
-use automerge_state::AutomergeState;
 use config::DaemonConfig;
 use queue::RequestQueue;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DaemonOptions {
@@ -61,24 +54,6 @@ pub async fn run(options: DaemonOptions) {
     let queue = Arc::new(RequestQueue::new());
     let config = Arc::new(DaemonConfig::new());
 
-    let automerge = match AutomergeState::load_or_create() {
-        Ok(state) => Arc::new(Mutex::new(state)),
-        Err(e) => {
-            eprintln!("voice daemon: failed to load automerge state: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    {
-        let snapshot = queue.snapshot().await;
-        let mut am = automerge.lock().await;
-        am.update(&snapshot);
-        if let Err(e) = am.save() {
-            eprintln!("voice daemon: failed to save initial automerge state: {e}");
-            std::process::exit(1);
-        }
-    }
-
     tokio::spawn({
         async move {
             tokio::signal::ctrl_c().await.ok();
@@ -90,27 +65,9 @@ pub async fn run(options: DaemonOptions) {
 
     let worker_queue = queue.clone();
     let worker_config = config.clone();
-    let worker_automerge = automerge.clone();
     tokio::spawn(async move {
-        worker::run(
-            worker_queue,
-            worker_config,
-            worker_automerge,
-            options.tts_only,
-        )
-        .await;
+        worker::run(worker_queue, worker_config, options.tts_only).await;
     });
 
-    let cleanup_queue = queue.clone();
-    let cleanup_automerge = automerge.clone();
-    tokio::spawn(async move {
-        cleanup::run(cleanup_queue, cleanup_automerge).await;
-    });
-
-    let ui_queue = queue.clone();
-    tokio::spawn(async move {
-        ui_server::serve(ui_queue).await;
-    });
-
-    socket::serve(queue, config, automerge).await;
+    socket::serve(queue, config).await;
 }

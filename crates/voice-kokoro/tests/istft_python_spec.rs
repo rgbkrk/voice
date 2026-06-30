@@ -27,7 +27,7 @@ fn istft_from_python_spec() {
     );
 
     // Load Python's iSTFT output for comparison
-    let py_wav = std::fs::read("/tmp/python_fox_raw.wav").unwrap();
+    let _py_wav = std::fs::read("/tmp/python_fox_raw.wav").unwrap();
     // Skip WAV header (44 bytes for simple WAV)
     // Actually let's just check the sample count matches
     eprintln!("Our samples: {}, expected: ~66600", samples.len());

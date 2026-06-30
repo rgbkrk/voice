@@ -13,11 +13,17 @@ Production-quality TTS audio output. STT via distil-whisper (distil-large-v3 def
 | Crate | Purpose |
 |-------|---------|
 | `crates/voice-kokoro/` | Kokoro-82M model — ALBERT encoder, prosody predictor, text encoder, iSTFT decoder |
+| `crates/voice-voxtral/` | Native Voxtral-4B TTS — Candle/Metal text-to-audio, streaming, 20 preset voices |
 | `crates/voice-tts/` | High-level TTS API — model loading, voice embedding, builtin voices, catalog |
 | `crates/voice-stt/` | High-level STT API — Whisper model loading, transcription, resampling |
 | `crates/voice-whisper/` | Whisper model backend — greedy decoding, GPU mel spectrogram |
 | `crates/voice-g2p/` | Grapheme-to-phoneme — misaki dictionary + espeak-ng fallback |
+| `crates/voice-audio/` | Audio container/codec helpers shared by CLI and daemon (WAV, speed) |
+| `crates/voice-stream/` | Transport-neutral streaming audio frame events for daemon/clients |
+| `crates/voice-protocol/` | Wire protocol — frame types + JSON-RPC shared by daemon, MCP, CLI |
+| `crates/voice-daemon/` | Background daemon — warm models, Unix socket, serialized audio queue |
 | `crates/voice-cli/` | CLI binary (installs as `voice`) |
+| `crates/voice-eval/` | Local intelligibility eval loop — synthesize, transcribe, score |
 
 ## Key files
 

@@ -1,6 +1,0 @@
-# Node
-node_modules/
-dist/
-
-# Tauri
-gen/

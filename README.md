@@ -44,10 +44,10 @@ This puts the `voice` binary on your `$PATH`. Model weights are downloaded from 
 ## Usage
 
 ```bash
-# Just talk (backward compatible — no subcommand needed)
-voice Hello world, this is voice speaking.
+# Speak text aloud
+voice say "Hello world, this is voice speaking."
 
-# Explicit say subcommand with options
+# With voice and other options
 voice say -v am_michael "How are you today?"
 
 # Pipe text in
@@ -101,7 +101,7 @@ voice serve
 ### `voice say`
 
 ```
-Speak text aloud (default when no subcommand given)
+Speak text aloud
 
 Usage: voice say [OPTIONS] [TEXT]...
 

@@ -8,7 +8,6 @@ use crate::queue::{
     RequestQueue, StreamSpeakRequest, StreamTranscribeRequest, SynthesizeRequest, TtsOptions,
     VoiceRequest,
 };
-use crate::ui_state::UI_INTERNAL_CLIENT_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -30,11 +29,7 @@ pub fn socket_path() -> PathBuf {
     path
 }
 
-pub async fn serve(
-    queue: Arc<RequestQueue>,
-    config: Arc<DaemonConfig>,
-    automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
-) {
+pub async fn serve(queue: Arc<RequestQueue>, config: Arc<DaemonConfig>) {
     let path = socket_path();
 
     if path.exists() {
@@ -58,14 +53,7 @@ pub async fn serve(
                 let config = config.clone();
                 let client_id = Uuid::new_v4().to_string()[..8].to_string();
                 eprintln!("voice daemon: client connected ({})", client_id);
-                let automerge_clone = automerge.clone();
-                tokio::spawn(handle_client(
-                    stream,
-                    queue,
-                    config,
-                    client_id,
-                    automerge_clone,
-                ));
+                tokio::spawn(handle_client(stream, queue, config, client_id));
             }
             Err(e) => eprintln!("voice daemon: accept error: {}", e),
         }
@@ -77,7 +65,6 @@ async fn handle_client(
     queue: Arc<RequestQueue>,
     config: Arc<DaemonConfig>,
     client_id: String,
-    automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
 ) {
     let (mut reader, mut writer) = stream.into_split();
 
@@ -94,37 +81,23 @@ async fn handle_client(
         match frame.frame_type {
             FrameType::Request => match frame.json::<rpc::Request>() {
                 Ok(req) if req.method == "stream_speak" => {
-                    if dispatch_stream_speak(
-                        req,
-                        &queue,
-                        &config,
-                        &client_id,
-                        &automerge,
-                        &mut writer,
-                    )
-                    .await
-                    .is_err()
+                    if dispatch_stream_speak(req, &queue, &config, &client_id, &mut writer)
+                        .await
+                        .is_err()
                     {
                         break;
                     }
                 }
                 Ok(req) if req.method == "stream_transcribe" => {
-                    if dispatch_stream_transcribe(
-                        req,
-                        &queue,
-                        &client_id,
-                        &automerge,
-                        &mut reader,
-                        &mut writer,
-                    )
-                    .await
-                    .is_err()
+                    if dispatch_stream_transcribe(req, &queue, &client_id, &mut reader, &mut writer)
+                        .await
+                        .is_err()
                     {
                         break;
                     }
                 }
                 Ok(req) => {
-                    let response = dispatch(req, &queue, &config, &client_id, &automerge).await;
+                    let response = dispatch(req, &queue, &config, &client_id).await;
                     if write_response(&mut writer, &response).await.is_err() {
                         break;
                     }
@@ -171,7 +144,6 @@ async fn dispatch_stream_speak(
     queue: &Arc<RequestQueue>,
     config: &Arc<DaemonConfig>,
     client_id: &str,
-    automerge: &Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
     writer: &mut OwnedWriteHalf,
 ) -> std::io::Result<()> {
     if !(req.params.is_null() || req.params.is_object()) {
@@ -222,7 +194,6 @@ async fn dispatch_stream_speak(
             },
         )
         .await;
-    sync_automerge(queue, automerge).await;
 
     let response = Response::success(
         req.id,
@@ -282,7 +253,6 @@ async fn dispatch_stream_transcribe(
     req: rpc::Request,
     queue: &Arc<RequestQueue>,
     client_id: &str,
-    automerge: &Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
     reader: &mut OwnedReadHalf,
     writer: &mut OwnedWriteHalf,
 ) -> std::io::Result<()> {
@@ -413,7 +383,6 @@ async fn dispatch_stream_transcribe(
             }),
         )
         .await;
-    sync_automerge(queue, automerge).await;
 
     match completion_rx.await {
         Ok(completion) if completion.status == rpc::ItemStatus::Completed => {
@@ -446,24 +415,11 @@ async fn dispatch_stream_transcribe(
     Ok(())
 }
 
-async fn sync_automerge(
-    queue: &Arc<RequestQueue>,
-    automerge: &Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
-) {
-    let snapshot = queue.snapshot().await;
-    let mut am = automerge.lock().await;
-    am.update(&snapshot);
-    if let Err(e) = am.save() {
-        eprintln!("voice daemon: failed to save automerge doc: {}", e);
-    }
-}
-
 async fn dispatch(
     req: rpc::Request,
     queue: &Arc<RequestQueue>,
     config: &Arc<DaemonConfig>,
     client_id: &str,
-    automerge: &Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
 ) -> Response {
     use crate::queue::VoiceRequest;
 
@@ -473,10 +429,6 @@ async fn dispatch(
 
     let wait = match wait_param(&req) {
         Ok(wait) => wait,
-        Err(resp) => return resp,
-    };
-    let ui_hold = match ui_hold_param(&req) {
-        Ok(ui_hold) => ui_hold,
         Err(resp) => return resp,
     };
 
@@ -550,6 +502,10 @@ async fn dispatch(
             VoiceRequest::Listen { max_duration_ms }
         }
         "converse" => {
+            // Converse never blocks the connection: it enqueues, then returns a
+            // converse_id immediately. The caller fetches the transcript later
+            // with `converse_result`. This is what keeps a long human-response
+            // wait from holding (and getting retried on) the MCP tool call.
             let text = match required_string_param(&req, "text") {
                 Ok(text) => text,
                 Err(resp) => return resp,
@@ -567,84 +523,62 @@ async fn dispatch(
                 Ok(duration) => duration,
                 Err(resp) => return resp,
             };
-            VoiceRequest::Converse {
-                text,
-                voice,
-                max_duration_ms,
-                options,
-            }
+
+            let (busy, ahead) = queue.audio_load().await;
+            let audio_ahead = ahead as u64 + if busy { 1 } else { 0 };
+            let converse_id = queue
+                .enqueue_converse(client_id.to_string(), text, voice, max_duration_ms, options)
+                .await;
+            return Response::success(
+                req.id,
+                serde_json::json!({
+                    "converse_id": converse_id,
+                    "status": "queued",
+                    "gated": audio_ahead > 0,
+                    "audio_ahead": audio_ahead,
+                }),
+            );
         }
-        "replay_audio" => {
-            let queue_id = match required_string_param(&req, "queue_id") {
-                Ok(queue_id) => queue_id,
+        "converse_result" => {
+            let converse_id = match required_string_param(&req, "converse_id") {
+                Ok(id) => id,
                 Err(resp) => return resp,
             };
-            let part = match required_string_param(&req, "part") {
-                Ok(part) => part,
+            let wait_ms = match optional_duration_param(&req, "wait_ms") {
+                Ok(ms) => ms.unwrap_or(0).min(30_000),
                 Err(resp) => return resp,
             };
 
-            let path = match part.as_str() {
-                "question" => crate::audio_recorder::question_path(&queue_id),
-                "answer" => crate::audio_recorder::answer_path(&queue_id),
-                _ => {
-                    return Response::error(
-                        req.id,
-                        rpc::INVALID_PARAMS,
-                        "param 'part' must be 'question' or 'answer'",
-                    );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+            loop {
+                let view = queue.converse_result(&converse_id).await;
+                // Only completed/failed are terminal. "unknown" is returned both
+                // for a bad id and transiently while an entry hops between
+                // collections, so we keep polling on it and let the deadline
+                // bound the wait — otherwise a just-completed converse can be
+                // reported lost in the gap before it lands in the results store.
+                let terminal = matches!(view.phase, "completed" | "failed");
+                if terminal || std::time::Instant::now() >= deadline {
+                    let mut obj = serde_json::json!({
+                        "converse_id": converse_id,
+                        "phase": view.phase,
+                        "mic_active": view.mic_active,
+                    });
+                    if let Some(result) = view.result {
+                        obj["result"] = serde_json::Value::String(result);
+                    }
+                    if let Some(error) = view.error {
+                        obj["error"] = serde_json::Value::String(error);
+                    }
+                    return Response::success(req.id, obj);
                 }
-            };
-
-            // Read WAV file
-            let (samples, sample_rate) = match crate::audio_recorder::read_wav(&path) {
-                Ok(result) => result,
-                Err(e) => {
-                    return Response::error(req.id, -32000, format!("Audio file not found: {}", e));
-                }
-            };
-
-            // Play through rodio
-            let duration_ms = tokio::task::spawn_blocking(move || {
-                use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
-                use std::num::NonZero;
-                use std::time::Instant;
-
-                let mut stream = match DeviceSinkBuilder::open_default_sink() {
-                    Ok(s) => s,
-                    Err(e) => return Err(format!("audio device: {}", e)),
-                };
-                stream.log_on_drop(false);
-                let player = Player::connect_new(stream.mixer());
-
-                let channels = NonZero::new(1u16).unwrap();
-                let rate = NonZero::new(sample_rate).unwrap();
-                let source = SamplesBuffer::new(channels, rate, samples);
-                player.append(source);
-
-                let started = Instant::now();
-                while !player.empty() {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Ok(started.elapsed().as_millis() as u64)
-            })
-            .await;
-
-            match duration_ms {
-                Ok(Ok(ms)) => {
-                    return Response::success(req.id, serde_json::json!({ "duration_ms": ms }));
-                }
-                Ok(Err(e)) => {
-                    return Response::error(req.id, -32000, format!("Playback error: {}", e));
-                }
-                Err(e) => {
-                    return Response::error(req.id, -32000, format!("Task panicked: {}", e));
-                }
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                let poll = remaining.min(std::time::Duration::from_millis(200));
+                let _ = tokio::time::timeout(poll, queue.notify.notified()).await;
             }
         }
         "cancel" => {
             let count = queue.cancel_client(client_id).await;
-            sync_automerge(queue, automerge).await;
             return Response::success(req.id, serde_json::json!({ "cancelled_count": count }));
         }
         "cancel_item" => {
@@ -657,7 +591,6 @@ async fn dispatch(
             let removed = queue.cancel_item(&queue_id).await;
 
             if removed {
-                sync_automerge(queue, automerge).await;
                 return Response::success(req.id, serde_json::json!({ "cancelled": true }));
             } else {
                 return Response::success(req.id, serde_json::json!({ "cancelled": false }));
@@ -773,32 +706,6 @@ async fn dispatch(
 
     if !wait {
         // Fire-and-forget: enqueue and return immediately
-        let can_hold_for_ui = matches!(
-            voice_req,
-            VoiceRequest::Speak { .. }
-                | VoiceRequest::Listen { .. }
-                | VoiceRequest::Converse { .. }
-        );
-        if ui_hold && can_hold_for_ui {
-            let prompt_request = held_prompt_request(&voice_req);
-            let queue_id = queue
-                .enqueue_ui_held(client_id.to_string(), voice_req)
-                .await;
-            if let Some(mut request) = prompt_request {
-                request.output_path = crate::audio_recorder::question_path(&queue_id)
-                    .to_string_lossy()
-                    .into_owned();
-                queue
-                    .enqueue_synthesize(UI_INTERNAL_CLIENT_ID.to_string(), request)
-                    .await;
-            }
-            sync_automerge(queue, automerge).await;
-            return Response::success(
-                req.id,
-                serde_json::json!({ "queue_id": queue_id, "status": "held" }),
-            );
-        }
-
         let queue_id = match voice_req {
             VoiceRequest::Speak {
                 text,
@@ -854,7 +761,6 @@ async fn dispatch(
                     .await
             }
         };
-        sync_automerge(queue, automerge).await;
         return Response::success(
             req.id,
             serde_json::json!({ "queue_id": queue_id, "status": "queued" }),
@@ -865,7 +771,6 @@ async fn dispatch(
     let (queue_id, rx) = queue
         .enqueue_and_wait(client_id.to_string(), voice_req)
         .await;
-    sync_automerge(queue, automerge).await;
 
     match rx.await {
         Ok(result) => Response::success(
@@ -890,51 +795,6 @@ fn wait_param(req: &rpc::Request) -> Result<bool, Response> {
             )
         }),
         None => Ok(req.method == "synthesize"),
-    }
-}
-
-fn ui_hold_param(req: &rpc::Request) -> Result<bool, Response> {
-    match req.params.get("ui_hold") {
-        Some(value) => value.as_bool().ok_or_else(|| {
-            Response::error(
-                req.id.clone(),
-                rpc::INVALID_PARAMS,
-                "param 'ui_hold' must be a boolean",
-            )
-        }),
-        None => Ok(false),
-    }
-}
-
-fn held_prompt_request(request: &VoiceRequest) -> Option<SynthesizeRequest> {
-    match request {
-        VoiceRequest::Speak {
-            text,
-            voice,
-            speed,
-            options,
-        } => Some(SynthesizeRequest {
-            text: text.clone(),
-            output_path: String::new(),
-            output_format: Some(AudioOutputFormat::Wav),
-            voice: voice.clone(),
-            speed: *speed,
-            options: options.clone(),
-        }),
-        VoiceRequest::Converse {
-            text,
-            voice,
-            options,
-            ..
-        } => Some(SynthesizeRequest {
-            text: text.clone(),
-            output_path: String::new(),
-            output_format: Some(AudioOutputFormat::Wav),
-            voice: voice.clone(),
-            speed: None,
-            options: options.clone(),
-        }),
-        _ => None,
     }
 }
 
@@ -1301,10 +1161,16 @@ fn i16_to_f32(sample: i16) -> f32 {
     (sample as f32 / 32_768.0).clamp(-1.0, 1.0)
 }
 
+pub fn cleanup() {
+    let path = socket_path();
+    if path.exists() {
+        std::fs::remove_file(&path).ok();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automerge_state::AutomergeState;
     use crate::config::DaemonConfig;
     use tokio::net::UnixStream;
 
@@ -1341,55 +1207,10 @@ mod tests {
         assert!(err.contains("stream_id"));
     }
 
-    #[tokio::test]
-    async fn ui_hold_request_stays_out_of_worker_queue() {
-        let queue = Arc::new(RequestQueue::new());
-        let automerge = Arc::new(tokio::sync::Mutex::new(AutomergeState::new()));
-        let request = rpc::Request::new(
-            "speak",
-            serde_json::json!({
-                "text": "Hold this for the playlist.",
-                "wait": false,
-                "ui_hold": true
-            }),
-        )
-        .with_id(1);
-
-        let response = dispatch(
-            request,
-            &queue,
-            &Arc::new(DaemonConfig::new()),
-            "agent-a",
-            &automerge,
-        )
-        .await;
-
-        assert!(response.error.is_none());
-        let result = response.result.expect("response result");
-        assert_eq!(result["status"], "held");
-
-        let synth = queue.dequeue().await.expect("hidden synth job");
-        assert_eq!(synth.client_id, UI_INTERNAL_CLIENT_ID);
-        match synth.request {
-            VoiceRequest::Synthesize {
-                output_path, text, ..
-            } => {
-                assert_eq!(text, "Hold this for the playlist.");
-                assert!(output_path.ends_with("-q.wav"));
-            }
-            other => panic!("expected hidden synth job, got {other:?}"),
-        }
-
-        let snapshot = queue.snapshot().await;
-        assert_eq!(snapshot.pending.len(), 1);
-        assert!(snapshot.pending[0].held_for_ui);
-        assert_eq!(
-            snapshot.pending[0].text_preview.as_deref(),
-            Some("Hold this for the playlist.")
-        );
-    }
-
+    // ENV_LOCK serializes the global SOCKET_ENV mutation against other tests, so
+    // it has to stay held while this test awaits its server and client tasks.
     #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
     async fn stream_transcribe_socket_round_trips_to_queue() {
         let _guard = ENV_LOCK.lock().unwrap();
         let suffix = Uuid::new_v4().to_string();
@@ -1417,28 +1238,24 @@ mod tests {
                     assert_eq!(request.sample_rate, 48_000);
                     assert_eq!(request.samples.len(), 3);
                     worker_queue
-                        .complete(
-                            Some(
-                                serde_json::json!({
-                                    "stream_id": request.stream_id,
-                                    "text": "hello",
-                                    "tokens": 1,
-                                    "sample_rate": request.sample_rate,
-                                    "audio_duration_ms": 0,
-                                    "elapsed_ms": 0,
-                                })
-                                .to_string(),
-                            ),
-                            None,
-                        )
+                        .complete(Some(
+                            serde_json::json!({
+                                "stream_id": request.stream_id,
+                                "text": "hello",
+                                "tokens": 1,
+                                "sample_rate": request.sample_rate,
+                                "audio_duration_ms": 0,
+                                "elapsed_ms": 0,
+                            })
+                            .to_string(),
+                        ))
                         .await;
                 }
                 _ => worker_queue.fail("unexpected request".to_string()).await,
             }
         });
 
-        let automerge = Arc::new(tokio::sync::Mutex::new(AutomergeState::new()));
-        let server = tokio::spawn(serve(queue, Arc::new(DaemonConfig::new()), automerge));
+        let server = tokio::spawn(serve(queue, Arc::new(DaemonConfig::new())));
 
         for _ in 0..50 {
             if socket_path.exists() {
@@ -1522,12 +1339,5 @@ mod tests {
             }
             None => std::env::remove_var(voice_protocol::client::daemon_socket_env_var()),
         }
-    }
-}
-
-pub fn cleanup() {
-    let path = socket_path();
-    if path.exists() {
-        std::fs::remove_file(&path).ok();
     }
 }

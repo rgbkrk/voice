@@ -1,7 +1,7 @@
 //! JSON-RPC 2.0 request/response types for the voice daemon.
 //!
 //! These are the canonical definitions used by both the daemon and all clients
-//! (MCP server, CLI, Tauri UI).
+//! (MCP server and CLI).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -130,8 +130,6 @@ pub struct QueueItem {
     pub client_id: String,
     pub method: String,
     pub status: ItemStatus,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub held_for_ui: bool,
     pub created_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_preview: Option<String>,
@@ -141,12 +139,6 @@ pub struct QueueItem {
     pub repo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auto_clear_at: Option<u64>,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Snapshot of daemon state — returned by the `status` method.

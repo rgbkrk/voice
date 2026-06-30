@@ -1,7 +1,7 @@
 //! Request queue for serializing voice operations.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use uuid::Uuid;
@@ -10,6 +10,22 @@ use voice_protocol::rpc::{DaemonState, ItemStatus, QueueItem};
 use voice_stream::TtsStreamEvent;
 
 const CANCELLED_MESSAGE: &str = "Cancelled by user";
+
+/// Live phase of the converse currently held in `current`. The worker writes
+/// it as a converse moves speak -> listen; `converse_result` reads it to tell a
+/// caller whether the mic is open. Meaningless unless `current` is a converse.
+pub const CONVERSE_PHASE_IDLE: u8 = 0;
+pub const CONVERSE_PHASE_SPEAKING: u8 = 1;
+pub const CONVERSE_PHASE_LISTENING: u8 = 2;
+
+/// What `converse_result` reports for a converse id.
+#[derive(Debug, Clone)]
+pub struct ConverseView {
+    pub phase: &'static str,
+    pub mic_active: bool,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
 
 /// Optional TTS engine controls carried with daemon requests.
 #[derive(Debug, Clone, Default)]
@@ -137,12 +153,10 @@ pub struct QueueEntry {
     pub client_id: String,
     pub request: VoiceRequest,
     pub status: ItemStatus,
-    pub held_for_ui: bool,
     pub created_at: u64,
     pub result: Option<String>,
     pub completed_at: Option<u64>,
     pub repo: Option<String>,
-    pub auto_clear_at: Option<u64>,
     pub cancelled: Arc<AtomicBool>,
 }
 
@@ -153,13 +167,11 @@ impl QueueEntry {
             client_id: self.client_id.clone(),
             method: self.request.method().to_string(),
             status: self.status.clone(),
-            held_for_ui: self.held_for_ui,
             created_at: self.created_at,
             text_preview: self.request.text_preview(),
             result: self.result.clone(),
             repo: self.repo.clone(),
             completed_at: self.completed_at,
-            auto_clear_at: self.auto_clear_at,
         }
     }
 }
@@ -175,8 +187,14 @@ pub struct RequestQueue {
     items: Mutex<VecDeque<QueueEntry>>,
     current: Mutex<Option<QueueEntry>>,
     recent: Mutex<VecDeque<QueueEntry>>,
+    /// Terminal converse outcomes, kept separately from `recent` so routine
+    /// fire-and-forget `speak` traffic can't evict a transcript before the
+    /// caller fetches it with `converse_result`.
+    converse_results: Mutex<VecDeque<QueueEntry>>,
     /// Completion channels: queue_id → sender. Signaled when an item finishes.
     waiters: Mutex<HashMap<String, oneshot::Sender<CompletionResult>>>,
+    /// Live speak/listen phase of the in-flight converse (see CONVERSE_PHASE_*).
+    converse_phase: Arc<AtomicU8>,
     pub notify: Notify,
 }
 
@@ -186,8 +204,86 @@ impl RequestQueue {
             items: Mutex::new(VecDeque::new()),
             current: Mutex::new(None),
             recent: Mutex::new(VecDeque::new()),
+            converse_results: Mutex::new(VecDeque::new()),
             waiters: Mutex::new(HashMap::new()),
+            converse_phase: Arc::new(AtomicU8::new(CONVERSE_PHASE_IDLE)),
             notify: Notify::new(),
+        }
+    }
+
+    /// Handle to the in-flight converse phase flag. The worker stores
+    /// CONVERSE_PHASE_* on it as a converse moves speak -> listen.
+    pub fn converse_phase(&self) -> Arc<AtomicU8> {
+        self.converse_phase.clone()
+    }
+
+    /// Snapshot of audio load taken before enqueue: (something is playing now,
+    /// number of pending items ahead). Used to report converse gating.
+    pub async fn audio_load(&self) -> (bool, usize) {
+        let busy = self.current.lock().await.is_some();
+        let pending = self.items.lock().await.len();
+        (busy, pending)
+    }
+
+    /// Report the state of a converse by id: completed/failed (from the
+    /// dedicated converse-results store), the live speaking/listening phase (if
+    /// it is the current item), queued (if still pending), or unknown. Note that
+    /// "unknown" is also returned transiently while an entry moves between
+    /// collections, so callers that long-poll must not treat it as terminal.
+    pub async fn converse_result(&self, id: &str) -> ConverseView {
+        if let Some(entry) = self
+            .converse_results
+            .lock()
+            .await
+            .iter()
+            .find(|e| e.id == id)
+        {
+            return match entry.status {
+                ItemStatus::Failed => ConverseView {
+                    phase: "failed",
+                    mic_active: false,
+                    result: None,
+                    error: entry.result.clone(),
+                },
+                _ => ConverseView {
+                    phase: "completed",
+                    mic_active: false,
+                    result: entry.result.clone(),
+                    error: None,
+                },
+            };
+        }
+
+        if self
+            .current
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|e| e.id == id)
+        {
+            let listening = self.converse_phase.load(Ordering::SeqCst) == CONVERSE_PHASE_LISTENING;
+            return ConverseView {
+                phase: if listening { "listening" } else { "speaking" },
+                mic_active: listening,
+                result: None,
+                error: None,
+            };
+        }
+
+        if self.items.lock().await.iter().any(|e| e.id == id) {
+            return ConverseView {
+                phase: "queued",
+                mic_active: false,
+                result: None,
+                error: None,
+            };
+        }
+
+        ConverseView {
+            phase: "unknown",
+            mic_active: false,
+            result: None,
+            error: None,
         }
     }
 
@@ -271,12 +367,10 @@ impl RequestQueue {
             client_id,
             request,
             status: ItemStatus::Queued,
-            held_for_ui: false,
             created_at: now_secs(),
             result: None,
             completed_at: None,
             repo: None,
-            auto_clear_at: None,
             cancelled: Arc::new(AtomicBool::new(false)),
         };
         self.items.lock().await.push_back(entry);
@@ -303,12 +397,10 @@ impl RequestQueue {
             client_id,
             request,
             status: ItemStatus::Queued,
-            held_for_ui: false,
             created_at: now_secs(),
             result: None,
             completed_at: None,
             repo: None,
-            auto_clear_at: None,
             cancelled: Arc::new(AtomicBool::new(false)),
         };
         self.items.lock().await.push_back(entry);
@@ -317,85 +409,19 @@ impl RequestQueue {
     }
 
     pub async fn dequeue(&self) -> Option<QueueEntry> {
-        let mut items = self.items.lock().await;
-        let position = items.iter().position(|entry| !entry.held_for_ui)?;
-        let mut entry = items.remove(position)?;
+        let mut entry = self.items.lock().await.pop_front()?;
         entry.status = ItemStatus::Processing;
         *self.current.lock().await = Some(entry.clone());
         self.notify.notify_waiters();
         Some(entry)
     }
 
-    /// Add a playlist/mailbox item that is visible to the UI but not consumed
-    /// by the worker until a later compatibility path explicitly releases it.
-    pub async fn enqueue_ui_held(&self, client_id: String, request: VoiceRequest) -> String {
-        let id = Uuid::new_v4().to_string()[..8].to_string();
-        let entry = QueueEntry {
-            id: id.clone(),
-            client_id,
-            request,
-            status: ItemStatus::Queued,
-            held_for_ui: true,
-            created_at: now_secs(),
-            result: None,
-            completed_at: None,
-            repo: None,
-            auto_clear_at: None,
-            cancelled: Arc::new(AtomicBool::new(false)),
-        };
-        self.items.lock().await.push_back(entry);
-        self.notify.notify_waiters();
-        id
-    }
-
-    pub async fn complete_held_item(&self, queue_id: &str, result: Option<String>) -> bool {
-        self.finish_held_item(queue_id, ItemStatus::Completed, result)
-            .await
-    }
-
-    pub async fn fail_held_item(&self, queue_id: &str, result: Option<String>) -> bool {
-        self.finish_held_item(queue_id, ItemStatus::Failed, result)
-            .await
-    }
-
-    async fn finish_held_item(
-        &self,
-        queue_id: &str,
-        status: ItemStatus,
-        result: Option<String>,
-    ) -> bool {
-        let entry = {
-            let mut items = self.items.lock().await;
-            items
-                .iter()
-                .position(|entry| entry.id == queue_id && entry.held_for_ui)
-                .and_then(|position| items.remove(position))
-        };
-
-        let Some(mut entry) = entry else {
-            return false;
-        };
-
-        entry.status = status;
-        entry.result = result;
-        entry.completed_at = Some(now_secs());
-        self.push_recent(entry).await;
-        self.notify.notify_waiters();
-        true
-    }
-
-    pub async fn complete(&self, result: Option<String>, auto_clear_secs: Option<u64>) {
+    pub async fn complete(&self, result: Option<String>) {
         if let Some(mut entry) = self.current.lock().await.take() {
             let id = entry.id.clone();
             entry.status = ItemStatus::Completed;
             entry.result = result.clone();
-
-            // Set auto-clear timestamps if requested
-            if let Some(delay) = auto_clear_secs {
-                let now = now_secs();
-                entry.completed_at = Some(now);
-                entry.auto_clear_at = Some(now + delay);
-            }
+            entry.completed_at = Some(now_secs());
 
             self.push_recent(entry).await;
             self.signal_waiter(
@@ -539,6 +565,15 @@ impl RequestQueue {
     }
 
     async fn push_recent(&self, entry: QueueEntry) {
+        // Converse transcripts get their own retention so they survive the high
+        // churn of fire-and-forget speak items in the shared `recent` ring.
+        if matches!(entry.request, VoiceRequest::Converse { .. }) {
+            let mut converse = self.converse_results.lock().await;
+            converse.push_front(entry.clone());
+            if converse.len() > 64 {
+                converse.pop_back();
+            }
+        }
         let mut recent = self.recent.lock().await;
         recent.push_front(entry);
         if recent.len() > 20 {
@@ -567,12 +602,6 @@ impl RequestQueue {
             },
         )
         .await;
-        self.notify.notify_waiters();
-    }
-
-    /// Remove a completed item from the recent list by ID.
-    pub async fn remove_recent(&self, id: &str) {
-        self.recent.lock().await.retain(|item| item.id != id);
         self.notify.notify_waiters();
     }
 }
@@ -662,63 +691,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dequeue_skips_ui_held_items() {
+    async fn converse_result_tracks_queued_speaking_listening_completed() {
         let queue = RequestQueue::new();
-        let held_id = queue
-            .enqueue_ui_held(
-                "agent-a".to_string(),
-                VoiceRequest::Speak {
-                    text: "hold this".to_string(),
-                    voice: None,
-                    speed: None,
-                    options: TtsOptions::default(),
-                },
-            )
-            .await;
-        let live_id = queue
-            .enqueue_speak(
+        let id = queue
+            .enqueue_converse(
                 "cli".to_string(),
-                "play this".to_string(),
+                "need your response".to_string(),
                 None,
                 None,
                 TtsOptions::default(),
             )
             .await;
 
-        let entry = queue.dequeue().await.expect("worker item");
-        assert_eq!(entry.id, live_id);
+        assert_eq!(queue.converse_result(&id).await.phase, "queued");
 
-        let snapshot = queue.snapshot().await;
-        assert_eq!(snapshot.pending.len(), 1);
-        assert_eq!(snapshot.pending[0].id, held_id);
-        assert!(snapshot.pending[0].held_for_ui);
+        let entry = queue.dequeue().await.expect("worker item");
+        assert_eq!(entry.id, id);
+
+        // Current item, phase still idle -> reported as speaking, mic closed.
+        let view = queue.converse_result(&id).await;
+        assert_eq!(view.phase, "speaking");
+        assert!(!view.mic_active);
+
+        // Worker flips to listening when the mic opens.
+        queue
+            .converse_phase()
+            .store(CONVERSE_PHASE_LISTENING, Ordering::SeqCst);
+        let view = queue.converse_result(&id).await;
+        assert_eq!(view.phase, "listening");
+        assert!(view.mic_active);
+
+        queue
+            .complete(Some(r#"{"heard":{"text":"yes"}}"#.to_string()))
+            .await;
+        let view = queue.converse_result(&id).await;
+        assert_eq!(view.phase, "completed");
+        assert_eq!(view.result.as_deref(), Some(r#"{"heard":{"text":"yes"}}"#));
+        assert!(!view.mic_active);
     }
 
     #[tokio::test]
-    async fn complete_held_item_moves_it_to_recent() {
+    async fn converse_result_unknown_for_missing_id() {
         let queue = RequestQueue::new();
-        let held_id = queue
-            .enqueue_ui_held(
-                "agent-a".to_string(),
-                VoiceRequest::Converse {
-                    text: "need your response".to_string(),
-                    voice: None,
-                    max_duration_ms: None,
-                    options: TtsOptions::default(),
-                },
-            )
-            .await;
-
-        assert!(
-            queue
-                .complete_held_item(&held_id, Some(r#"{"heard":{"text":"yes"}}"#.to_string()))
-                .await
-        );
-
-        let snapshot = queue.snapshot().await;
-        assert!(snapshot.pending.is_empty());
-        assert_eq!(snapshot.recent.len(), 1);
-        assert_eq!(snapshot.recent[0].id, held_id);
-        assert_eq!(snapshot.recent[0].status, ItemStatus::Completed);
+        assert_eq!(queue.converse_result("nope").await.phase, "unknown");
     }
 }

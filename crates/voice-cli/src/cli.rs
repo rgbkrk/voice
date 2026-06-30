@@ -42,8 +42,8 @@ macro_rules! info {
     name = "voice",
     about = "Rust TTS & STT on Apple Silicon",
     after_help = "Examples:\n  \
-                  voice Hello world\n  \
-                  voxtral Hello from Voxtral\n  \
+                  voice say Hello world\n  \
+                  voxtral say Hello from Voxtral\n  \
                   voice say -v am_adam \"How are you today?\"\n  \
                   voxtral say -v casual_male \"How are you today?\"\n  \
                   echo \"Hello\" | voice say\n  \
@@ -73,14 +73,15 @@ struct Args {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Text to speak (shorthand for `voice say <text>` or `voxtral say <text>`)
+    /// Bare text is no longer spoken — use the `say` subcommand. Captured here
+    /// only so `voice <words>` can print a helpful pointer instead of speaking.
     #[arg(trailing_var_arg = true)]
     text: Vec<String>,
 }
 
 #[derive(clap::Subcommand, Debug)]
 enum Command {
-    /// Speak text aloud (default when no subcommand given)
+    /// Speak text aloud
     Say(SayArgs),
 
     /// Convert text to phoneme chunks without synthesis
@@ -283,13 +284,6 @@ enum InvocationProfile {
 }
 
 impl InvocationProfile {
-    fn default_tts_engine(self) -> TtsEngine {
-        match self {
-            Self::Voice => TtsEngine::Kokoro,
-            Self::Voxtral => TtsEngine::Voxtral,
-        }
-    }
-
     fn help_name(self) -> &'static str {
         match self {
             Self::Voice => "voice",
@@ -681,7 +675,6 @@ struct ConverseArgs {
     // Deliberately no --voxtral-normalize-text yet: converse has separate
     // turn-taking and daemon queue behavior that should be validated in its
     // own slice before changing the spoken prompt.
-
     /// Override Voxtral's initial streaming codec chunk size for daemon playback
     #[arg(long = "voxtral-stream-begin-frames")]
     voxtral_stream_begin_frames: Option<usize>,
@@ -923,16 +916,6 @@ enum DaemonCommand {
         queue_id: String,
     },
 
-    /// Replay stored question or answer audio for a queue item
-    Replay {
-        /// Queue item ID returned by daemon status or converse
-        queue_id: String,
-
-        /// Which audio file to replay
-        #[arg(short, long, value_enum, default_value_t = ReplayPart::Question)]
-        part: ReplayPart,
-    },
-
     /// Start the voice daemon
     Start {
         /// Start without eagerly loading STT/microphone support
@@ -949,27 +932,6 @@ enum DaemonCommand {
 
     /// Stop and remove the voice daemon system service
     Uninstall,
-}
-
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-enum ReplayPart {
-    Question,
-    Answer,
-}
-
-impl ReplayPart {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Question => "question",
-            Self::Answer => "answer",
-        }
-    }
-}
-
-impl std::fmt::Display for ReplayPart {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
 }
 
 fn resolve_text(say: &SayArgs) -> Result<String, String> {
@@ -1326,11 +1288,7 @@ fn preprocess_daemon_text(
         apply_substitutions(&text, &subs)
     };
     if engine == TtsEngine::Voxtral {
-        apply_voxtral_text_options(
-            text,
-            voxtral_normalize_text,
-            voxtral_pronunciation_aliases,
-        )
+        apply_voxtral_text_options(text, voxtral_normalize_text, voxtral_pronunciation_aliases)
     } else {
         text
     }
@@ -1432,36 +1390,18 @@ fn main() {
             run_stream_contract();
         }
         None => {
-            // Backward compatibility: `voice Hello world` = `voice say Hello world`
-            // Also: bare `voice` with piped stdin = `voice say` with stdin
-            if args.text.is_empty() && io::stdin().is_terminal() {
-                // No text, no pipe — show help
-                Args::parse_from([profile.help_name(), "--help"]);
+            // Bare-text shorthand is gone: speaking requires an explicit `say`
+            // subcommand so stray words (e.g. `voice status`) never get read
+            // aloud. With no text either, show help.
+            let name = profile.help_name();
+            if args.text.is_empty() {
+                Args::parse_from([name, "--help"]);
             } else {
-                let say_args = SayArgs {
-                    text: args.text,
-                    input_file: None,
-                    phonemes: None,
-                    engine: profile.default_tts_engine(),
-                    voice: None,
-                    voxtral_model: DEFAULT_VOXTRAL_MODEL.to_string(),
-                    voxtral_max_frames: VOXTRAL_DEFAULT_MAX_FRAMES,
-                    voxtral_flow_steps: 7,
-                    voxtral_kv_cache: false,
-                    voxtral_realtime: false,
-                    voxtral_normalize_text: false,
-                    voxtral_pronunciation_aliases: false,
-                    voxtral_auto_max_frames: false,
-                    voxtral_stream_begin_frames: None,
-                    output: None,
-                    format: None,
-                    speed: 1.0,
-                    deterministic: false,
-                    markdown: false,
-                    subs: Vec::new(),
-                    sub_file: None,
-                };
-                run_say(say_args);
+                let joined = args.text.join(" ");
+                eprintln!(
+                    "Error: `{name}` no longer speaks bare text. Use `{name} say {joined}` to speak it aloud."
+                );
+                std::process::exit(2);
             }
         }
     }
@@ -1560,20 +1500,6 @@ fn run_daemon(args: DaemonArgs) {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             println!("cancelled: {cancelled}");
-        }
-        DaemonCommand::Replay { queue_id, part } => {
-            let mut daemon = connect_daemon_or_exit();
-            let result = daemon_response_or_exit(daemon.replay_audio(&queue_id, part.as_str()));
-            let duration = result
-                .get("duration_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            println!(
-                "played {} audio for {} ({} ms)",
-                part.as_str(),
-                queue_id,
-                duration
-            );
         }
         DaemonCommand::Start { tts_only } => {
             voice_daemon::run_blocking(voice_daemon::DaemonOptions { tts_only });
@@ -1814,11 +1740,12 @@ fn run_bench_tts(args: BenchTtsArgs) {
         std::process::exit(1);
     }
     if args.daemon {
-        validate_stream_frame_params(args.stream_sample_rate, args.stream_frame_ms)
-            .unwrap_or_else(|e| {
+        validate_stream_frame_params(args.stream_sample_rate, args.stream_frame_ms).unwrap_or_else(
+            |e| {
                 eprintln!("voice bench tts: {e}");
                 std::process::exit(1);
-            });
+            },
+        );
     }
 
     let text = match resolve_bench_text(&args) {
@@ -1855,7 +1782,11 @@ fn run_bench_tts(args: BenchTtsArgs) {
 
     let report = TtsBenchReport {
         text,
-        mode: if args.daemon { "daemon_stream" } else { "local" },
+        mode: if args.daemon {
+            "daemon_stream"
+        } else {
+            "local"
+        },
         runs: args.runs,
         speed: args.speed,
         output_dir: args
@@ -1911,9 +1842,14 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
         let mut samples = Vec::new();
         let mut first_audio = None;
         for chunk in &phoneme_chunks {
-            let chunk_audio =
-                voice_tts::generate_with_mode(&mut model, chunk, &voice, args.speed, synthesis_mode)
-                    .map_err(|e| format!("kokoro synthesis failed: {e}"))?;
+            let chunk_audio = voice_tts::generate_with_mode(
+                &mut model,
+                chunk,
+                &voice,
+                args.speed,
+                synthesis_mode,
+            )
+            .map_err(|e| format!("kokoro synthesis failed: {e}"))?;
             if first_audio.is_none() {
                 first_audio = Some(total_start.elapsed());
             }
@@ -1983,7 +1919,8 @@ fn bench_kokoro_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRep
         });
     }
 
-    let cold_first_audio_ms = model_load + Duration::from_secs_f64(runs[0].first_audio_ms / 1_000.0);
+    let cold_first_audio_ms =
+        model_load + Duration::from_secs_f64(runs[0].first_audio_ms / 1_000.0);
     let cold_total_ms = model_load + Duration::from_secs_f64(runs[0].total_ms / 1_000.0);
 
     Ok(TtsBenchEngineReport {
@@ -2026,11 +1963,8 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
         let total_start = Instant::now();
         let text_prep_start = Instant::now();
         let (prepared, _phoneme_overrides) = prepare_bench_text(text, args, TtsEngine::Voxtral);
-        let voxtral = apply_auto_voxtral_max_frames(
-            voxtral,
-            &prepared,
-            args.voxtral_auto_max_frames,
-        );
+        let voxtral =
+            apply_auto_voxtral_max_frames(voxtral, &prepared, args.voxtral_auto_max_frames);
         let text_prep = text_prep_start.elapsed();
 
         let synth_start = Instant::now();
@@ -2100,7 +2034,9 @@ fn bench_voxtral_tts(args: &BenchTtsArgs, text: &str) -> Result<TtsBenchEngineRe
             voxtral_realtime: Some(args.voxtral_realtime),
             voxtral_sync_trace: Some(args.voxtral_sync_trace),
             voxtral_language_cache: Some(trace.language_cache),
-            voxtral_stream_begin_frames: Some(voxtral_streaming_config(voxtral).chunk_frames_at_begin),
+            voxtral_stream_begin_frames: Some(
+                voxtral_streaming_config(voxtral).chunk_frames_at_begin,
+            ),
             voxtral_voice_cache_hit: Some(trace.voice_cache_hit),
             voxtral_audio_frames: Some(audio.frames),
             voxtral_codec_chunks: Some(trace.codec_chunks),
@@ -2175,8 +2111,9 @@ fn bench_daemon_tts(
     validate_voice_for_engine(engine, voice)?;
     let voxtral = args.effective_voxtral_options();
 
-    let mut daemon = voice_protocol::client::DaemonClient::connect()
-        .ok_or_else(|| "voice daemon is not running; start it with `voice daemon start`".to_string())?;
+    let mut daemon = voice_protocol::client::DaemonClient::connect().ok_or_else(|| {
+        "voice daemon is not running; start it with `voice daemon start`".to_string()
+    })?;
     if !daemon_supports_engine(&mut daemon, engine) {
         return Err(format!(
             "voice daemon does not advertise {} support",
@@ -2190,11 +2127,7 @@ fn bench_daemon_tts(
         let text_prep_start = Instant::now();
         let (prepared, _phoneme_overrides) = prepare_bench_text(text, args, engine);
         let voxtral = if engine == TtsEngine::Voxtral {
-            apply_auto_voxtral_max_frames(
-                voxtral,
-                &prepared,
-                args.voxtral_auto_max_frames,
-            )
+            apply_auto_voxtral_max_frames(voxtral, &prepared, args.voxtral_auto_max_frames)
         } else {
             voxtral
         };
@@ -2260,7 +2193,11 @@ fn bench_daemon_tts(
             },
         )?;
         if let Some(err) = response.error {
-            return Err(format!("daemon {} stream failed: {}", engine.as_str(), err.message));
+            return Err(format!(
+                "daemon {} stream failed: {}",
+                engine.as_str(),
+                err.message
+            ));
         }
         if let Some(err) = terminal_error {
             return Err(format!("daemon {} stream failed: {err}", engine.as_str()));
@@ -2311,7 +2248,8 @@ fn bench_daemon_tts(
             audio_duration_ms: generated_audio_ms,
             model_audio_duration_ms,
             realtime_factor: ratio_ms(total_ms, generated_audio_ms),
-            model_realtime_factor: model_audio_duration_ms.and_then(|duration| ratio_ms(total_ms, duration)),
+            model_realtime_factor: model_audio_duration_ms
+                .and_then(|duration| ratio_ms(total_ms, duration)),
             first_audio_realtime_factor: ratio_ms(first_audio_ms, generated_audio_ms),
             first_audio_model_realtime_factor: model_audio_duration_ms
                 .and_then(|duration| ratio_ms(first_audio_ms, duration)),
@@ -2424,13 +2362,13 @@ fn daemon_recent_result_for_queue(
 }
 
 fn json_number_ms(value: &serde_json::Value) -> Option<f64> {
-    value.as_f64().or_else(|| value.as_u64().map(|value| value as f64))
+    value
+        .as_f64()
+        .or_else(|| value.as_u64().map(|value| value as f64))
 }
 
 fn json_number_usize(value: &serde_json::Value) -> Option<usize> {
-    value
-        .as_u64()
-        .and_then(|value| usize::try_from(value).ok())
+    value.as_u64().and_then(|value| usize::try_from(value).ok())
 }
 
 fn voxtral_streaming_config(
@@ -2831,11 +2769,8 @@ fn run_say(say_args: SayArgs) {
                     say_args.voxtral_normalize_text,
                     say_args.voxtral_pronunciation_aliases,
                 );
-                let voxtral = apply_auto_voxtral_max_frames(
-                    voxtral,
-                    &text,
-                    say_args.voxtral_auto_max_frames,
-                );
+                let voxtral =
+                    apply_auto_voxtral_max_frames(voxtral, &text, say_args.voxtral_auto_max_frames);
                 let tts_options =
                     daemon_tts_options(say_args.engine, &say_args.voxtral_model, voxtral);
 
@@ -3050,7 +2985,12 @@ fn run_voxtral_say(
     let audio = match runtime.generate_audio(
         &text,
         voice,
-        voxtral_generation_options(voxtral.max_frames, voxtral.flow_steps, voxtral.kv_cache, false),
+        voxtral_generation_options(
+            voxtral.max_frames,
+            voxtral.flow_steps,
+            voxtral.kv_cache,
+            false,
+        ),
     ) {
         Ok(audio) => audio,
         Err(e) => {
@@ -3114,11 +3054,8 @@ fn run_stream(stream_args: StreamArgs) {
         stream_args.voxtral_normalize_text,
         stream_args.voxtral_pronunciation_aliases,
     );
-    let voxtral = apply_auto_voxtral_max_frames(
-        voxtral,
-        &text,
-        stream_args.voxtral_auto_max_frames,
-    );
+    let voxtral =
+        apply_auto_voxtral_max_frames(voxtral, &text, stream_args.voxtral_auto_max_frames);
 
     validate_stream_frame_params(stream_args.sample_rate, stream_args.frame_ms).unwrap_or_else(
         |e| {
@@ -3601,11 +3538,7 @@ fn run_converse(args: ConverseArgs) {
                 &text,
                 Some(&voice),
                 Some(args.speed as f64),
-                daemon_tts_options(
-                    args.engine,
-                    &args.voxtral_model,
-                    voxtral,
-                ),
+                daemon_tts_options(args.engine, &args.voxtral_model, voxtral),
                 true,
             ) {
                 Ok(resp) if resp.error.is_none() => {
@@ -3643,7 +3576,8 @@ fn run_converse(args: ConverseArgs) {
     if args.engine == TtsEngine::Voxtral {
         let stt_handle = std::thread::spawn(listen::load_stt);
         info!("Loading Voxtral TTS model ({})...", args.voxtral_model);
-        let mut runtime = match voice_voxtral::VoxtralTtsRuntime::load_default(&args.voxtral_model) {
+        let mut runtime = match voice_voxtral::VoxtralTtsRuntime::load_default(&args.voxtral_model)
+        {
             Ok(runtime) => runtime,
             Err(e) => {
                 eprintln!("Failed to load Voxtral model '{}': {e}", args.voxtral_model);
@@ -3653,7 +3587,12 @@ fn run_converse(args: ConverseArgs) {
         let audio = match runtime.generate_audio(
             &text,
             &voice,
-            voxtral_generation_options(voxtral.max_frames, voxtral.flow_steps, voxtral.kv_cache, false),
+            voxtral_generation_options(
+                voxtral.max_frames,
+                voxtral.flow_steps,
+                voxtral.kv_cache,
+                false,
+            ),
         ) {
             Ok(audio) => audio,
             Err(e) => {
@@ -4255,8 +4194,7 @@ mod tests {
 
     #[test]
     fn voxtral_realtime_preset_expands_default_options() {
-        let options =
-            effective_voxtral_options(VOXTRAL_DEFAULT_MAX_FRAMES, 7, false, None, true);
+        let options = effective_voxtral_options(VOXTRAL_DEFAULT_MAX_FRAMES, 7, false, None, true);
 
         assert_eq!(options.max_frames, VOXTRAL_REALTIME_MAX_FRAMES);
         assert_eq!(options.flow_steps, 7);

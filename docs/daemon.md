@@ -5,9 +5,9 @@ The `voice` CLI still works without it: `voice say -o output.wav ...` falls
 back to local synthesis, `voice mcp` initializes without a daemon, and
 `voice stream` requires a running daemon.
 
-The daemon also serves the local Voice UI at <http://127.0.0.1:8767/> by
-default. Override the bind address with `VOICE_UI_ADDR`, for example
-`VOICE_UI_ADDR=127.0.0.1:9876 voice daemon start`.
+The daemon listens on a Unix socket at `~/.voice/daemon.sock` and processes
+requests through a single worker, so audio from concurrent MCP clients never
+overlaps. There is no network listener or browser UI.
 
 Use the fast verifier when changing CLI, MCP, or daemon detection behavior:
 

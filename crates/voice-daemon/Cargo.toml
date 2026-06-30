@@ -9,15 +9,11 @@ repository = "https://github.com/rgbkrk/voice"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-axum = "0.7"
-async-stream = "0.3"
-futures-core = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 voice-protocol = { path = "../voice-protocol" }
-voice-ui = { path = "../voice-ui" }
 voice-tts = { path = "../voice-tts" }
 voice-voxtral = { path = "../voice-voxtral" }
 voice-stt = { path = "../voice-stt" }
@@ -27,8 +23,3 @@ voice-audio = { path = "../voice-audio" }
 candle-core = { workspace = true }
 rodio = { version = "0.22", features = ["experimental"] }
 hound = { workspace = true }
-automerge = "0.7"
-automorph = "0.2"
-
-[dev-dependencies]
-tower = { version = "0.5", features = ["util"] }

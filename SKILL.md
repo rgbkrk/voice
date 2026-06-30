@@ -1,16 +1,16 @@
 # voice — TTS & STT tool for AI agents
 
-`voice` speaks text aloud using Kokoro or Voxtral TTS and transcribes speech with Whisper STT on Apple Silicon. Prefer the daemon-backed UI queue for agent messages: MCP `speak` and `converse` requests are held in the Voice UI by default, while CLI `voice say` and `voice converse` remain immediate user-facing commands.
+`voice` speaks text aloud using Kokoro or Voxtral TTS and transcribes speech with Whisper STT on Apple Silicon. A background daemon keeps the models warm and owns the audio hardware, serializing playback so utterances never overlap. MCP `speak` is fire-and-forget; MCP `converse` is async — it returns a `converse_id` immediately and you poll `converse_result` for the human's reply.
 
 ## Quick reference
 
 ### Speak (TTS)
 
 ```bash
-# Speak text (backward compatible — no subcommand needed)
-voice Hello, I finished the task.
+# Speak text (the `say` subcommand is required)
+voice say "I finished the task."
 
-# Explicit say subcommand with options
+# With voice and other options
 voice say -v af_sky "Switching to a brighter voice."
 
 # Speak from a pipe
@@ -29,32 +29,31 @@ voice say --phonemes "həlˈO wˈɜɹld"
 ### Converse (speak + listen)
 
 ```bash
-# Speak text, then immediately listen for a response
+# Speak text, then listen for a spoken response (foreground CLI turn)
 voice converse "How are you today?"
 
 # With voice and speed options
 voice converse -v af_sky -s 1.2 "What do you think about that?"
 ```
 
-### Daemon UI queue
+### Daemon
 
 ```bash
 # Start the daemon locally. Without --tts-only it eagerly loads TTS and STT.
 voice daemon start
+voice daemon start --tts-only
 
 # Inspect queued, current, and recent daemon items.
 voice daemon status
 voice daemon status --json
 
-# Open the browser UI served by the daemon.
-open http://127.0.0.1:8767/
-
-# Replay audio saved for a UI queue item.
-voice daemon replay --part question <queue_id>
-voice daemon replay --part answer <queue_id>
+# Cancel a queued item by id.
+voice daemon cancel <queue_id>
 ```
 
-For agents, use `voice mcp`. Its `speak` and `converse` tools enqueue held UI messages unless `immediate=true` is supplied. Use held messages when the user should decide when to listen or respond; use `immediate=true` only for intentional interruption or direct playback.
+The daemon listens on a Unix socket at `~/.voice/daemon.sock`. It has no browser UI. The CLI and MCP server both talk to it over that socket.
+
+For agents, use `voice mcp`. Its `speak` tool enqueues audio and returns immediately; its `converse` tool returns a `converse_id` you then poll with `converse_result`. Neither blocks on the human, so the calls are safe to retry.
 
 ### Listen (STT)
 
@@ -77,21 +76,20 @@ voice mcp
 ```
 
 ```jsonl
-# Queue a held UI playback item.
+# Speak text aloud. Returns a queue_id immediately; the daemon plays it.
 → {"jsonrpc":"2.0","method":"tools/call","params":{"name":"speak","arguments":{"text":"Build finished."}},"id":1}
 
-# Queue a held UI item that needs the user to respond.
+# Ask the human a question. Returns a converse_id immediately.
 → {"jsonrpc":"2.0","method":"tools/call","params":{"name":"converse","arguments":{"text":"Should I open the PR?"}},"id":2}
 
-# Play immediately instead of queueing.
-→ {"jsonrpc":"2.0","method":"tools/call","params":{"name":"speak","arguments":{"text":"Urgent interrupt.","immediate":true}},"id":3}
+# Poll for the spoken reply. wait_ms long-polls up to that long (cap 30000) for a terminal result.
+→ {"jsonrpc":"2.0","method":"tools/call","params":{"name":"converse_result","arguments":{"converse_id":"<id>","wait_ms":30000}},"id":3}
 ```
 
 ## When to use
 
-- **Leave a message**: Use MCP `speak` to add a held item to the daemon UI queue
-- **Ask for input**: Use MCP `converse` to add a response-needed item to the daemon UI queue
-- **Get attention immediately**: Use `immediate=true` only when interruption is intended
+- **Announce progress**: Use MCP `speak` to play a message; it returns at once and the daemon serializes playback
+- **Ask for spoken input**: Use MCP `converse`, then poll `converse_result` for the transcript
 - **Read content locally**: Pipe text through `voice say` to read back docs, errors, or summaries
 - **Confirm actions**: "Deploying to production" before doing something irreversible
 - **Listen for input**: Use `voice listen` to capture a spoken response from the user
@@ -120,23 +118,21 @@ voice mcp
 ### Daemon/MCP tips
 
 - `voice daemon start` eagerly loads TTS and STT. `voice daemon start --tts-only` skips eager STT load for lightweight servers.
-- The daemon serves the Voice UI at `http://127.0.0.1:8767/`.
-- MCP `speak` and `converse` default to held UI queue items.
-- Set MCP `immediate=true` to bypass the held UI queue and perform the action now.
-- Browser UI playback uses saved WAV files from `~/.voice/audio/<queue_id>-q.wav` and response audio from `~/.voice/audio/<queue_id>-a.wav`.
+- The daemon serializes audio through a single worker, so MCP `speak` calls queue behind each other instead of overlapping.
+- MCP `converse` never blocks on the human. Poll `converse_result` with the returned `converse_id`; `phase` walks queued → speaking → listening → completed, and `mic_active` is true while recording.
+- Fetching by `converse_id` is idempotent, so a retried `converse_result` returns the same transcript instead of re-running anything.
 
 ## Subcommands
 
 | Command | What it does |
 |---------|-------------|
-| `voice <text>` | Speak text (implicit `say`, backward compatible) |
 | `voice say` | Speak text with full TTS options |
 | `voice converse` | Speak text, then listen for a response |
 | `voice listen` | Record from mic, transcribe once |
 | `voice listen --continuous` | Record and transcribe segments continuously |
 | `voice transcribe <file>` | Transcribe a WAV file |
 | `voice mcp` | Start MCP server on stdin/stdout |
-| `voice daemon start` | Start daemon, socket API, and browser UI |
+| `voice daemon start` | Start the daemon and its socket API |
 | `voice daemon status` | Inspect daemon queue state |
 
 ## Builtin voices (no network)

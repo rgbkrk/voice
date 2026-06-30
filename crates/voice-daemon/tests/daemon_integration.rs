@@ -1,7 +1,6 @@
 //! Integration tests for voice daemon.
 //!
-//! Tests the full daemon stack: socket server, worker, automerge state sync,
-//! and queue management.
+//! Tests the full daemon stack: socket server, worker, and queue management.
 //!
 //! These tests require a running daemon instance. Start with: `voice mcp`
 
@@ -217,49 +216,6 @@ async fn test_speak_minimal() {
         .expect("RPC call failed");
 
     assert!(resp.error.is_none(), "status returned error");
-}
-
-#[tokio::test]
-async fn test_automerge_state_persistence() {
-    // This test verifies automerge state file is created and updated
-
-    let state_path = dirs::home_dir()
-        .unwrap()
-        .join(".voice")
-        .join("state.automerge");
-
-    let socket_path = dirs::home_dir().unwrap().join(".voice").join("daemon.sock");
-
-    if !socket_path.exists() {
-        eprintln!("Skipping test: daemon not running");
-        return;
-    }
-
-    // State file should exist after daemon starts
-    assert!(state_path.exists(), "state.automerge should exist");
-
-    let mut stream = UnixStream::connect(&socket_path)
-        .await
-        .expect("Failed to connect to daemon");
-
-    // Queue a speak request
-    let resp = rpc_call(
-        &mut stream,
-        "speak",
-        serde_json::json!({ "text": "persistence test" }),
-    )
-    .await
-    .expect("RPC call failed");
-
-    assert!(resp.error.is_none(), "speak returned error");
-
-    // Wait for state update
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // State file should have been updated (check file modification time)
-    let metadata = std::fs::metadata(&state_path).expect("Failed to get state file metadata");
-    assert!(metadata.is_file(), "state.automerge should be a file");
-    assert!(metadata.len() > 0, "state.automerge should not be empty");
 }
 
 #[tokio::test]

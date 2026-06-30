@@ -376,15 +376,14 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
         "tools": [
             {
                 "name": "speak",
-                "description": "Queue text for voice playback in the daemon UI. Set immediate=true to play through the daemon now.",
+                "description": "Speak text aloud. Returns immediately with a queue_id; the daemon plays it through the speakers and serializes playback so utterances never overlap.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "text": { "type": "string", "description": "Text to speak" },
                         "voice": { "type": "string", "description": "Voice name override for this utterance" },
                         "speed": { "type": "number", "description": "Speed override for this utterance" },
-                        "markdown": { "type": "boolean", "description": "Strip markdown formatting before speaking" },
-                        "immediate": { "type": "boolean", "description": "Play immediately instead of leaving a UI playlist item" }
+                        "markdown": { "type": "boolean", "description": "Strip markdown formatting before speaking" }
                     },
                     "required": ["text"]
                 }
@@ -409,22 +408,28 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
             // },
             {
                 "name": "converse",
-                "description": "Queue a voice prompt that needs a user response in the daemon UI. Set immediate=true to speak and listen in one blocking turn.",
+                "description": "Speak a prompt aloud, then listen for the human's spoken reply. Returns immediately with a converse_id; the daemon speaks and records in the background. Poll converse_result with that id to get the transcript once the human has answered. Never blocks on the human, so the call is safe to retry.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "text": { "type": "string", "description": "Text to speak before listening" },
                         "voice": { "type": "string", "description": "Voice name override for this utterance" },
-                        "speed": { "type": "number", "description": "Speed override for this utterance" },
                         "markdown": { "type": "boolean", "description": "Strip markdown formatting before speaking" },
-                        "max_duration_ms": { "type": "number", "description": "Maximum listen duration in milliseconds (default: 30000)" },
-                        "silence_timeout_ms": { "type": "number", "description": "Stop listening after this many ms of silence following speech (default: 2000)" },
-                        "silence_threshold": { "type": "number", "description": "Minimum amplitude for voice activity detection (default: 0.01)" },
-                        "noise_multiplier": { "type": "number", "description": "Multiplier for calibrated noise floor (default: 3.0)" },
-                        "calibration_ms": { "type": "number", "description": "Duration in ms to calibrate noise floor (default: 500)" },
-                        "immediate": { "type": "boolean", "description": "Speak and listen immediately instead of leaving a UI playlist item" }
+                        "max_duration_ms": { "type": "number", "description": "Maximum listen duration in milliseconds (default: 30000)" }
                     },
                     "required": ["text"]
+                }
+            },
+            {
+                "name": "converse_result",
+                "description": "Fetch the state and transcript of a converse by its converse_id. Phase is queued, speaking, listening, completed, failed, or unknown; mic_active is true while recording the human. With wait_ms set, the daemon long-polls up to that many ms (cap 30000) for a terminal result before replying. Fetching by id is idempotent and safe to repeat.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "converse_id": { "type": "string", "description": "The id returned by converse" },
+                        "wait_ms": { "type": "number", "description": "Long-poll up to this many ms for a terminal result (cap 30000, default 0 returns the current state immediately)" }
+                    },
+                    "required": ["converse_id"]
                 }
             },
             {
@@ -520,68 +525,74 @@ fn handle_tools_call(
     if let Some(ref mut daemon) = session.daemon {
         let daemon_result = match name {
             "speak" => {
+                // Fire-and-forget: enqueue and return immediately. The daemon
+                // owns the audio hardware and serializes playback; blocking the
+                // tool call on playback is what let the host retry and double up.
                 let raw = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
                 let markdown = arguments
                     .get("markdown")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 let text = preprocess_for_daemon(raw, markdown, &session.subs);
-                let immediate = arguments
-                    .get("immediate")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if immediate {
-                    Some(daemon.speak(
-                        &text,
-                        arguments.get("voice").and_then(|v| v.as_str()),
-                        arguments.get("speed").and_then(|v| v.as_f64()),
-                    ))
-                } else {
-                    Some(daemon.speak_with_options_held_for_ui(
-                        &text,
-                        arguments.get("voice").and_then(|v| v.as_str()),
-                        arguments.get("speed").and_then(|v| v.as_f64()),
-                        voice_protocol::client::TtsRequestOptions::default(),
-                    ))
-                }
+                Some(daemon.speak(
+                    &text,
+                    arguments.get("voice").and_then(|v| v.as_str()),
+                    arguments.get("speed").and_then(|v| v.as_f64()),
+                ))
             }
             "listen" => {
                 Some(daemon.listen(arguments.get("max_duration_ms").and_then(|v| v.as_u64())))
             }
             "converse" => {
+                // Returns a converse_id immediately. Fetch the spoken reply with
+                // `converse_result` once the human has answered — the tool call
+                // never blocks on the human, so it never gets retried mid-wait.
                 let raw = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
                 let markdown = arguments
                     .get("markdown")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 let text = preprocess_for_daemon(raw, markdown, &session.subs);
-                let immediate = arguments
-                    .get("immediate")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if immediate {
-                    Some(daemon.converse_with_duration(
-                        &text,
-                        arguments.get("voice").and_then(|v| v.as_str()),
-                        arguments.get("max_duration_ms").and_then(|v| v.as_u64()),
-                    ))
-                } else {
-                    Some(daemon.converse_held_for_ui(
-                        &text,
-                        arguments.get("voice").and_then(|v| v.as_str()),
-                        arguments.get("max_duration_ms").and_then(|v| v.as_u64()),
-                    ))
-                }
+                Some(daemon.converse(
+                    &text,
+                    arguments.get("voice").and_then(|v| v.as_str()),
+                    arguments.get("max_duration_ms").and_then(|v| v.as_u64()),
+                    voice_protocol::client::TtsRequestOptions::default(),
+                ))
+            }
+            "converse_result" => {
+                let converse_id = arguments
+                    .get("converse_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                Some(daemon.converse_result(
+                    converse_id,
+                    arguments.get("wait_ms").and_then(|v| v.as_u64()),
+                ))
             }
             _ => None,
         };
 
         if let Some(result) = daemon_result {
-            return match result {
+            match result {
                 Ok(resp) => {
-                    // Daemon returns {result: {queue_id, status, result: "<json string>"}}
-                    // for queued ops (speak/listen/converse).
-                    let text = if let Some(inner) = resp
+                    // converse_result returns a full view ({converse_id, phase,
+                    // mic_active, result?, error?}). Its `result` is the transcript,
+                    // but the caller polls on `phase`, so pass the whole object
+                    // through instead of unwrapping the inner string (which would
+                    // drop `phase` exactly when it flips to "completed").
+                    //
+                    // Other queued ops return {queue_id, status, result:"<json>"};
+                    // for those we surface the worker's JSON result string.
+                    let text = if name == "converse_result" {
+                        if let Some(r) = &resp.result {
+                            serde_json::to_string(r).unwrap_or_else(|_| "{}".to_string())
+                        } else if let Some(e) = &resp.error {
+                            format!("daemon error: {}", e.message)
+                        } else {
+                            "{}".to_string()
+                        }
+                    } else if let Some(inner) = resp
                         .result
                         .as_ref()
                         .and_then(|r| r.get("result"))
@@ -596,21 +607,22 @@ fn handle_tools_call(
                     } else {
                         "{}".to_string()
                     };
-                    Response::success(
+                    return Response::success(
                         id,
                         serde_json::json!({
                             "content": [{ "type": "text", "text": text }]
                         }),
-                    )
+                    );
                 }
                 Err(e) => {
-                    // Daemon connection failed — drop it and fall through to local
+                    // Daemon transport failed: drop the connection and fall
+                    // through to local handling for this one call. The next tool
+                    // call reconnects at the top, so a restarted daemon recovers
+                    // on the following request instead of recursing here.
                     eprintln!("voice mcp: daemon error: {}, falling back to local", e);
                     session.daemon = None;
-                    // Re-dispatch locally below
-                    handle_tools_call(session, stdout, params, id)
                 }
-            };
+            }
         }
     }
 
@@ -618,6 +630,9 @@ fn handle_tools_call(
         "speak" => voice_speak(session, stdout, arguments),
         "listen" => voice_listen(session, arguments),
         "converse" => voice_converse(session, stdout, arguments),
+        "converse_result" => Err(RpcErr::internal(
+            "converse_result requires the voice daemon; start it with `voice daemon start`",
+        )),
         "set_voice" => voice_set_voice(session, arguments),
         "set_speed" => voice_set_speed(session, arguments),
         "list_voices" => voice_list_voices(session, arguments),

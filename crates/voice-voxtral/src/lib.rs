@@ -1,9 +1,11 @@
-//! Voxtral TTS support primitives.
+//! Native Voxtral-4B TTS for `voice`.
 //!
-//! This crate starts the native Voxtral integration with configuration,
-//! voice metadata, asset discovery, checkpoint validation, typed Candle module
-//! loading, and the first executable acoustic-transformer forward helpers.
-//! End-to-end text-to-audio generation is still follow-up work.
+//! Loads the `mistralai/Voxtral-4B-TTS-2603` checkpoint through Candle (Metal)
+//! and runs end-to-end text-to-audio generation: prompt construction, the
+//! autoregressive acoustic-transformer loop, semantic/flow decoding, and the
+//! codec vocoder that emits 24 kHz audio. Exposes both batch generation
+//! (`VoxtralTtsRuntime::generate_audio`) and frame-streaming generation, plus
+//! the 20 preset voices from the model config.
 
 mod assets;
 mod codec;

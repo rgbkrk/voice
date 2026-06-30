@@ -3,7 +3,10 @@
 //! Owns the TTS and STT models and audio hardware. Runs blocking GPU
 //! inference and audio I/O on dedicated threads via spawn_blocking.
 
-use crate::queue::{RequestQueue, TtsOptions, VoiceRequest};
+use crate::queue::{
+    RequestQueue, TtsOptions, VoiceRequest, CONVERSE_PHASE_IDLE, CONVERSE_PHASE_LISTENING,
+    CONVERSE_PHASE_SPEAKING,
+};
 use candle_core::Tensor;
 use rodio::microphone::MicrophoneBuilder;
 use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
@@ -19,8 +22,6 @@ use voice_stream::{
 };
 use voice_tts::KokoroModel;
 use voice_voxtral::{VoxtralGenerationOptions, VoxtralStreamingConfig, VoxtralTtsRuntime};
-
-use crate::audio_recorder;
 
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
 const STT_REPO: &str = "distil-whisper/distil-large-v3";
@@ -81,22 +82,9 @@ impl TtsState {
 
 // -- Worker entry point -------------------------------------------------------
 
-async fn sync_automerge(
-    queue: &RequestQueue,
-    automerge: &Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
-) {
-    let snapshot = queue.snapshot().await;
-    let mut am = automerge.lock().await;
-    am.update(&snapshot);
-    if let Err(e) = am.save() {
-        eprintln!("voice daemon: failed to save automerge doc: {}", e);
-    }
-}
-
 pub async fn run(
     queue: Arc<RequestQueue>,
     config: Arc<crate::config::DaemonConfig>,
-    automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
     tts_only: bool,
 ) {
     eprintln!("voice daemon: loading TTS model...");
@@ -107,7 +95,7 @@ pub async fn run(
         Ok(Err(e)) => {
             eprintln!("voice daemon: failed to load TTS model: {}", e);
             eprintln!("voice daemon: running in simulation mode");
-            run_simulated(queue, automerge).await;
+            run_simulated(queue).await;
             return;
         }
         Err(e) => {
@@ -161,7 +149,6 @@ pub async fn run(
         queue.notify.notified().await;
 
         while let Some(entry) = queue.dequeue().await {
-            sync_automerge(&queue, &automerge).await;
             eprintln!(
                 "voice daemon: [{}/{}] {}",
                 entry.id,
@@ -183,33 +170,28 @@ pub async fn run(
                             Err(e) => {
                                 eprintln!("voice daemon: speak error: {}", e);
                                 queue.fail(e).await;
-                                sync_automerge(&queue, &automerge).await;
                                 continue;
                             }
                         };
                     let tts = tts.clone();
-                    let queue_id = entry.id.clone();
                     let cancelled = entry.cancelled.clone();
 
                     let result = tokio::task::spawn_blocking(move || {
-                        speak(&tts, &text, resolved, Some(&queue_id), &cancelled)
+                        speak(&tts, &text, resolved, &cancelled)
                     })
                     .await;
 
                     match result {
                         Ok(Ok(msg)) => {
-                            queue.complete(Some(msg), None).await;
-                            sync_automerge(&queue, &automerge).await;
+                            queue.complete(Some(msg)).await;
                         }
                         Ok(Err(e)) => {
                             eprintln!("voice daemon: speak error: {}", e);
                             queue.fail(e).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voice daemon: speak panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
@@ -230,7 +212,6 @@ pub async fn run(
                             Err(e) => {
                                 eprintln!("voice daemon: synthesize error: {}", e);
                                 queue.fail(e).await;
-                                sync_automerge(&queue, &automerge).await;
                                 continue;
                             }
                         };
@@ -251,18 +232,15 @@ pub async fn run(
 
                     match result {
                         Ok(Ok(msg)) => {
-                            queue.complete(Some(msg), None).await;
-                            sync_automerge(&queue, &automerge).await;
+                            queue.complete(Some(msg)).await;
                         }
                         Ok(Err(e)) => {
                             eprintln!("voice daemon: synthesize error: {}", e);
                             queue.fail(e).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voice daemon: synthesize panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
@@ -281,7 +259,6 @@ pub async fn run(
                                 e.clone(),
                             ));
                             queue.fail(e).await;
-                            sync_automerge(&queue, &automerge).await;
                             continue;
                         }
                     };
@@ -300,18 +277,15 @@ pub async fn run(
 
                     match result {
                         Ok(Ok(msg)) => {
-                            queue.complete(Some(msg), None).await;
-                            sync_automerge(&queue, &automerge).await;
+                            queue.complete(Some(msg)).await;
                         }
                         Ok(Err(e)) => {
                             eprintln!("voice daemon: stream_speak error: {}", e);
                             queue.fail(e).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voice daemon: stream_speak panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
@@ -328,46 +302,39 @@ pub async fn run(
 
                     match result {
                         Ok(Ok(msg)) => {
-                            queue.complete(Some(msg), None).await;
-                            sync_automerge(&queue, &automerge).await;
+                            queue.complete(Some(msg)).await;
                         }
                         Ok(Err(e)) => {
                             eprintln!("voice daemon: stream_transcribe error: {}", e);
                             queue.fail(e).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voice daemon: stream_transcribe panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
                 VoiceRequest::Listen { max_duration_ms } => {
                     let max_ms = *max_duration_ms;
                     let stt = stt.clone();
-                    let queue_id = entry.id.clone();
                     let cancelled = entry.cancelled.clone();
 
                     let result = tokio::task::spawn_blocking(move || {
-                        listen_bounded(&stt, max_ms, Some(&queue_id), &cancelled)
+                        listen_bounded(&stt, max_ms, &cancelled)
                     })
                     .await;
 
                     match result {
                         Ok(Ok(msg)) => {
-                            queue.complete(Some(msg), None).await;
-                            sync_automerge(&queue, &automerge).await;
+                            queue.complete(Some(msg)).await;
                         }
                         Ok(Err(e)) => {
                             eprintln!("voice daemon: listen error: {}", e);
                             queue.fail(e).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voice daemon: listen panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
@@ -384,15 +351,18 @@ pub async fn run(
                             Err(e) => {
                                 eprintln!("voice daemon: converse error: {}", e);
                                 queue.fail(e).await;
-                                sync_automerge(&queue, &automerge).await;
                                 continue;
                             }
                         };
                     let max_duration_ms = *max_duration_ms;
                     let tts = tts.clone();
                     let stt = stt.clone();
-                    let queue_id = entry.id.clone(); // Capture for audio recording
                     let cancelled = entry.cancelled.clone();
+
+                    // Live phase flag so converse_result can report mic-open.
+                    let phase = queue.converse_phase();
+                    phase.store(CONVERSE_PHASE_SPEAKING, Ordering::SeqCst);
+                    let job_phase = phase.clone();
 
                     // Speak then listen, return combined JSON
                     let speak_result = tokio::task::spawn_blocking(move || {
@@ -400,20 +370,20 @@ pub async fn run(
                             let stt = stt.clone();
                             std::thread::spawn(move || ensure_stt(&stt))
                         };
-                        let spoke_json =
-                            match speak(&tts, &text, resolved, Some(&queue_id), &cancelled) {
-                                Ok(spoke_json) => spoke_json,
-                                Err(err) => {
-                                    let _ = stt_warmup.join();
-                                    return Err(err);
-                                }
-                            };
+                        let spoke_json = match speak(&tts, &text, resolved, &cancelled) {
+                            Ok(spoke_json) => spoke_json,
+                            Err(err) => {
+                                let _ = stt_warmup.join();
+                                return Err(err);
+                            }
+                        };
                         stt_warmup
                             .join()
                             .map_err(|_| "stt warmup panicked".to_string())??;
-                        let heard_json =
-                            listen_bounded(&stt, max_duration_ms, Some(&queue_id), &cancelled)?; // Pass queue_id for answer recording
-                                                                                                 // Parse both results and combine into the converse format
+                        // Mic is about to open — caller can now see mic_active.
+                        job_phase.store(CONVERSE_PHASE_LISTENING, Ordering::SeqCst);
+                        let heard_json = listen_bounded(&stt, max_duration_ms, &cancelled)?;
+                        // Parse both results and combine into the converse format
                         let spoke: serde_json::Value =
                             serde_json::from_str(&spoke_json).unwrap_or_default();
                         let heard: serde_json::Value =
@@ -428,20 +398,19 @@ pub async fn run(
                     })
                     .await;
 
+                    phase.store(CONVERSE_PHASE_IDLE, Ordering::SeqCst);
+
                     match speak_result {
                         Ok(Ok(msg)) => {
-                            queue.complete(Some(msg), Some(30)).await; // Auto-clear after 30 seconds
-                            sync_automerge(&queue, &automerge).await;
+                            queue.complete(Some(msg)).await;
                         }
                         Ok(Err(e)) => {
                             eprintln!("voice daemon: converse error: {}", e);
                             queue.fail(e).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                         Err(e) => {
                             eprintln!("voice daemon: converse panicked: {}", e);
                             queue.fail(format!("panic: {}", e)).await;
-                            sync_automerge(&queue, &automerge).await;
                         }
                     }
                 }
@@ -563,7 +532,6 @@ fn speak(
     tts: &Arc<Mutex<TtsState>>,
     text: &str,
     resolved: ResolvedTtsRequest,
-    queue_id: Option<&str>,
     cancelled: &Arc<AtomicBool>,
 ) -> Result<String, String> {
     if resolved.engine == VOXTRAL_ENGINE {
@@ -578,7 +546,7 @@ fn speak(
         let player = Player::connect_new(stream.mixer());
         let channels = NonZero::new(1u16).unwrap();
         let rate = NonZero::new(voice_voxtral::SAMPLE_RATE).unwrap();
-        let mut accumulated_audio = Vec::new();
+        let mut sample_count = 0usize;
         let speed = resolved.speed;
         let (audio, trace) = {
             let mut state = tts.lock().map_err(|e| format!("lock: {}", e))?;
@@ -601,7 +569,7 @@ fn speak(
                                     "speed adjustment: {e}"
                                 ))
                             })?;
-                        accumulated_audio.extend_from_slice(&samples);
+                        sample_count += samples.len();
                         player.append(SamplesBuffer::new(channels, rate, samples));
                         Ok(())
                     },
@@ -613,19 +581,12 @@ fn speak(
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        if let Some(qid) = queue_id {
-            if !accumulated_audio.is_empty() {
-                let path = audio_recorder::question_path(qid);
-                audio_recorder::save_wav(&path, &accumulated_audio, audio.sample_rate)?;
-            }
-        }
-
         return Ok(serde_json::json!({
             "engine": resolved.engine,
             "voice": resolved.voice,
             "duration_ms": started.elapsed().as_millis() as u64,
             "chunks": trace.codec_chunks,
-            "samples": accumulated_audio.len(),
+            "samples": sample_count,
             "model_samples": audio.samples.len(),
             "model_audio_duration_ms": audio.samples.len().saturating_mul(1_000) as f64
                 / audio.sample_rate.max(1) as f64,
@@ -651,7 +612,6 @@ fn speak(
     let player = Player::connect_new(stream.mixer());
 
     let started = Instant::now();
-    let mut accumulated_audio: Vec<f32> = Vec::new();
     let sample_rate: u32;
 
     {
@@ -673,11 +633,6 @@ fn speak(
 
             match voice_tts::generate(&mut state.model, phonemes, &voice, speed) {
                 Ok(audio) => {
-                    // Accumulate for WAV recording
-                    if queue_id.is_some() {
-                        accumulated_audio.extend_from_slice(&audio);
-                    }
-
                     let source = SamplesBuffer::new(channels, rate, audio);
                     player.append(source);
                     if chunks.len() > 1 {
@@ -691,14 +646,6 @@ fn speak(
 
     while !player.empty() {
         std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-
-    // Save question audio if queue_id provided
-    if let Some(qid) = queue_id {
-        if !accumulated_audio.is_empty() {
-            let path = audio_recorder::question_path(qid);
-            audio_recorder::save_wav(&path, &accumulated_audio, sample_rate)?;
-        }
     }
 
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -1116,7 +1063,6 @@ fn ensure_stt(stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>) -> Result<(), S
 fn listen_bounded(
     stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
     max_duration_ms: Option<u64>,
-    queue_id: Option<&str>,
     cancelled: &Arc<AtomicBool>,
 ) -> Result<String, String> {
     let max_ms = max_duration_ms.unwrap_or(60000);
@@ -1124,16 +1070,10 @@ fn listen_bounded(
     let started = Instant::now();
     let (tx, rx) = std::sync::mpsc::channel();
     let stt = stt.clone();
-    let queue_id = queue_id.map(ToOwned::to_owned);
     let cancelled_for_thread = cancelled.clone();
 
     std::thread::spawn(move || {
-        let result = listen(
-            &stt,
-            max_duration_ms,
-            queue_id.as_deref(),
-            &cancelled_for_thread,
-        );
+        let result = listen(&stt, max_duration_ms, &cancelled_for_thread);
         let _ = tx.send(result);
     });
 
@@ -1163,7 +1103,6 @@ fn listen_bounded(
 fn listen(
     stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
     max_duration_ms: Option<u64>,
-    queue_id: Option<&str>,
     cancelled: &Arc<AtomicBool>,
 ) -> Result<String, String> {
     ensure_stt(stt)?;
@@ -1304,17 +1243,6 @@ fn listen(
         Err(arc) => arc.lock().unwrap().clone(),
     };
 
-    // Save answer audio if queue_id provided
-    if let Some(qid) = queue_id {
-        if !samples.is_empty() && speech_detected {
-            let path = audio_recorder::answer_path(qid);
-            // Save with original sample rate before transcription
-            if let Err(e) = audio_recorder::save_wav(&path, &samples, sample_rate) {
-                eprintln!("voice daemon: failed to save answer audio: {}", e);
-            }
-        }
-    }
-
     if samples.is_empty() || !speech_detected {
         return Ok(serde_json::json!({
             "text": "",
@@ -1424,15 +1352,11 @@ fn play_tone(freq: f32, duration_secs: f32) {
 
 // -- Simulation fallback ------------------------------------------------------
 
-async fn run_simulated(
-    queue: Arc<RequestQueue>,
-    automerge: Arc<tokio::sync::Mutex<crate::automerge_state::AutomergeState>>,
-) {
+async fn run_simulated(queue: Arc<RequestQueue>) {
     eprintln!("voice daemon: worker ready (simulation mode)");
     loop {
         queue.notify.notified().await;
         while let Some(entry) = queue.dequeue().await {
-            sync_automerge(&queue, &automerge).await;
             eprintln!(
                 "voice daemon: [{}/{}] {} (simulated)",
                 entry.id,
@@ -1445,9 +1369,8 @@ async fn run_simulated(
                     let ms = (words as u64 * 200).max(500);
                     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                     queue
-                        .complete(Some(format!("simulated {} words", words)), None)
+                        .complete(Some(format!("simulated {} words", words)))
                         .await;
-                    sync_automerge(&queue, &automerge).await;
                 }
                 VoiceRequest::Synthesize {
                     text,
@@ -1471,24 +1394,20 @@ async fn run_simulated(
                     };
                     let _ = voice_audio::save_audio(&samples, path, 24_000, format);
                     queue
-                        .complete(
-                            Some(
-                                serde_json::json!({
-                                    "output_path": output_path,
-                                    "format": format.as_str(),
-                                    "mime_type": format.mime_type(),
-                                    "duration_ms": ms,
-                                    "chunks": 0,
-                                    "samples": 0,
-                                    "sample_rate": 24000,
-                                    "simulated": true,
-                                })
-                                .to_string(),
-                            ),
-                            None,
-                        )
+                        .complete(Some(
+                            serde_json::json!({
+                                "output_path": output_path,
+                                "format": format.as_str(),
+                                "mime_type": format.mime_type(),
+                                "duration_ms": ms,
+                                "chunks": 0,
+                                "samples": 0,
+                                "sample_rate": 24000,
+                                "simulated": true,
+                            })
+                            .to_string(),
+                        ))
                         .await;
-                    sync_automerge(&queue, &automerge).await;
                 }
                 VoiceRequest::StreamSpeak(request) => {
                     let words = request.text.split_whitespace().count();
@@ -1527,48 +1446,37 @@ async fn run_simulated(
                         elapsed_ms: words as u64,
                     };
                     let _ = request.event_tx.send(TtsStreamEvent::Ended(ended)).await;
-                    queue
-                        .complete(Some("simulated stream".to_string()), None)
-                        .await;
-                    sync_automerge(&queue, &automerge).await;
+                    queue.complete(Some("simulated stream".to_string())).await;
                 }
                 VoiceRequest::StreamTranscribe(request) => {
                     let audio_duration_ms = request.samples.len().saturating_mul(1_000) as u64
                         / request.sample_rate.max(1) as u64;
                     queue
-                        .complete(
-                            Some(
-                                serde_json::json!({
-                                    "stream_id": &request.stream_id,
-                                    "text": "(simulated stream transcription)",
-                                    "tokens": 3,
-                                    "sample_rate": request.sample_rate,
-                                    "audio_duration_ms": audio_duration_ms,
-                                    "elapsed_ms": 0,
-                                    "simulated": true,
-                                })
-                                .to_string(),
-                            ),
-                            None,
-                        )
+                        .complete(Some(
+                            serde_json::json!({
+                                "stream_id": &request.stream_id,
+                                "text": "(simulated stream transcription)",
+                                "tokens": 3,
+                                "sample_rate": request.sample_rate,
+                                "audio_duration_ms": audio_duration_ms,
+                                "elapsed_ms": 0,
+                                "simulated": true,
+                            })
+                            .to_string(),
+                        ))
                         .await;
-                    sync_automerge(&queue, &automerge).await;
                 }
                 VoiceRequest::Listen { .. } => {
                     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-                    queue
-                        .complete(Some("(simulated listen)".to_string()), None)
-                        .await;
-                    sync_automerge(&queue, &automerge).await;
+                    queue.complete(Some("(simulated listen)".to_string())).await;
                 }
                 VoiceRequest::Converse { text, .. } => {
                     let words = text.split_whitespace().count();
                     let ms = (words as u64 * 200).max(500);
                     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                     queue
-                        .complete(Some("(simulated converse)".to_string()), None)
+                        .complete(Some("(simulated converse)".to_string()))
                         .await;
-                    sync_automerge(&queue, &automerge).await;
                 }
             }
         }
@@ -1609,14 +1517,12 @@ fn short(req: &VoiceRequest) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automerge_state::AutomergeState;
     use crate::queue::CompletionResult;
     use voice_protocol::rpc::ItemStatus;
 
     async fn start_simulated_worker() -> (Arc<RequestQueue>, tokio::task::JoinHandle<()>) {
         let queue = Arc::new(RequestQueue::new());
-        let automerge = Arc::new(tokio::sync::Mutex::new(AutomergeState::new()));
-        let handle = tokio::spawn(run_simulated(queue.clone(), automerge));
+        let handle = tokio::spawn(run_simulated(queue.clone()));
         tokio::task::yield_now().await;
         (queue, handle)
     }
@@ -1663,8 +1569,8 @@ mod tests {
         );
         assert!(output_path.exists(), "simulated synth should create WAV");
 
-        let (_samples, sample_rate) = audio_recorder::read_wav(&output_path).unwrap();
-        assert_eq!(sample_rate, 24_000);
+        let reader = hound::WavReader::open(&output_path).unwrap();
+        assert_eq!(reader.spec().sample_rate, 24_000);
 
         let _ = std::fs::remove_file(output_path);
         worker.abort();

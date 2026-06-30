@@ -544,9 +544,21 @@ async fn dispatch(
                 Ok(id) => id,
                 Err(resp) => return resp,
             };
-            let wait_ms = match optional_duration_param(&req, "wait_ms") {
-                Ok(ms) => ms.unwrap_or(0).min(30_000),
-                Err(resp) => return resp,
+            // wait_ms is a poll budget, not a duration: 0 (and omitted) means
+            // "return the current state now", so it can't go through
+            // optional_duration_param, which rejects 0. Cap the long-poll at 30s.
+            let wait_ms = match req.params.get("wait_ms") {
+                None => 0,
+                Some(value) => match value.as_u64() {
+                    Some(ms) => ms.min(30_000),
+                    None => {
+                        return Response::error(
+                            req.id,
+                            rpc::INVALID_PARAMS,
+                            "param 'wait_ms' must be an unsigned integer",
+                        )
+                    }
+                },
             };
 
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
@@ -1205,6 +1217,43 @@ mod tests {
 
         let err = parse_stt_audio_samples(&data, "stream-1", 48_000).unwrap_err();
         assert!(err.contains("stream_id"));
+    }
+
+    #[tokio::test]
+    async fn converse_result_accepts_wait_ms_zero() {
+        // wait_ms is a poll budget: 0 means "report current state now". It must
+        // not be rejected like a zero duration, and must return immediately.
+        let queue = std::sync::Arc::new(RequestQueue::new());
+        let config = std::sync::Arc::new(DaemonConfig::new());
+        let req = rpc::Request {
+            jsonrpc: "2.0".to_string(),
+            method: "converse_result".to_string(),
+            params: serde_json::json!({ "converse_id": "missing", "wait_ms": 0 }),
+            id: Some(serde_json::json!(1)),
+        };
+
+        let resp = dispatch(req, &queue, &config, "test-client").await;
+        assert!(resp.error.is_none(), "wait_ms:0 rejected: {:?}", resp.error);
+        let result = resp.result.expect("result present");
+        assert_eq!(result["phase"], "unknown");
+    }
+
+    #[tokio::test]
+    async fn converse_result_rejects_non_integer_wait_ms() {
+        let queue = std::sync::Arc::new(RequestQueue::new());
+        let config = std::sync::Arc::new(DaemonConfig::new());
+        let req = rpc::Request {
+            jsonrpc: "2.0".to_string(),
+            method: "converse_result".to_string(),
+            params: serde_json::json!({ "converse_id": "missing", "wait_ms": "soon" }),
+            id: Some(serde_json::json!(1)),
+        };
+
+        let resp = dispatch(req, &queue, &config, "test-client").await;
+        assert!(
+            resp.error.is_some(),
+            "non-integer wait_ms should be rejected"
+        );
     }
 
     // ENV_LOCK serializes the global SOCKET_ENV mutation against other tests, so

@@ -3945,17 +3945,33 @@ fn detect_machine() -> MachineInfo {
     }
 }
 
+/// Validate a `--stt-model` value before it lands in a service file. The value
+/// is written into a systemd `Environment=` line or a plist `<string>`, so a
+/// control character (notably a newline) could inject an extra directive. Repo
+/// ids never contain control characters or whitespace.
+fn sanitize_stt_model_arg(raw: &str) -> Result<String, &'static str> {
+    let model = raw.trim();
+    if model.is_empty() {
+        return Err("--stt-model must be a non-empty HuggingFace repo id");
+    }
+    if model.chars().any(|c| c.is_control()) {
+        return Err("--stt-model must not contain control characters");
+    }
+    Ok(model.to_string())
+}
+
 /// Resolve which STT model to pin in the service file. An explicit `--stt-model`
 /// wins; otherwise prompt on an interactive terminal, else fall back to the
 /// compiled default (`None`, no `STT_MODEL` env in the service).
 fn resolve_install_stt_model(yes: bool, explicit: Option<String>) -> Option<String> {
     if let Some(model) = explicit {
-        let model = model.trim().to_string();
-        if model.is_empty() {
-            eprintln!("error: --stt-model must be a non-empty HuggingFace repo id");
-            std::process::exit(1);
+        match sanitize_stt_model_arg(&model) {
+            Ok(model) => return Some(model),
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                std::process::exit(1);
+            }
         }
-        return Some(model);
     }
     let interactive = !yes && io::stdin().is_terminal() && io::stdout().is_terminal();
     if interactive {
@@ -4851,6 +4867,36 @@ mod tests {
             .arg("-version")
             .output()
             .is_ok()
+    }
+
+    #[test]
+    fn sanitize_stt_model_arg_trims_and_rejects_bad_input() {
+        assert_eq!(
+            sanitize_stt_model_arg("  openai/whisper-large-v3 ").unwrap(),
+            "openai/whisper-large-v3"
+        );
+        assert!(sanitize_stt_model_arg("").is_err());
+        assert!(sanitize_stt_model_arg("   ").is_err());
+        // Newline injection attempt must be rejected before it reaches a unit file.
+        assert!(sanitize_stt_model_arg("foo\nExecStart=/evil").is_err());
+        assert!(sanitize_stt_model_arg("foo\rbar").is_err());
+    }
+
+    #[test]
+    fn install_menu_default_tracks_compiled_default() {
+        // First menu entry must mean "track the compiled default": no pinned
+        // repo, and a label that matches the current default so the prompt never
+        // advertises a stale model name.
+        let (repo, label, _) = INSTALL_STT_CHOICES[0];
+        assert_eq!(repo, None, "default menu entry must not pin a repo");
+        let expected = voice_stt::builtin::DEFAULT_MODEL_REPO
+            .rsplit('/')
+            .next()
+            .unwrap();
+        assert_eq!(
+            label, expected,
+            "default menu label drifted from DEFAULT_MODEL_REPO"
+        );
     }
 
     #[cfg(target_os = "macos")]

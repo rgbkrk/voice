@@ -546,16 +546,18 @@ async fn dispatch(
             };
             // wait_ms is a poll budget, not a duration: 0 (and omitted) means
             // "return the current state now", so it can't go through
-            // optional_duration_param, which rejects 0. Cap the long-poll at 30s.
+            // optional_duration_param, which rejects 0. The MCP schema types it
+            // as a number, so accept JSON floats too (30000.0), clamp negatives
+            // to 0, and cap the long-poll at 30s.
             let wait_ms = match req.params.get("wait_ms") {
                 None => 0,
-                Some(value) => match value.as_u64() {
-                    Some(ms) => ms.min(30_000),
+                Some(value) => match value.as_f64() {
+                    Some(ms) => (ms.max(0.0) as u64).min(30_000),
                     None => {
                         return Response::error(
                             req.id,
                             rpc::INVALID_PARAMS,
-                            "param 'wait_ms' must be an unsigned integer",
+                            "param 'wait_ms' must be a number",
                         )
                     }
                 },
@@ -1239,7 +1241,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn converse_result_rejects_non_integer_wait_ms() {
+    async fn converse_result_accepts_float_wait_ms() {
+        // The MCP schema types wait_ms as a number, so a JSON float is valid.
+        let queue = std::sync::Arc::new(RequestQueue::new());
+        let config = std::sync::Arc::new(DaemonConfig::new());
+        let req = rpc::Request {
+            jsonrpc: "2.0".to_string(),
+            method: "converse_result".to_string(),
+            params: serde_json::json!({ "converse_id": "missing", "wait_ms": 0.0 }),
+            id: Some(serde_json::json!(1)),
+        };
+
+        let resp = dispatch(req, &queue, &config, "test-client").await;
+        assert!(
+            resp.error.is_none(),
+            "float wait_ms rejected: {:?}",
+            resp.error
+        );
+        assert_eq!(resp.result.expect("result present")["phase"], "unknown");
+    }
+
+    #[tokio::test]
+    async fn converse_result_rejects_non_numeric_wait_ms() {
         let queue = std::sync::Arc::new(RequestQueue::new());
         let config = std::sync::Arc::new(DaemonConfig::new());
         let req = rpc::Request {
@@ -1252,7 +1275,7 @@ mod tests {
         let resp = dispatch(req, &queue, &config, "test-client").await;
         assert!(
             resp.error.is_some(),
-            "non-integer wait_ms should be rejected"
+            "non-numeric wait_ms should be rejected"
         );
     }
 

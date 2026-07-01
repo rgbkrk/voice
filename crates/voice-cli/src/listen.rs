@@ -566,7 +566,7 @@ fn start_mic_drain(
             }
 
             // Update peak every ~100 samples to avoid atomic contention
-            if sample_count % 100 == 0 {
+            if sample_count.is_multiple_of(100) {
                 peak_out.store(chunk_peak.to_bits(), Ordering::Relaxed);
                 chunk_peak = 0.0;
             }

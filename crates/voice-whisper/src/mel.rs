@@ -131,7 +131,7 @@ impl GpuMelSpec {
         // Calculate number of frames with padding (match CPU implementation)
         let n_len = samples.len() / hop;
         let pad = 100 * 30 / 2; // 100 * CHUNK_LENGTH / 2 = 1500
-        let n_len = if n_len % pad != 0 {
+        let n_len = if !n_len.is_multiple_of(pad) {
             (n_len / pad + 1) * pad
         } else {
             n_len

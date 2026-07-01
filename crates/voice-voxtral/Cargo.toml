@@ -2,7 +2,7 @@
 name = "voice-voxtral"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.94.0"
+rust-version = "1.95.0"
 description = "Voxtral TTS model support for the voice toolkit"
 license = "MIT"
 repository = "https://github.com/rgbkrk/voice"

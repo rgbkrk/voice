@@ -3440,7 +3440,7 @@ fn pcm_s16le_bytes_to_frames(bytes: &[u8], frame_samples: usize) -> Result<Vec<V
     if bytes.is_empty() {
         return Err("Raw PCM input is empty".to_string());
     }
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err(format!(
             "Raw PCM input has {} bytes; expected an even number of bytes for s16le samples",
             bytes.len()

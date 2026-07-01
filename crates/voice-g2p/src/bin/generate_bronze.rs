@@ -146,7 +146,7 @@ fn process_per_word(words: &[String], espeak_path: &str) -> BTreeMap<String, Str
     let total = words.len();
 
     for (i, word) in words.iter().enumerate() {
-        if i % 10000 == 0 {
+        if i.is_multiple_of(10000) {
             eprintln!("  processing word {}/{}", i, total);
         }
         let output = Command::new(espeak_path)

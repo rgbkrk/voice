@@ -38,7 +38,7 @@ pub fn realtime_mel_filters(config: &VoxtralRealtimeConfig) -> Result<VoxtralRea
     let encoding = realtime_audio_encoding(config);
     let mel_bins = encoding.num_mel_bins;
     let n_fft = encoding.window_size;
-    if n_fft == 0 || n_fft % 2 != 0 {
+    if n_fft == 0 || !n_fft.is_multiple_of(2) {
         return Err(VoxtralError::InvalidConfig(format!(
             "realtime window_size must be non-zero and even, got {n_fft}"
         )));

@@ -1,5 +1,7 @@
 [toolchain]
 # candle 0.11 uses ARM NEON f16 intrinsics (stdarch_neon_f16) that are only
-# stable on recent Rust. Pin to stable so local builds match CI
-# (dtolnay/rust-toolchain@stable) instead of whatever default is installed.
-channel = "stable"
+# stable on recent Rust (1.90 fails to compile candle-core, 1.94 works).
+# Pin an explicit stable so builds and `clippy -D warnings` are reproducible
+# instead of floating to whatever `stable` resolves to — a newer stable can
+# introduce lints that fail the strict CI clippy on unrelated pre-existing code.
+channel = "1.95.0"

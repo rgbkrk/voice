@@ -1175,7 +1175,7 @@ fn listen(
             }
 
             // Publish peak every ~100 samples, then reset
-            if sample_count % 100 == 0 {
+            if sample_count.is_multiple_of(100) {
                 peak_clone.store(chunk_peak.to_bits(), Ordering::Relaxed);
                 chunk_peak = 0.0;
             }

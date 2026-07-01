@@ -67,7 +67,7 @@ fn voice_embedding_tensor_from_bf16_bytes(
             "voice embedding tensor data is empty".into(),
         ));
     }
-    if data.len() % BF16_BYTES != 0 {
+    if !data.len().is_multiple_of(BF16_BYTES) {
         return Err(VoxtralError::InvalidCheckpoint(format!(
             "voice embedding BF16 data has bad byte length {}: expected an even number of bytes",
             data.len()
@@ -79,7 +79,7 @@ fn voice_embedding_tensor_from_bf16_bytes(
             "voice embedding hidden dim {hidden_dim} is too large"
         ))
     })?;
-    if data.len() % row_bytes != 0 {
+    if !data.len().is_multiple_of(row_bytes) {
         return Err(VoxtralError::InvalidCheckpoint(format!(
             "voice embedding BF16 data has bad byte length {}: expected a multiple of {row_bytes} bytes for hidden dim {hidden_dim}",
             data.len()

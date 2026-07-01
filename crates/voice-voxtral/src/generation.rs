@@ -913,7 +913,7 @@ fn decode_codec_chunk_samples(
     if samples.is_empty() {
         return Ok(samples);
     }
-    if samples.len() % chunk.frames.len() != 0 {
+    if !samples.len().is_multiple_of(chunk.frames.len()) {
         return Err(VoxtralError::Unsupported(format!(
             "codec chunk produced {} samples for {} frames",
             samples.len(),

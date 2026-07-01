@@ -691,7 +691,7 @@ pub fn realtime_audio_frames_per_token(config: &VoxtralRealtimeConfig) -> Result
         .encoder_args
         .audio_encoding_args
         .hop_length;
-    if hop == 0 || raw % hop != 0 {
+    if hop == 0 || !raw.is_multiple_of(hop) {
         return Err(VoxtralError::InvalidConfig(format!(
             "raw audio length per token {raw} must be divisible by hop_length {hop}"
         )));
@@ -710,7 +710,7 @@ pub fn realtime_num_audio_tokens_for_samples(
         .audio_encoding_args
         .hop_length;
     let frames_per_token = realtime_audio_frames_per_token(config)?;
-    let mel_frames = if sample_count % hop == 0 {
+    let mel_frames = if sample_count.is_multiple_of(hop) {
         sample_count / hop
     } else {
         sample_count.div_ceil(hop).saturating_sub(1)

@@ -330,7 +330,7 @@ pub async fn run(
                     let cancelled = entry.cancelled.clone();
 
                     let result = tokio::task::spawn_blocking(move || {
-                        listen_bounded(&stt, max_ms, &cancelled)
+                        listen_bounded(&stt, max_ms, &cancelled, None)
                     })
                     .await;
 
@@ -373,6 +373,11 @@ pub async fn run(
                     let phase = queue.converse_phase();
                     phase.store(CONVERSE_PHASE_SPEAKING, Ordering::SeqCst);
                     let job_phase = phase.clone();
+                    // Speech-detected flag: reset now; the listen VAD sets it true
+                    // once the human actually starts talking.
+                    let heard_speech = queue.converse_heard_speech();
+                    heard_speech.store(false, Ordering::SeqCst);
+                    let job_heard = heard_speech.clone();
 
                     // Speak then listen, return combined JSON
                     let speak_result = tokio::task::spawn_blocking(move || {
@@ -392,7 +397,8 @@ pub async fn run(
                             .map_err(|_| "stt warmup panicked".to_string())??;
                         // Mic is about to open — caller can now see mic_active.
                         job_phase.store(CONVERSE_PHASE_LISTENING, Ordering::SeqCst);
-                        let heard_json = listen_bounded(&stt, max_duration_ms, &cancelled)?;
+                        let heard_json =
+                            listen_bounded(&stt, max_duration_ms, &cancelled, Some(job_heard))?;
                         // Parse both results and combine into the converse format
                         let spoke: serde_json::Value =
                             serde_json::from_str(&spoke_json).unwrap_or_default();
@@ -1162,6 +1168,7 @@ fn listen_bounded(
     stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
     max_duration_ms: Option<u64>,
     cancelled: &Arc<AtomicBool>,
+    heard_speech: Option<Arc<AtomicBool>>,
 ) -> Result<String, String> {
     let max_ms = max_duration_ms.unwrap_or(60000);
     let timeout = Duration::from_millis(max_ms.saturating_add(LISTEN_OPEN_GRACE_MS));
@@ -1171,7 +1178,7 @@ fn listen_bounded(
     let cancelled_for_thread = cancelled.clone();
 
     std::thread::spawn(move || {
-        let result = listen(&stt, max_duration_ms, &cancelled_for_thread);
+        let result = listen(&stt, max_duration_ms, &cancelled_for_thread, heard_speech);
         let _ = tx.send(result);
     });
 
@@ -1202,6 +1209,7 @@ fn listen(
     stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
     max_duration_ms: Option<u64>,
     cancelled: &Arc<AtomicBool>,
+    heard_speech: Option<Arc<AtomicBool>>,
 ) -> Result<String, String> {
     ensure_stt(stt)?;
 
@@ -1316,6 +1324,11 @@ fn listen(
             if !speech_detected {
                 eprintln!("voice daemon: speech detected (peak: {:.4})", peak);
                 speech_detected = true;
+                // Tell converse_result the human has started (vs mic merely open),
+                // so the MCP can wait through the reply instead of handing back early.
+                if let Some(flag) = &heard_speech {
+                    flag.store(true, Ordering::Relaxed);
+                }
             }
             last_speech = Instant::now();
         } else if speech_detected && last_speech.elapsed() > silence_timeout {

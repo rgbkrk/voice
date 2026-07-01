@@ -577,6 +577,7 @@ async fn dispatch(
                         "converse_id": converse_id,
                         "phase": view.phase,
                         "mic_active": view.mic_active,
+                        "heard_speech": view.heard_speech,
                     });
                     if let Some(result) = view.result {
                         obj["result"] = serde_json::Value::String(result);

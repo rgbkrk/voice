@@ -23,6 +23,12 @@ pub const CONVERSE_PHASE_LISTENING: u8 = 2;
 pub struct ConverseView {
     pub phase: &'static str,
     pub mic_active: bool,
+    /// True once the listen VAD has detected the human actually speaking (not
+    /// merely that the mic is open). Lets a caller distinguish "mic open, human
+    /// hasn't started" (safe to hand back and poll later) from "human is
+    /// mid-answer" (worth waiting on). Only meaningful while `phase` is
+    /// `listening`; false otherwise.
+    pub heard_speech: bool,
     pub result: Option<String>,
     pub error: Option<String>,
 }
@@ -195,6 +201,10 @@ pub struct RequestQueue {
     waiters: Mutex<HashMap<String, oneshot::Sender<CompletionResult>>>,
     /// Live speak/listen phase of the in-flight converse (see CONVERSE_PHASE_*).
     converse_phase: Arc<AtomicU8>,
+    /// Set true by the listen VAD when the human starts speaking during the
+    /// in-flight converse; reset false when a converse begins. Read by
+    /// `converse_result` to populate `ConverseView::heard_speech`.
+    converse_heard_speech: Arc<AtomicBool>,
     pub notify: Notify,
 }
 
@@ -207,6 +217,7 @@ impl RequestQueue {
             converse_results: Mutex::new(VecDeque::new()),
             waiters: Mutex::new(HashMap::new()),
             converse_phase: Arc::new(AtomicU8::new(CONVERSE_PHASE_IDLE)),
+            converse_heard_speech: Arc::new(AtomicBool::new(false)),
             notify: Notify::new(),
         }
     }
@@ -215,6 +226,13 @@ impl RequestQueue {
     /// CONVERSE_PHASE_* on it as a converse moves speak -> listen.
     pub fn converse_phase(&self) -> Arc<AtomicU8> {
         self.converse_phase.clone()
+    }
+
+    /// Handle to the in-flight converse speech-detected flag. The worker resets
+    /// it false as a converse begins and sets it true when the listen VAD hears
+    /// the human start speaking.
+    pub fn converse_heard_speech(&self) -> Arc<AtomicBool> {
+        self.converse_heard_speech.clone()
     }
 
     /// Snapshot of audio load taken before enqueue: (something is playing now,
@@ -242,12 +260,14 @@ impl RequestQueue {
                 ItemStatus::Failed => ConverseView {
                     phase: "failed",
                     mic_active: false,
+                    heard_speech: false,
                     result: None,
                     error: entry.result.clone(),
                 },
                 _ => ConverseView {
                     phase: "completed",
                     mic_active: false,
+                    heard_speech: false,
                     result: entry.result.clone(),
                     error: None,
                 },
@@ -265,6 +285,7 @@ impl RequestQueue {
             return ConverseView {
                 phase: if listening { "listening" } else { "speaking" },
                 mic_active: listening,
+                heard_speech: listening && self.converse_heard_speech.load(Ordering::SeqCst),
                 result: None,
                 error: None,
             };
@@ -274,6 +295,7 @@ impl RequestQueue {
             return ConverseView {
                 phase: "queued",
                 mic_active: false,
+                heard_speech: false,
                 result: None,
                 error: None,
             };
@@ -282,6 +304,7 @@ impl RequestQueue {
         ConverseView {
             phase: "unknown",
             mic_active: false,
+            heard_speech: false,
             result: None,
             error: None,
         }
@@ -720,6 +743,13 @@ mod tests {
         let view = queue.converse_result(&id).await;
         assert_eq!(view.phase, "listening");
         assert!(view.mic_active);
+        // Mic open but the human hasn't started: heard_speech stays false.
+        assert!(!view.heard_speech);
+
+        // VAD detects speech -> heard_speech flips true while still listening.
+        queue.converse_heard_speech().store(true, Ordering::SeqCst);
+        let view = queue.converse_result(&id).await;
+        assert!(view.heard_speech);
 
         queue
             .complete(Some(r#"{"heard":{"text":"yes"}}"#.to_string()))

@@ -408,7 +408,7 @@ fn handle_tools_list() -> Result<Value, RpcErr> {
             // },
             {
                 "name": "converse",
-                "description": "Speak a prompt aloud, then listen for the human's spoken reply. Returns immediately with a converse_id; the daemon speaks and records in the background. Poll converse_result with that id to get the transcript once the human has answered. Never blocks on the human, so the call is safe to retry.",
+                "description": "Speak a prompt aloud, then wait for the human's spoken reply and return it. The MCP polls the daemon internally, so you get the answer from this one call - no separate poll needed in the common case. Returns {status:\"completed\", heard, spoke} once the human finishes. If they don't start speaking within a short grace window (they're busy), or the reply runs past the block ceiling, returns {status:\"pending\", converse_id} instead - poll converse_result with that id to collect the reply later. Idempotent and safe to retry.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -519,7 +519,44 @@ fn handle_tools_call(
         }
     }
 
-    // Delegate to the voice daemon if connected (speak/listen/converse).
+    // Converse blocks in the MCP: fire the daemon converse, then poll it here
+    // until the human answers (or we hand back a converse_id). The agent gets
+    // the reply from this one call instead of firing converse + N polls itself.
+    if name == "converse" && session.daemon.is_some() {
+        let raw = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let markdown = arguments
+            .get("markdown")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let text = preprocess_for_daemon(raw, markdown, &session.subs);
+        let voice = arguments
+            .get("voice")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let max_duration_ms = arguments.get("max_duration_ms").and_then(|v| v.as_u64());
+        let daemon = session.daemon.as_mut().unwrap();
+        match converse_blocking(daemon, &text, voice.as_deref(), max_duration_ms) {
+            Ok(value) => {
+                return Response::success(
+                    id,
+                    serde_json::json!({
+                        "content": [{
+                            "type": "text",
+                            "text": serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
+                        }]
+                    }),
+                );
+            }
+            Err(e) => {
+                // Daemon transport failed mid-converse: drop the connection and
+                // fall through to local handling, matching the other daemon ops.
+                eprintln!("voice mcp: converse error: {}, falling back to local", e);
+                session.daemon = None;
+            }
+        }
+    }
+
+    // Delegate to the voice daemon if connected (speak/listen/converse_result).
     // Config tools (set_voice/set_speed/list_voices) stay local.
     // The daemon queues requests and owns the audio hardware.
     if let Some(ref mut daemon) = session.daemon {
@@ -542,23 +579,6 @@ fn handle_tools_call(
             }
             "listen" => {
                 Some(daemon.listen(arguments.get("max_duration_ms").and_then(|v| v.as_u64())))
-            }
-            "converse" => {
-                // Returns a converse_id immediately. Fetch the spoken reply with
-                // `converse_result` once the human has answered — the tool call
-                // never blocks on the human, so it never gets retried mid-wait.
-                let raw = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                let markdown = arguments
-                    .get("markdown")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let text = preprocess_for_daemon(raw, markdown, &session.subs);
-                Some(daemon.converse(
-                    &text,
-                    arguments.get("voice").and_then(|v| v.as_str()),
-                    arguments.get("max_duration_ms").and_then(|v| v.as_u64()),
-                    voice_protocol::client::TtsRequestOptions::default(),
-                ))
             }
             "converse_result" => {
                 let converse_id = arguments
@@ -957,6 +977,125 @@ fn voice_speak(
     }))
 }
 
+/// Fire a converse on the daemon, then poll it here until the human answers or
+/// we hand the id back. This is the smart wait the agent would otherwise do by
+/// hand: one blocking MCP call instead of converse + N `converse_result` polls.
+///
+/// - Human finishes → `{status: "completed", heard, spoke}`.
+/// - Mic open but no speech for `GRACE_MS` (human is busy) → `{status: "pending",
+///   converse_id, ...}`, so the agent can move on and poll `converse_result`.
+/// - Reply runs past `CEILING_MS` → same pending handoff.
+///
+/// The grace clock starts when the mic opens (phase `listening`), not at call
+/// time, so the spoken prompt's own duration never eats into it. Once the human
+/// has started speaking (`heard_speech`), grace no longer applies and we wait
+/// through the whole reply, bounded only by the ceiling.
+fn converse_blocking(
+    daemon: &mut voice_protocol::client::DaemonClient,
+    text: &str,
+    voice: Option<&str>,
+    max_duration_ms: Option<u64>,
+) -> Result<Value, String> {
+    const GRACE_MS: u128 = 8_000;
+    const CEILING_MS: u128 = 90_000;
+    const POLL_MS: u64 = 1_500;
+
+    let fired = daemon.converse(
+        text,
+        voice,
+        max_duration_ms,
+        voice_protocol::client::TtsRequestOptions::default(),
+    )?;
+    let converse_id = fired
+        .result
+        .as_ref()
+        .and_then(|r| r.get("converse_id"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "converse: daemon returned no converse_id".to_string())?
+        .to_string();
+
+    let start = Instant::now();
+    let mut listening_since: Option<Instant> = None;
+    loop {
+        // The daemon long-polls up to POLL_MS on non-terminal states, so this
+        // loop paces itself (~POLL_MS per turn) without a sleep.
+        let resp = daemon.converse_result(&converse_id, Some(POLL_MS))?;
+        let view = resp.result.unwrap_or_else(|| serde_json::json!({}));
+        let phase = view
+            .get("phase")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        match phase {
+            "completed" => return Ok(converse_completed_value(&view)),
+            "failed" => {
+                return Err(view
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("converse failed")
+                    .to_string())
+            }
+            "listening" => {
+                let heard = view
+                    .get("heard_speech")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if !heard {
+                    let since = *listening_since.get_or_insert_with(Instant::now);
+                    if since.elapsed().as_millis() >= GRACE_MS {
+                        return Ok(converse_pending_value(
+                            &converse_id,
+                            phase,
+                            "human hasn't started speaking",
+                        ));
+                    }
+                }
+                // heard: keep waiting through the reply.
+            }
+            _ => {
+                // queued / speaking (TTS playing) / transient unknown: keep waiting.
+            }
+        }
+
+        if start.elapsed().as_millis() >= CEILING_MS {
+            return Ok(converse_pending_value(
+                &converse_id,
+                phase,
+                "reply still in progress",
+            ));
+        }
+    }
+}
+
+/// Shape a completed converse view into the agent-facing result. The daemon
+/// nests the transcript as a JSON string under `result`; unwrap it so the agent
+/// sees structured `heard`/`spoke` rather than an escaped blob.
+fn converse_completed_value(view: &Value) -> Value {
+    let inner = view
+        .get("result")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    serde_json::json!({
+        "status": "completed",
+        "heard": inner.get("heard").cloned().unwrap_or(Value::Null),
+        "spoke": inner.get("spoke").cloned().unwrap_or(Value::Null),
+    })
+}
+
+/// The handoff result when there is no transcript yet: give the agent the
+/// converse_id to poll `converse_result` with later.
+fn converse_pending_value(converse_id: &str, phase: &str, reason: &str) -> Value {
+    serde_json::json!({
+        "status": "pending",
+        "converse_id": converse_id,
+        "phase": phase,
+        "note": format!(
+            "No reply yet ({reason}). Poll converse_result with this converse_id to collect it."
+        ),
+    })
+}
+
 fn voice_converse(
     session: &mut Session,
     stdout: &mut io::Stdout,
@@ -1247,4 +1386,40 @@ fn write_response(stdout: &mut io::Stdout, resp: &Response) {
     let json = serde_json::to_string(resp).unwrap();
     let _ = writeln!(stdout, "{json}");
     let _ = stdout.flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{converse_completed_value, converse_pending_value};
+    use serde_json::json;
+
+    #[test]
+    fn completed_value_unwraps_nested_transcript() {
+        // The daemon nests the transcript as a JSON *string* under `result`.
+        let view = json!({
+            "phase": "completed",
+            "result": r#"{"heard":{"text":"hello"},"spoke":{"chunks":1}}"#,
+        });
+        let out = converse_completed_value(&view);
+        assert_eq!(out["status"], "completed");
+        assert_eq!(out["heard"]["text"], "hello");
+        assert_eq!(out["spoke"]["chunks"], 1);
+    }
+
+    #[test]
+    fn completed_value_tolerates_missing_result() {
+        let out = converse_completed_value(&json!({ "phase": "completed" }));
+        assert_eq!(out["status"], "completed");
+        assert!(out["heard"].is_null());
+        assert!(out["spoke"].is_null());
+    }
+
+    #[test]
+    fn pending_value_carries_the_id() {
+        let out = converse_pending_value("abc123", "listening", "human hasn't started speaking");
+        assert_eq!(out["status"], "pending");
+        assert_eq!(out["converse_id"], "abc123");
+        assert_eq!(out["phase"], "listening");
+        assert!(out["note"].as_str().unwrap().contains("converse_result"));
+    }
 }

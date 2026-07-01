@@ -120,16 +120,16 @@ cargo test --workspace
 
 ## Dependencies
 
-- `candle-core 0.9` — Metal GPU inference, tensor ops
-- `candle-nn 0.9` — Neural network layers
-- `candle-transformers 0.9` — Whisper model implementation
-- `candle-metal-kernels 0.9` — Metal compute kernels
-- `safetensors 0.6` — Weight loading
+- `candle-core 0.11` — Metal GPU inference, tensor ops
+- `candle-nn 0.11` — Neural network layers
+- `candle-transformers 0.11` — Whisper model implementation
+- `candle-metal-kernels 0.11` — Metal compute kernels (transitive via candle)
+- `safetensors 0.8` — Weight loading
 - `hf-hub 0.5` — HuggingFace model downloads + caching
 - `hound 3` — WAV file I/O
 - `serde` / `serde_json` — config + dictionary parsing
 - `rodio 0.22` — audio playback
 - `clap 4` — CLI args
-- `tokenizers 0.21` — HuggingFace fast tokenizers (Whisper)
-- `rubato 1.0` — Audio resampling (STT)
+- `tokenizers 0.22` — HuggingFace fast tokenizers (Whisper)
+- `rubato 3.0` — Audio resampling (STT)
 - `pulldown-cmark 0.13` — Markdown stripping

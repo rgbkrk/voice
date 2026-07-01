@@ -3923,7 +3923,6 @@ dependencies = [
  "dirs",
  "hound",
  "rodio",
- "serde",
  "serde_json",
  "tokio",
  "uuid",
@@ -3969,14 +3968,11 @@ dependencies = [
  "bytemuck",
  "candle-core",
  "candle-nn",
- "candle-transformers",
- "half",
  "hf-hub",
  "hound",
  "safetensors 0.8.0",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4004,12 +4000,9 @@ version = "0.2.0"
 dependencies = [
  "candle-core",
  "candle-nn",
- "candle-transformers",
  "hf-hub",
  "hound",
  "rubato",
- "safetensors 0.8.0",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokenizers",
@@ -4055,7 +4048,6 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "rand 0.10.1",
- "thiserror 2.0.18",
  "tokenizers",
 ]
 

@@ -1160,31 +1160,6 @@ pub fn listen_continuous() {
     }
 }
 
-/// Run continuous listen for JSON-RPC, yielding segment results.
-///
-/// Returns a receiver of SegmentResult. The caller (jsonrpc dispatch)
-/// sends notifications per result and a final response on completion.
-#[allow(dead_code)]
-pub fn listen_continuous_for_rpc(
-    model: voice_stt::WhisperModel,
-    silence_timeout_ms: u64,
-    max_duration_ms: u64,
-    noise_multiplier: f32,
-    calibration_ms: u64,
-) -> Result<mpsc::Receiver<SegmentResult>, String> {
-    let (segments_rx, _sample_rate, _handle) = record_continuous(
-        silence_timeout_ms,
-        0.01, // silence_threshold
-        max_duration_ms,
-        500,    // min_segment_ms
-        30_000, // max_segment_ms
-        noise_multiplier,
-        calibration_ms,
-    )?;
-
-    Ok(transcribe_segments(model, segments_rx))
-}
-
 // ── Audio processing ───────────────────────────────────────────────────
 
 /// Trim leading and trailing silence from audio samples.

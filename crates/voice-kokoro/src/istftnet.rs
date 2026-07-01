@@ -929,25 +929,6 @@ impl Decoder {
 // Helper functions
 // ---------------------------------------------------------------------------
 
-/// Cumulative sum along dimension 1.
-#[allow(dead_code)]
-fn cumsum_dim1(x: &Tensor) -> Result<Tensor> {
-    let (_b, seq_len, _d) = x.dims3()?;
-    if seq_len <= 1 {
-        return Ok(x.clone());
-    }
-
-    // Build cumsum by iterative addition
-    let mut slices = Vec::with_capacity(seq_len);
-    slices.push(x.narrow(1, 0, 1)?);
-    for i in 1..seq_len {
-        let prev = &slices[i - 1];
-        let curr = x.narrow(1, i, 1)?;
-        slices.push((prev + curr)?);
-    }
-    Tensor::cat(&slices, 1)
-}
-
 /// Nearest-neighbor 1D upsampling for a 2D tensor [B, T] -> [B, T*factor]
 fn upsample_nearest_1d_single(x: &Tensor, factor: usize) -> Result<Tensor> {
     let (b, t) = x.dims2()?;

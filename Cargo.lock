@@ -4136,7 +4136,6 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "rand 0.10.1",
- "rand_distr 0.6.0",
  "thiserror 2.0.18",
  "tokenizers 0.21.4",
 ]

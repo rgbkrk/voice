@@ -14,5 +14,5 @@ candle-transformers = { workspace = true }
 byteorder = "1"
 tokenizers = { workspace = true }
 thiserror = { workspace = true }
-rand = "0.9"
-rand_distr = "0.5"
+rand = "0.10"
+rand_distr = "0.6"

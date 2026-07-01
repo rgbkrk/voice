@@ -20,5 +20,4 @@ hf-hub = { workspace = true }
 hound = { workspace = true }
 thiserror = { workspace = true }
 tokenizers = { workspace = true }
-rubato = "1.0"
-audioadapter-buffers = "2.0"
+rubato = "3.0"

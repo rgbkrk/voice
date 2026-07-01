@@ -43,7 +43,7 @@ voice-protocol = { path = "../voice-protocol" }
 voice-stream = { path = "../voice-stream" }
 voice-audio = { path = "../voice-audio" }
 voice-daemon = { path = "../voice-daemon" }
-dirs = "5"
+dirs = "6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

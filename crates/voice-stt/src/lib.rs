@@ -573,7 +573,7 @@ fn resample_sinc(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f3
         (num_input_frames as f64 * ratio).ceil() as usize + resampler.output_delay() + 128;
     let mut output_f64 = vec![0.0f64; num_output_frames];
 
-    use audioadapter_buffers::direct::InterleavedSlice;
+    use rubato::audioadapter_buffers::direct::InterleavedSlice;
 
     let input_adapter = InterleavedSlice::new(&input_f64, 1, num_input_frames)
         .map_err(|e| SttError::Audio(format!("Input adapter failed: {e}")))?;

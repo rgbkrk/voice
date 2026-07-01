@@ -4120,19 +4120,25 @@ fn install_service(no_start: bool, stt_model: Option<&str>) {
     // Trigger the macOS mic/speaker permission prompt here, during interactive
     // install, instead of on the hot path when an agent is mid-converse. The
     // grant is tied to this binary's identity, which the daemon inherits.
-    println!();
-    println!("Verifying audio permissions (macOS may prompt for microphone access)...");
-    match listen::warmup_permissions() {
-        Ok(()) => println!("  audio:   mic + speaker OK"),
-        Err(e) => {
-            eprintln!("  audio:   warning — mic warmup failed: {e}");
-            eprintln!(
-                "           grant microphone access under System Settings > Privacy & Security > Microphone,"
-            );
-            eprintln!("           then re-run `voice daemon install`.");
+    //
+    // Skip it under `--no-start`: that's the provisioning/unattended path, where
+    // opening the mic (and blocking up to the mic-open timeout) and playing audio
+    // are unwelcome. Those installs handle permissions out of band.
+    if !no_start {
+        println!();
+        println!("Verifying audio permissions (macOS may prompt for microphone access)...");
+        match listen::warmup_permissions() {
+            Ok(()) => println!("  audio:   mic + speaker OK"),
+            Err(e) => {
+                eprintln!("  audio:   warning — mic warmup failed: {e}");
+                eprintln!(
+                    "           grant microphone access under System Settings > Privacy & Security > Microphone,"
+                );
+                eprintln!("           then re-run `voice daemon install`.");
+            }
         }
+        println!();
     }
-    println!();
 
     let uid = unsafe { libc::getuid() };
     let target = format!("gui/{uid}");

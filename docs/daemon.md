@@ -89,7 +89,10 @@ VOICE_SIGN_IDENTITY="Apple Development: you@example.com (TEAMID)" \
 
 `scripts/install_signed_voice.sh` runs `cargo install`, then re-signs the
 installed binary with your identity so the cdhash stays constant. Rebuilds
-signed with the same identity keep the existing mic grant.
+signed with the same identity keep the existing mic grant. It signs with the
+hardened runtime and `scripts/voice.entitlements`, which carries
+`com.apple.security.device.audio-input` — required for mic access under the
+hardened runtime.
 
 Check status at any time:
 

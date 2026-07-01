@@ -44,14 +44,24 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
+ENTITLEMENTS="$(dirname "$0")/voice.entitlements"
+
 echo "Signing $BIN with: $IDENTITY"
-# --force replaces the ad-hoc signature cargo applied. --options runtime keeps
-# the binary compatible with hardened-runtime expectations.
-codesign --force --options runtime --sign "$IDENTITY" "$BIN"
+# --force replaces the ad-hoc signature cargo applied. --options runtime opts
+# into the hardened runtime, which gates mic access behind the audio-input
+# entitlement, so we pass voice.entitlements or the signed binary can't use the
+# microphone.
+codesign --force --options runtime \
+  --entitlements "$ENTITLEMENTS" \
+  --sign "$IDENTITY" "$BIN"
 
 echo "Verifying signature..."
 codesign --verify --verbose "$BIN"
 codesign --display --verbose=2 "$BIN" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier" || true
+echo "Entitlements:"
+codesign --display --entitlements - --xml "$BIN" 2>/dev/null | grep -q "audio-input" \
+  && echo "  ✓ com.apple.security.device.audio-input present" \
+  || echo "  ✗ audio-input entitlement missing — mic access will fail under hardened runtime"
 
 echo
 echo "Done. Now run:  voice daemon install"

@@ -606,6 +606,45 @@ fn log_recording_stats(samples: &[f32], sample_rate: u32) {
     }
 }
 
+/// Exercise speaker playback and mic capture so the OS surfaces any
+/// permission prompt now, rather than on the hot path when an agent is
+/// mid-`converse` waiting on a reply.
+///
+/// On macOS, microphone access is gated by TCC and the prompt fires on first
+/// capture. Running this from the `voice` binary during `voice daemon install`
+/// pins the grant to that binary identity, which the daemon (`voice daemon
+/// start`) then inherits. Playback is best-effort and non-fatal; a denied or
+/// missing mic returns `Err` so the caller can surface a clear failure.
+pub fn warmup_permissions() -> Result<(), String> {
+    // Speaker first: short ding. Playback isn't TCC-gated, but a silent or
+    // missing output device is worth surfacing at install time.
+    play_ding();
+
+    // Mic: open the stream (this triggers the TCC prompt) and drain a brief
+    // window so the OS registers real capture, then tear it down.
+    let (name, sample_rate, mic) = open_mic()?;
+    eprintln!("  mic:     {name} ({sample_rate}Hz)");
+
+    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let channels = mic.config().channel_count.get();
+
+    let mic_thread = start_mic_drain(
+        mic,
+        Arc::clone(&buffer),
+        Arc::clone(&peak),
+        Arc::clone(&stop),
+        channels,
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    stop.store(true, Ordering::SeqCst);
+    let _ = mic_thread.join();
+
+    Ok(())
+}
+
 // ── Recording modes ────────────────────────────────────────────────────
 
 /// Record audio from the default input device until Enter or Ctrl+C.

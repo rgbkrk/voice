@@ -66,6 +66,31 @@ To remove the service:
 voice daemon uninstall
 ```
 
+### macOS microphone permissions
+
+On macOS, microphone capture is gated by TCC. `voice daemon install` exercises
+the mic (and speaker) during install, so the permission prompt fires *then*
+instead of on the hot path when an agent is mid-`converse` waiting on a reply.
+Grant access when prompted; if you miss it, allow `voice` under **System
+Settings > Privacy & Security > Microphone** and re-run `voice daemon install`.
+The grant is tied to the `voice` binary's identity, and the daemon (`voice
+daemon start`) inherits it.
+
+macOS keys the grant on the code-signing identity. `cargo install --force`
+recompiles and ad-hoc-signs a fresh binary, so each rebuild looks like a new app
+and re-prompts. To make the grant survive rebuilds, install with a stable
+signing identity:
+
+```bash
+security find-identity -v -p codesigning   # find your identity
+VOICE_SIGN_IDENTITY="Apple Development: you@example.com (TEAMID)" \
+  scripts/install_signed_voice.sh
+```
+
+`scripts/install_signed_voice.sh` runs `cargo install`, then re-signs the
+installed binary with your identity so the cdhash stays constant. Rebuilds
+signed with the same identity keep the existing mic grant.
+
 Check status at any time:
 
 ```bash

@@ -538,13 +538,18 @@ fn generate_voxtral_audio(
         .map_err(|e| format!("generate Voxtral audio: {e}"))
 }
 
-/// Output rates at or below Kokoro/Voxtral's own synthesis rate (24 kHz). A
-/// Bluetooth headset drops its CoreAudio nominal rate into this band (8/16 kHz
-/// HFP) while an input stream is live; A2DP playback runs at 44.1/48 kHz. rodio
-/// caches the device rate exactly once at sink-open and resamples every appended
-/// buffer to it, so a rate captured mid-profile-flip gets clocked out at the wrong
-/// rate once the device settles. Treat anything in this band as "not a settled
-/// full-quality output yet."
+/// Rates at or below Kokoro/Voxtral's 24 kHz synthesis rate: the band a
+/// Bluetooth headset can report while its mic is live. Classic HFP is 8/16 kHz,
+/// but AirPods Pro were observed dropping to exactly 24 kHz mic-active in the
+/// daemon's own rate logs, versus 44.1/48 kHz for A2DP output. rodio caches the
+/// device rate once at sink-open and resamples every buffer to it, so a sink
+/// opened at one of these low rates gets clocked out too fast once the headset
+/// settles back to A2DP.
+///
+/// The 24 kHz ceiling is deliberate, not a stand-in for 16 kHz: it has to catch
+/// the observed AirPods mic-active rate. The cost is that a device genuinely
+/// stuck at exactly 24 kHz pays the settle timeout once, which in practice is a
+/// headset mid-profile and correct to wait on.
 const HFP_CLASS_MAX_HZ: u32 = 24_000;
 
 /// Read the default output device's current nominal sample rate without opening a

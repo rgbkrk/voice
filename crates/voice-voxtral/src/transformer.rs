@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use candle_core::{DType, Device, Module, Result, Tensor, D};
+use candle_nn::kv_cache::ConcatKvCache;
 use candle_nn::{
     embedding, linear_no_bias, rms_norm, Activation, Embedding, Linear, RmsNorm, VarBuilder,
 };
@@ -79,13 +80,7 @@ pub struct VoxtralAttention {
 
 #[derive(Debug, Clone)]
 pub struct VoxtralLanguageCache {
-    layers: Vec<VoxtralAttentionCache>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct VoxtralAttentionCache {
-    key: Option<Tensor>,
-    value: Option<Tensor>,
+    layers: Vec<ConcatKvCache>,
 }
 
 pub struct VoxtralFeedForward {
@@ -282,15 +277,17 @@ impl VoxtralLanguageBackbone {
 
 impl VoxtralLanguageCache {
     pub fn new(layer_count: usize) -> Self {
+        // Concat along dim=2, the sequence axis of our [B, n_kv_heads, S, head_dim]
+        // key/value tensors.
         Self {
-            layers: vec![VoxtralAttentionCache::default(); layer_count],
+            layers: vec![ConcatKvCache::new(2); layer_count],
         }
     }
 
     pub fn len(&self) -> usize {
         self.layers
             .first()
-            .map(VoxtralAttentionCache::len)
+            .map(ConcatKvCache::current_seq_len)
             .unwrap_or(0)
     }
 
@@ -298,75 +295,10 @@ impl VoxtralLanguageCache {
         self.len() == 0
     }
 
-    fn layer_mut(&mut self, layer_idx: usize) -> Result<&mut VoxtralAttentionCache> {
+    fn layer_mut(&mut self, layer_idx: usize) -> Result<&mut ConcatKvCache> {
         self.layers.get_mut(layer_idx).ok_or_else(|| {
             candle_core::Error::Msg(format!("missing language cache for layer {layer_idx}"))
         })
-    }
-}
-
-impl VoxtralAttentionCache {
-    fn len(&self) -> usize {
-        self.key.as_ref().map(|key| key.dims()[2]).unwrap_or(0)
-    }
-
-    fn update(&mut self, key: Tensor, value: Tensor) -> Result<(Tensor, Tensor)> {
-        let key_dims = key.dims();
-        let value_dims = value.dims();
-        if key_dims.len() != 4 || value_dims.len() != 4 {
-            candle_core::bail!(
-                "attention cache expects rank-4 key/value tensors, got {:?} and {:?}",
-                key_dims,
-                value_dims
-            );
-        }
-        if key_dims[0] != value_dims[0]
-            || key_dims[1] != value_dims[1]
-            || key_dims[2] != value_dims[2]
-            || key_dims[3] != value_dims[3]
-        {
-            candle_core::bail!("key/value cache dims differ: {key_dims:?} vs {value_dims:?}");
-        }
-
-        match (&self.key, &self.value) {
-            (None, None) => {
-                self.key = Some(key.clone());
-                self.value = Some(value.clone());
-                Ok((key, value))
-            }
-            (Some(cached_key), Some(cached_value)) => {
-                let cached_key_dims = cached_key.dims();
-                let cached_value_dims = cached_value.dims();
-                if cached_key_dims.len() != 4 || cached_value_dims.len() != 4 {
-                    candle_core::bail!(
-                        "cached key/value tensors must be rank 4, got {:?} and {:?}",
-                        cached_key_dims,
-                        cached_value_dims
-                    );
-                }
-                if cached_key_dims[0] != key_dims[0]
-                    || cached_key_dims[1] != key_dims[1]
-                    || cached_key_dims[3] != key_dims[3]
-                    || cached_value_dims[0] != value_dims[0]
-                    || cached_value_dims[1] != value_dims[1]
-                    || cached_value_dims[3] != value_dims[3]
-                {
-                    candle_core::bail!(
-                        "new key/value dims {:?}/{:?} are incompatible with cached dims {:?}/{:?}",
-                        key_dims,
-                        value_dims,
-                        cached_key_dims,
-                        cached_value_dims
-                    );
-                }
-                let full_key = Tensor::cat(&[cached_key, &key], 2)?;
-                let full_value = Tensor::cat(&[cached_value, &value], 2)?;
-                self.key = Some(full_key.clone());
-                self.value = Some(full_value.clone());
-                Ok((full_key, full_value))
-            }
-            _ => candle_core::bail!("attention cache is partially initialized"),
-        }
     }
 }
 
@@ -666,7 +598,7 @@ impl VoxtralTransformerBlock {
         hidden_states: &Tensor,
         start_pos: usize,
         rope_theta: f64,
-        cache: &mut VoxtralAttentionCache,
+        cache: &mut ConcatKvCache,
     ) -> Result<Tensor> {
         let residual = hidden_states.clone();
         let attention_input = self.attention_norm.forward(hidden_states)?;
@@ -806,13 +738,13 @@ impl VoxtralAttention {
         hidden_states: &Tensor,
         start_pos: usize,
         rope_theta: f64,
-        cache: &mut VoxtralAttentionCache,
+        cache: &mut ConcatKvCache,
     ) -> Result<Tensor> {
         let (batch, seq_len, _dim) = hidden_states.dims3()?;
-        if cache.len() != start_pos {
+        if cache.current_seq_len() != start_pos {
             candle_core::bail!(
                 "attention cache length {} does not match start_pos {start_pos}",
-                cache.len()
+                cache.current_seq_len()
             );
         }
         let repeat = self.n_heads / self.n_kv_heads;
@@ -846,7 +778,7 @@ impl VoxtralAttention {
         )?;
         let query = candle_nn::rotary_emb::rope_i(&query, &cos, &sin)?;
         let key = candle_nn::rotary_emb::rope_i(&key, &cos, &sin)?;
-        let (key, value) = cache.update(key, value)?;
+        let (key, value) = cache.append(&key, &value)?;
         let key_len = key.dim(2)?;
         let key = repeat_kv_heads(&key, repeat)?;
         let value = repeat_kv_heads(&value, repeat)?;

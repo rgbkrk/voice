@@ -1,0 +1,5 @@
+[toolchain]
+# candle 0.11 uses ARM NEON f16 intrinsics (stdarch_neon_f16) that are only
+# stable on recent Rust. Pin to stable so local builds match CI
+# (dtolnay/rust-toolchain@stable) instead of whatever default is installed.
+channel = "stable"

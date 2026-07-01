@@ -28,7 +28,7 @@ pubkey = "RWRmHACtt9SpjQB/l+dAoCe+3iqxq/Xe/90P6dyCW70axzy3UkWl+Ave"
 
 [dependencies]
 voice-tts = { version = "0.3.0", path = "../voice-tts" }
-voice-voxtral = { path = "../voice-voxtral" }
+voice-voxtral = { version = "0.1.0", path = "../voice-voxtral" }
 candle-core = { workspace = true }
 voice-g2p = { version = "0.2.2", path = "../voice-g2p" }
 voice-stt = { version = "0.2.0", path = "../voice-stt" }
@@ -39,10 +39,10 @@ pulldown-cmark = "0.13.1"
 ctrlc = "3.5.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
-voice-protocol = { path = "../voice-protocol" }
-voice-stream = { path = "../voice-stream" }
-voice-audio = { path = "../voice-audio" }
-voice-daemon = { path = "../voice-daemon" }
+voice-protocol = { version = "0.1.0", path = "../voice-protocol" }
+voice-stream = { version = "0.1.0", path = "../voice-stream" }
+voice-audio = { version = "0.1.0", path = "../voice-audio" }
+voice-daemon = { version = "0.1.0", path = "../voice-daemon" }
 dirs = "6"
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/rgbkrk/voice"
 
 [dependencies]
-voice-kokoro = { path = "../voice-kokoro", default-features = false }
+voice-kokoro = { version = "0.1.0", path = "../voice-kokoro", default-features = false }
 candle-core = { workspace = true }
 candle-nn = { workspace = true }
 safetensors = { workspace = true }

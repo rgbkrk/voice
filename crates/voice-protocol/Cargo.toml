@@ -12,7 +12,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["io-util", "net"] }
 dirs = "6"
-voice-stream = { path = "../voice-stream" }
+voice-stream = { version = "0.1.0", path = "../voice-stream" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["io-util", "rt", "macros"] }

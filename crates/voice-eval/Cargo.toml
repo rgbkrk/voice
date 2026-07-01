@@ -6,6 +6,9 @@ rust-version = "1.95.0"
 description = "Local TTS intelligibility evaluation harness for voice"
 license = "MIT"
 repository = "https://github.com/rgbkrk/voice"
+# App-only eval harness, not a library. Nothing downstream depends on it, so it
+# stays out of the crates.io release to avoid maintaining a public version line.
+publish = false
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

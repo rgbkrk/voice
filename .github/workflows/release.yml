@@ -94,10 +94,13 @@ jobs:
           publish voice-g2p
           publish voice-kokoro
           publish voice-whisper
+          publish voice-voxtral
+          publish voice-audio
 
           # Model-facing libraries
           publish voice-tts
           publish voice-stt
 
-          # voice (CLI) depends on the libraries above
+          # Daemon depends on the libraries above; CLI depends on the daemon
+          publish voice-daemon
           publish voice

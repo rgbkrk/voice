@@ -5,3 +5,7 @@
 # instead of floating to whatever `stable` resolves to — a newer stable can
 # introduce lints that fail the strict CI clippy on unrelated pre-existing code.
 channel = "1.95.0"
+# Pinning an explicit channel means rustup installs only the base toolchain, so
+# name the components CI needs (fmt, clippy) or `cargo fmt`/`cargo clippy` fail
+# with "component not installed".
+components = ["rustfmt", "clippy"]

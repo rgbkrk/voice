@@ -250,32 +250,14 @@ impl WhisperDecoder {
                 .i(next_token as usize)?
                 .to_scalar::<f32>()? as f64;
 
+            // Termination is the model's job: stop on its end-of-text token, and
+            // cap at max_target_positions so degenerate output can't run forever.
+            // There is intentionally no token-pattern repetition guard here.
+            // distil-large-v3.5 rarely loops, decode_with_fallback re-rolls
+            // low-confidence output, and any pattern match aggressive enough to
+            // catch a real loop also truncates legitimate long-form speech.
             if next_token == self.eot_token || tokens.len() > self.config.max_target_positions {
                 break;
-            }
-
-            // Detect repetition: check if the second half of generated tokens
-            // is a repeat of a pattern from the first half. This catches both
-            // "the the the" and "it's going to do it's going to do" patterns.
-            let sample_begin = if self.language_token.is_some() { 4 } else { 3 };
-            let content = &tokens[sample_begin..];
-            if content.len() >= 20 {
-                // Check if the last 10 tokens match any earlier 10-token window
-                let check_len = 10;
-                let tail = &content[content.len() - check_len..];
-                let search_range = &content[..content.len() - check_len];
-                let has_repeat = search_range.windows(check_len).any(|window| window == tail);
-                if has_repeat {
-                    // Find the first occurrence of this repeated pattern
-                    // and truncate everything after it
-                    if let Some(first_pos) = search_range
-                        .windows(check_len)
-                        .position(|window| window == tail)
-                    {
-                        tokens.truncate(sample_begin + first_pos + check_len);
-                    }
-                    break;
-                }
             }
 
             sum_logprob += prob.ln();

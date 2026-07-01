@@ -538,6 +538,88 @@ fn generate_voxtral_audio(
         .map_err(|e| format!("generate Voxtral audio: {e}"))
 }
 
+/// Output rates at or below Kokoro/Voxtral's own synthesis rate (24 kHz). A
+/// Bluetooth headset drops its CoreAudio nominal rate into this band (8/16 kHz
+/// HFP) while an input stream is live; A2DP playback runs at 44.1/48 kHz. rodio
+/// caches the device rate exactly once at sink-open and resamples every appended
+/// buffer to it, so a rate captured mid-profile-flip gets clocked out at the wrong
+/// rate once the device settles. Treat anything in this band as "not a settled
+/// full-quality output yet."
+const HFP_CLASS_MAX_HZ: u32 = 24_000;
+
+/// Read the default output device's current nominal sample rate without opening a
+/// stream. `None` when there is no output device or CoreAudio refuses the query.
+///
+/// cpal reads `kAudioDevicePropertyStreamFormat` live on every call, so this
+/// tracks the active Bluetooth profile rate rather than a cached value.
+fn default_output_rate() -> Option<u32> {
+    use rodio::cpal::traits::{DeviceTrait, HostTrait};
+    let device = rodio::cpal::default_host().default_output_device()?;
+    let config = device.default_output_config().ok()?;
+    Some(config.sample_rate())
+}
+
+/// Diagnostic: log the live default output device rate around the sink lifecycle
+/// so a Bluetooth profile flip (HFP<->A2DP) is visible in daemon logs.
+fn log_output_device_rate(when: &str) {
+    if let Some(rate) = default_output_rate() {
+        eprintln!("voice daemon: device output rate {when} {rate} Hz");
+    }
+}
+
+/// Wait for the default output device to leave the HFP-class rate band before
+/// opening a playback sink, but only when it is currently in that band.
+///
+/// rodio caches the device rate once at sink-open (see [`HFP_CLASS_MAX_HZ`]) and
+/// resamples every buffer to it. The sped-up failure needs exactly one shape:
+/// open while the headset reports a low HFP rate, then clock those resampled
+/// samples out at the higher A2DP rate once the profile settles. So the only
+/// hazard is a rate that is *currently* HFP-class.
+///
+/// A first read above the band (built-in speakers, stable A2DP, any non-Bluetooth
+/// output) is safe to open at right now, so this returns immediately with no added
+/// latency. Opening high and later settling to a nearby high rate is imperceptible;
+/// it is never the sped-up bug. Only when the current rate is HFP-class do we poll,
+/// waiting for the headset to finish renegotiating up out of HFP. If it never does
+/// within the timeout (an input stream held open elsewhere, or a genuinely low-rate
+/// device) we proceed anyway: playback at that low rate is correct-speed, just
+/// muffled, not sped up.
+fn wait_for_stable_output_rate() {
+    const POLL_INTERVAL: Duration = Duration::from_millis(150);
+    const TIMEOUT: Duration = Duration::from_millis(2_000);
+
+    match default_output_rate() {
+        // Already full-quality (or no device to probe — let the open path surface
+        // that error): open now.
+        Some(rate) if rate > HFP_CLASS_MAX_HZ => return,
+        None => return,
+        _ => {}
+    }
+
+    let started = Instant::now();
+    while started.elapsed() < TIMEOUT {
+        std::thread::sleep(POLL_INTERVAL);
+        match default_output_rate() {
+            // Left HFP, or the device vanished mid-poll: stop waiting.
+            Some(rate) if rate > HFP_CLASS_MAX_HZ => return,
+            None => return,
+            _ => {}
+        }
+    }
+}
+
+/// Open the default output sink after the device rate settles, logging the rate
+/// rodio committed to. Both TTS engines' speak playback goes through here so each
+/// gets the Bluetooth settle guard and the same diagnostic.
+fn open_stable_default_sink() -> Result<rodio::MixerDeviceSink, String> {
+    wait_for_stable_output_rate();
+    let mut stream = DeviceSinkBuilder::open_default_sink().map_err(|e| format!("audio: {}", e))?;
+    stream.log_on_drop(false);
+    let sink_rate = stream.config().sample_rate().get();
+    eprintln!("voice daemon: sink opened at {sink_rate} Hz");
+    Ok(stream)
+}
+
 fn speak(
     tts: &Arc<Mutex<TtsState>>,
     text: &str,
@@ -550,9 +632,7 @@ fn speak(
         }
 
         let started = Instant::now();
-        let mut stream =
-            DeviceSinkBuilder::open_default_sink().map_err(|e| format!("audio: {}", e))?;
-        stream.log_on_drop(false);
+        let stream = open_stable_default_sink()?;
         let player = Player::connect_new(stream.mixer());
         let channels = NonZero::new(1u16).unwrap();
         let rate = NonZero::new(voice_voxtral::SAMPLE_RATE).unwrap();
@@ -587,9 +667,11 @@ fn speak(
                 .map_err(|e| format!("generate Voxtral audio: {e}"))?
         };
 
+        log_output_device_rate("before drain");
         while !player.empty() {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+        log_output_device_rate("after drain");
 
         return Ok(serde_json::json!({
             "engine": resolved.engine,
@@ -617,8 +699,7 @@ fn speak(
         return Ok(serde_json::json!({"duration_ms": 0, "chunks": 0}).to_string());
     }
 
-    let mut stream = DeviceSinkBuilder::open_default_sink().map_err(|e| format!("audio: {}", e))?;
-    stream.log_on_drop(false);
+    let stream = open_stable_default_sink()?;
     let player = Player::connect_new(stream.mixer());
 
     let started = Instant::now();
@@ -654,9 +735,11 @@ fn speak(
         }
     }
 
+    log_output_device_rate("before drain");
     while !player.empty() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    log_output_device_rate("after drain");
 
     let duration_ms = started.elapsed().as_millis() as u64;
     Ok(serde_json::json!({
@@ -1145,6 +1228,7 @@ fn listen(
 
     let sample_rate = mic.config().sample_rate.get();
     let channels = mic.config().channel_count.get();
+    eprintln!("voice daemon: mic opened at {sample_rate} Hz");
 
     // Record with VAD
     let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));

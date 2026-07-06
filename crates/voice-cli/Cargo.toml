@@ -38,6 +38,7 @@ rodio = { version = "0.22", features = ["experimental"] }
 hound = { workspace = true }
 pulldown-cmark = "0.13.1"
 ctrlc = "3.5.2"
+crossterm = "0.29"
 serde = { workspace = true }
 serde_json = { workspace = true }
 voice-protocol = { version = "0.1.0", path = "../voice-protocol" }

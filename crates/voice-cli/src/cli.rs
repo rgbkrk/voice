@@ -3,6 +3,10 @@ mod listen;
 mod mcp;
 
 use clap::{ArgAction, Parser, ValueEnum};
+use crossterm::{
+    cursor, execute,
+    terminal::{self, ClearType},
+};
 use pulldown_cmark::{Event, Options, Parser as MdParser, Tag, TagEnd};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -3812,12 +3816,14 @@ impl Drop for QuietOverride {
 }
 
 const TUI_RESET: &str = "\x1b[0m";
-const TUI_CLEAR_LINE: &str = "\r\x1b[2K";
 const TUI_LABEL: &str = "\x1b[1m\x1b[38;2;34;211;238m"; // #22D3EE
 const TUI_SETTLED: &str = "\x1b[1m\x1b[38;2;248;250;252m"; // #F8FAFC
 const TUI_PROGRESS: &str = "\x1b[38;2;148;163;184m"; // #94A3B8
 const TUI_MUTED: &str = "\x1b[38;2;100;116;139m"; // #64748B
 const TUI_ERROR: &str = "\x1b[1m\x1b[38;2;251;113;133m"; // #FB7185
+const TUI_LABEL_COLUMNS: usize = 4;
+const TUI_WRAP_GUARD_COLUMNS: usize = 1;
+const TUI_TRUNCATION_MARKER: &str = "...";
 
 impl RealtimeTuiRenderer {
     fn handle_event(&mut self, event: &serde_json::Value) {
@@ -3866,10 +3872,13 @@ impl RealtimeTuiRenderer {
         }
         let stable_len = realtime_tui_stable_prefix_len(&self.previous_partial, text);
         let (stable, progress) = text.split_at(stable_len);
+        let transcript = realtime_tui_render_partial_transcript(
+            stable,
+            progress,
+            realtime_tui_terminal_width(),
+        );
         self.write_line(
-            &format!(
-                "{TUI_LABEL}YOU{TUI_RESET} {TUI_SETTLED}{stable}{TUI_PROGRESS}{progress}{TUI_RESET}"
-            ),
+            &format!("{TUI_LABEL}YOU{TUI_RESET} {transcript}{TUI_RESET}"),
             false,
         );
         self.previous_partial = text.to_string();
@@ -3905,7 +3914,12 @@ impl RealtimeTuiRenderer {
 
     fn write_line(&mut self, rendered: &str, newline: bool) {
         let mut stdout = io::stdout().lock();
-        let _ = write!(stdout, "{TUI_CLEAR_LINE}{rendered}");
+        let _ = execute!(
+            stdout,
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::CurrentLine)
+        );
+        let _ = write!(stdout, "{rendered}");
         if newline {
             let _ = writeln!(stdout);
         }
@@ -3917,6 +3931,13 @@ impl RealtimeTuiRenderer {
 fn realtime_tui_slot() -> &'static Mutex<Option<RealtimeTuiRenderer>> {
     static SLOT: OnceLock<Mutex<Option<RealtimeTuiRenderer>>> = OnceLock::new();
     SLOT.get_or_init(|| Mutex::new(None))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RealtimeTuiPartialTranscript {
+    truncated: bool,
+    stable: String,
+    progress: String,
 }
 
 fn begin_realtime_tui_renderer() -> RealtimeTuiGuard {
@@ -3973,6 +3994,74 @@ fn realtime_tui_stable_prefix_len(previous: &str, current: &str) -> usize {
         .find(|(_, ch)| ch.is_whitespace())
         .map(|(index, ch)| index + ch.len_utf8())
         .unwrap_or(0)
+}
+
+fn realtime_tui_terminal_width() -> usize {
+    terminal::size()
+        .ok()
+        .map(|(columns, _)| usize::from(columns))
+        .filter(|columns| *columns > 0)
+        .unwrap_or(100)
+}
+
+fn realtime_tui_transcript_columns(terminal_width: usize) -> usize {
+    terminal_width
+        .saturating_sub(TUI_LABEL_COLUMNS + TUI_WRAP_GUARD_COLUMNS)
+        .max(1)
+}
+
+fn realtime_tui_fit_partial_transcript(
+    stable: &str,
+    progress: &str,
+    terminal_width: usize,
+) -> RealtimeTuiPartialTranscript {
+    let available = realtime_tui_transcript_columns(terminal_width);
+    let stable_len = stable.chars().count();
+    let progress_len = progress.chars().count();
+    if stable_len + progress_len <= available {
+        return RealtimeTuiPartialTranscript {
+            truncated: false,
+            stable: stable.to_string(),
+            progress: progress.to_string(),
+        };
+    }
+
+    let tail_columns = available
+        .saturating_sub(TUI_TRUNCATION_MARKER.len())
+        .max(1);
+    let progress_columns = progress_len.min(tail_columns);
+    let stable_columns = tail_columns.saturating_sub(progress_columns);
+
+    RealtimeTuiPartialTranscript {
+        truncated: true,
+        stable: realtime_tui_take_last_chars(stable, stable_columns),
+        progress: realtime_tui_take_last_chars(progress, progress_columns),
+    }
+}
+
+fn realtime_tui_render_partial_transcript(
+    stable: &str,
+    progress: &str,
+    terminal_width: usize,
+) -> String {
+    let fit = realtime_tui_fit_partial_transcript(stable, progress, terminal_width);
+    let marker = if fit.truncated {
+        format!("{TUI_MUTED}{TUI_TRUNCATION_MARKER}")
+    } else {
+        String::new()
+    };
+    format!(
+        "{marker}{TUI_SETTLED}{}{TUI_PROGRESS}{}",
+        fit.stable, fit.progress
+    )
+}
+
+fn realtime_tui_take_last_chars(value: &str, max_chars: usize) -> String {
+    let len = value.chars().count();
+    if len <= max_chars {
+        return value.to_string();
+    }
+    value.chars().skip(len - max_chars).collect()
 }
 
 #[derive(Clone, Copy)]
@@ -7318,6 +7407,22 @@ mod tests {
             "hello world".len()
         );
         assert_eq!(realtime_tui_stable_prefix_len("", "hello"), 0);
+    }
+
+    #[test]
+    fn realtime_tui_partial_transcript_fits_terminal_row() {
+        let fit = realtime_tui_fit_partial_transcript(
+            "Well, it's cool that this can keep going and going. ",
+            "It makes me keep talking",
+            32,
+        );
+        let visible_columns = TUI_TRUNCATION_MARKER.len()
+            + fit.stable.chars().count()
+            + fit.progress.chars().count();
+
+        assert!(fit.truncated);
+        assert!(visible_columns <= realtime_tui_transcript_columns(32));
+        assert!(fit.progress.ends_with("talking"));
     }
 
     #[test]

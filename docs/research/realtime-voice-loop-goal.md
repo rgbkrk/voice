@@ -267,10 +267,10 @@ Before marking the goal complete, provide:
 
 ## Current Next Step
 
-Continue from the first fixture-based smoke slice. The next implementation
-slice is deterministic barge-in: inject a second audio fixture while assistant
-audio is streaming, cancel the active response, prove no further cancelled
-audio frames are emitted, then answer the second turn.
+Run daemon-backed fixture verification for the primary and barge-in smoke
+commands. The code path now supports deterministic barge-in, but the completion
+proof still needs real daemon `stream_transcribe` and `stream_speak` executions
+with concrete event output and metrics.
 
 ## Worklog
 
@@ -306,6 +306,46 @@ peak/RMS speech detection, streamed text delta reconstruction, output frame
 shape validation, and required event sequencing. The primary end-to-end
 `cargo run -p voice -- realtime-smoke ...` command still needs a daemon-backed
 audio fixture run before this goal can be called complete.
+
+### 2026-07-06: Deterministic Barge-in Slice
+
+Extended `voice realtime-smoke` so `--barge-in-audio` and
+`--barge-in-at-ms` run a two-turn deterministic verifier instead of returning a
+placeholder error.
+
+Behavior added:
+
+- validates that `--barge-in-at-ms` is present when `--barge-in-audio` is used;
+- loads and VAD-checks the second fixture before starting the session;
+- emits turn-indexed input, transcription, text, and audio events;
+- captures the daemon `stream_speak` queue id from the first response;
+- once emitted assistant audio reaches `--barge-in-at-ms`, emits the second
+  input fixture as a `barge_in` turn and cancels the active daemon queue item
+  through `cancel_item`;
+- treats any further first-response audio after the cancellation request as a
+  verifier failure;
+- accepts `response.cancelled` only when barge-in was requested;
+- continues with real daemon `stream_transcribe` and `stream_speak` for turn 2;
+- emits metrics for completed turns, cancelled responses, cancellation latency,
+  and dropped output audio duration. The current stream verifier consumes audio
+  immediately, so client-side dropped output audio is currently reported as
+  `0` while the cancelled response is explicitly marked `truncated`.
+
+Verification run:
+
+```bash
+cargo fmt --check -p voice
+cargo check -p voice
+cargo test -p voice realtime -- --nocapture
+cargo test -p voice
+git diff --check
+```
+
+Result: all passed. Focused realtime tests now include the barge-in CLI shape
+and required event ordering around `response.cancel_requested`,
+`response.cancelled`, and the second turn. This is still code-level evidence;
+the goal still requires daemon-backed fixture evidence from the actual
+`cargo run -p voice -- realtime-smoke ... --barge-in-audio ...` command.
 
 ### Reference Clones
 

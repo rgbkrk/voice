@@ -3401,6 +3401,8 @@ struct RealtimeSmokeInput {
 
 #[derive(Debug, Default, Serialize)]
 struct RealtimeSmokeMetrics {
+    turns_completed: u64,
+    cancelled_responses: u64,
     stt_audio_ms: u64,
     stt_elapsed_ms: u64,
     assistant_first_delta_ms: u64,
@@ -3411,6 +3413,7 @@ struct RealtimeSmokeMetrics {
     underrun_count: u64,
     dropped_output_audio_ms: u64,
     cancellation_latency_ms: Option<u64>,
+    barge_in_at_ms: Option<u64>,
     input_sample_rate: u32,
     output_sample_rate: u32,
     frame_ms: u32,
@@ -3422,6 +3425,37 @@ struct RealtimeSmokeMetrics {
     input_peak: f32,
     input_rms: f32,
     speech_detected: bool,
+}
+
+#[derive(Debug, Default)]
+struct RealtimeTurnResult {
+    transcript: String,
+    stt_audio_ms: u64,
+    stt_elapsed_ms: u64,
+    assistant_first_delta_ms: u64,
+    tts_first_audio_ms: Option<u64>,
+    output_audio_ms: u64,
+    output_audio_frames: u64,
+    cancelled: bool,
+    cancellation_latency_ms: Option<u64>,
+    dropped_output_audio_ms: u64,
+}
+
+#[derive(Clone, Copy)]
+struct RealtimeBargeInPlan<'a> {
+    input: &'a RealtimeSmokeInput,
+    at_ms: u64,
+    turn_index: u64,
+}
+
+#[derive(Debug, Default)]
+struct RealtimeTtsResult {
+    first_audio_ms: Option<u64>,
+    output_audio_ms: u64,
+    output_audio_frames: u64,
+    cancelled: bool,
+    cancellation_latency_ms: Option<u64>,
+    dropped_output_audio_ms: u64,
 }
 
 #[derive(Debug)]
@@ -3516,11 +3550,8 @@ fn run_realtime_smoke(args: RealtimeSmokeArgs) {
 }
 
 fn run_realtime_smoke_inner(args: RealtimeSmokeArgs) -> Result<(), String> {
-    if args.barge_in_audio.is_some() {
-        return Err(
-            "--barge-in-audio is reserved for the next realtime slice and is not implemented yet"
-                .to_string(),
-        );
+    if args.barge_in_audio.is_some() && args.barge_in_at_ms.is_none() {
+        return Err("--barge-in-at-ms is required with --barge-in-audio".to_string());
     }
     validate_speed(args.speed).map_err(|e| format!("invalid speed: {e}"))?;
     validate_stream_frame_params(args.sample_rate, args.frame_ms)?;
@@ -3539,7 +3570,20 @@ fn run_realtime_smoke_inner(args: RealtimeSmokeArgs) -> Result<(), String> {
         args.frame_ms,
         args.vad_threshold,
     )?;
-    let stt_audio_ms = input.sample_count.saturating_mul(1_000) as u64 / input.sample_rate as u64;
+    let barge_in_input = if let Some(path) = &args.barge_in_audio {
+        let input = load_realtime_smoke_input(
+            path,
+            args.sample_rate,
+            args.frame_ms,
+            args.vad_threshold,
+        )?;
+        if !input.speech_detected {
+            return Err("--barge-in-audio did not cross the VAD threshold".to_string());
+        }
+        Some(input)
+    } else {
+        None
+    };
     let mut event_names = Vec::new();
     let session_started = Instant::now();
 
@@ -3556,48 +3600,7 @@ fn run_realtime_smoke_inner(args: RealtimeSmokeArgs) -> Result<(), String> {
                 "tts_engine": args.tts_engine.as_str(),
                 "voice": voice,
                 "vad_threshold": args.vad_threshold,
-            }),
-        ),
-    );
-    emit_realtime_event(
-        args.json,
-        &mut event_names,
-        realtime_event(
-            "input_audio_buffer.appended",
-            serde_json::json!({
-                "frames": input.frames.len(),
-                "samples": input.sample_count,
-                "audio_ms": stt_audio_ms,
-                "sample_rate": input.sample_rate,
-                "frame_ms": args.frame_ms,
-                "peak": input.peak,
-                "rms": input.rms,
-            }),
-        ),
-    );
-    if input.speech_detected {
-        emit_realtime_event(
-            args.json,
-            &mut event_names,
-            realtime_event(
-                "input_audio_buffer.speech_started",
-                serde_json::json!({
-                    "threshold": args.vad_threshold,
-                    "peak": input.peak,
-                    "rms": input.rms,
-                }),
-            ),
-        );
-    }
-    emit_realtime_event(
-        args.json,
-        &mut event_names,
-        realtime_event(
-            "input_audio_buffer.committed",
-            serde_json::json!({
-                "frames": input.frames.len(),
-                "audio_ms": stt_audio_ms,
-                "speech_detected": input.speech_detected,
+                "barge_in": barge_in_input.is_some(),
             }),
         ),
     );
@@ -3610,6 +3613,247 @@ fn run_realtime_smoke_inner(args: RealtimeSmokeArgs) -> Result<(), String> {
         ));
     }
 
+    let turn1_barge_in = barge_in_input.as_ref().map(|input| RealtimeBargeInPlan {
+        input,
+        at_ms: args.barge_in_at_ms.unwrap_or_default(),
+        turn_index: 2,
+    });
+    let turn1 = run_realtime_smoke_turn(
+        &mut daemon,
+        &args,
+        &voice,
+        voxtral,
+        &input,
+        1,
+        0,
+        true,
+        turn1_barge_in,
+        &mut event_names,
+    );
+    let turn1 = turn1?;
+    if barge_in_input.is_none() && turn1.cancelled {
+        return Err("response was cancelled without a barge-in fixture".to_string());
+    }
+    if barge_in_input.is_some() && !turn1.cancelled {
+        return Err("barge-in fixture did not cancel the first response".to_string());
+    }
+
+    let turn2 = if let Some(input) = barge_in_input.as_ref() {
+        Some(run_realtime_smoke_turn(
+            &mut daemon,
+            &args,
+            &voice,
+            voxtral,
+            input,
+            2,
+            1,
+            false,
+            None,
+            &mut event_names,
+        )?)
+    } else {
+        None
+    };
+
+    let metrics = RealtimeSmokeMetrics {
+        turns_completed: 1 + u64::from(turn2.is_some()),
+        cancelled_responses: u64::from(turn1.cancelled),
+        stt_audio_ms: turn1.stt_audio_ms + turn2.as_ref().map_or(0, |turn| turn.stt_audio_ms),
+        stt_elapsed_ms: turn1.stt_elapsed_ms + turn2.as_ref().map_or(0, |turn| turn.stt_elapsed_ms),
+        assistant_first_delta_ms: turn1.assistant_first_delta_ms,
+        tts_first_audio_ms: turn1
+            .tts_first_audio_ms
+            .or_else(|| turn2.as_ref().and_then(|turn| turn.tts_first_audio_ms)),
+        response_total_ms: session_started.elapsed().as_millis() as u64,
+        output_audio_ms: turn1.output_audio_ms + turn2.as_ref().map_or(0, |turn| turn.output_audio_ms),
+        output_audio_frames: turn1.output_audio_frames
+            + turn2.as_ref().map_or(0, |turn| turn.output_audio_frames),
+        underrun_count: 0,
+        dropped_output_audio_ms: turn1.dropped_output_audio_ms
+            + turn2.as_ref().map_or(0, |turn| turn.dropped_output_audio_ms),
+        cancellation_latency_ms: turn1.cancellation_latency_ms,
+        barge_in_at_ms: args.barge_in_at_ms,
+        input_sample_rate: input.sample_rate,
+        output_sample_rate: args.sample_rate,
+        frame_ms: args.frame_ms,
+        stt_backend: "daemon_stream_transcribe".to_string(),
+        tts_backend: format!("daemon_stream_speak/{}", args.tts_engine.as_str()),
+        assistant_backend: args.assistant_backend.as_str().to_string(),
+        compute_device: None,
+        vad_threshold: args.vad_threshold,
+        input_peak: input.peak,
+        input_rms: input.rms,
+        speech_detected: input.speech_detected,
+    };
+    emit_realtime_event(
+        args.json,
+        &mut event_names,
+        realtime_event("session.metrics", serde_json::to_value(&metrics).unwrap()),
+    );
+
+    validate_realtime_event_sequence(&event_names, barge_in_input.is_some())?;
+    if !args.json && !QUIET.load(Ordering::Relaxed) {
+        println!(
+            "realtime-smoke passed: transcript={:?} frames={} output_audio_ms={} tts_first_audio_ms={}",
+            turn1.transcript,
+            metrics.output_audio_frames,
+            metrics.output_audio_ms,
+            metrics.tts_first_audio_ms
+                .map(|ms| ms.to_string())
+                .unwrap_or_else(|| "n/a".to_string())
+        );
+    }
+
+    Ok(())
+}
+
+fn emit_realtime_input_events(
+    json: bool,
+    event_names: &mut Vec<String>,
+    input: &RealtimeSmokeInput,
+    frame_ms: u32,
+    vad_threshold: f32,
+    turn_index: u64,
+    trigger: &str,
+) -> u64 {
+    let stt_audio_ms = input.sample_count.saturating_mul(1_000) as u64 / input.sample_rate as u64;
+    emit_realtime_event(
+        json,
+        event_names,
+        realtime_event(
+            "input_audio_buffer.appended",
+            serde_json::json!({
+                "turn_index": turn_index,
+                "trigger": trigger,
+                "frames": input.frames.len(),
+                "samples": input.sample_count,
+                "audio_ms": stt_audio_ms,
+                "sample_rate": input.sample_rate,
+                "frame_ms": frame_ms,
+                "peak": input.peak,
+                "rms": input.rms,
+            }),
+        ),
+    );
+    if input.speech_detected {
+        emit_realtime_event(
+            json,
+            event_names,
+            realtime_event(
+                "input_audio_buffer.speech_started",
+                serde_json::json!({
+                    "turn_index": turn_index,
+                    "trigger": trigger,
+                    "threshold": vad_threshold,
+                    "peak": input.peak,
+                    "rms": input.rms,
+                }),
+            ),
+        );
+    }
+    emit_realtime_event(
+        json,
+        event_names,
+        realtime_event(
+            "input_audio_buffer.committed",
+            serde_json::json!({
+                "turn_index": turn_index,
+                "trigger": trigger,
+                "frames": input.frames.len(),
+                "audio_ms": stt_audio_ms,
+                "speech_detected": input.speech_detected,
+            }),
+        ),
+    );
+    stt_audio_ms
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_realtime_smoke_turn(
+    daemon: &mut voice_protocol::client::DaemonClient,
+    args: &RealtimeSmokeArgs,
+    voice: &str,
+    voxtral: EffectiveVoxtralOptions,
+    input: &RealtimeSmokeInput,
+    turn_index: u64,
+    response_index: u64,
+    emit_input: bool,
+    barge_in: Option<RealtimeBargeInPlan<'_>>,
+    event_names: &mut Vec<String>,
+) -> Result<RealtimeTurnResult, String> {
+    let stt_audio_ms = if emit_input {
+        emit_realtime_input_events(
+            args.json,
+            event_names,
+            input,
+            args.frame_ms,
+            args.vad_threshold,
+            turn_index,
+            "user_turn",
+        )
+    } else {
+        input.sample_count.saturating_mul(1_000) as u64 / input.sample_rate as u64
+    };
+
+    let (transcript, stt_elapsed_ms) =
+        run_realtime_transcription(daemon, args, input, turn_index, event_names)?;
+
+    let assistant_started = Instant::now();
+    let response_text = realtime_assistant_response(args.assistant_backend, &transcript);
+    let deltas = realtime_text_deltas(&response_text);
+    let mut assistant_first_delta_ms = 0;
+    for (index, delta) in deltas.iter().enumerate() {
+        if index == 0 {
+            assistant_first_delta_ms = assistant_started.elapsed().as_millis() as u64;
+        }
+        emit_realtime_event(
+            args.json,
+            event_names,
+            realtime_event(
+                "response.output_text.delta",
+                serde_json::json!({
+                    "turn_index": turn_index,
+                    "response_index": response_index,
+                    "index": index,
+                    "delta": delta,
+                }),
+            ),
+        );
+    }
+
+    let tts = run_realtime_tts_response(
+        daemon,
+        args,
+        voice,
+        voxtral,
+        &response_text,
+        turn_index,
+        response_index,
+        barge_in,
+        event_names,
+    )?;
+
+    Ok(RealtimeTurnResult {
+        transcript,
+        stt_audio_ms,
+        stt_elapsed_ms,
+        assistant_first_delta_ms,
+        tts_first_audio_ms: tts.first_audio_ms,
+        output_audio_ms: tts.output_audio_ms,
+        output_audio_frames: tts.output_audio_frames,
+        cancelled: tts.cancelled,
+        cancellation_latency_ms: tts.cancellation_latency_ms,
+        dropped_output_audio_ms: tts.dropped_output_audio_ms,
+    })
+}
+
+fn run_realtime_transcription(
+    daemon: &mut voice_protocol::client::DaemonClient,
+    args: &RealtimeSmokeArgs,
+    input: &RealtimeSmokeInput,
+    turn_index: u64,
+    event_names: &mut Vec<String>,
+) -> Result<(String, u64), String> {
     let stt_started = Instant::now();
     let mut transcript = None;
     let mut stt_error = None;
@@ -3632,10 +3876,11 @@ fn run_realtime_smoke_inner(args: RealtimeSmokeArgs) -> Result<(), String> {
                     transcript = Some(text.clone());
                     emit_realtime_event(
                         args.json,
-                        &mut event_names,
+                        event_names,
                         realtime_event(
                             "conversation.item.input_audio_transcription.completed",
                             serde_json::json!({
+                                "turn_index": turn_index,
                                 "text": text,
                                 "stream_id": event.data.get("stream_id").cloned(),
                                 "audio_ms": event.data.get("audio_duration_ms").cloned(),
@@ -3655,10 +3900,13 @@ fn run_realtime_smoke_inner(args: RealtimeSmokeArgs) -> Result<(), String> {
                     stt_error = Some(message.clone());
                     emit_realtime_event(
                         args.json,
-                        &mut event_names,
+                        event_names,
                         realtime_event(
                             "conversation.item.input_audio_transcription.failed",
-                            serde_json::json!({ "message": message }),
+                            serde_json::json!({
+                                "turn_index": turn_index,
+                                "message": message,
+                            }),
                         ),
                     );
                 }
@@ -3679,154 +3927,263 @@ fn run_realtime_smoke_inner(args: RealtimeSmokeArgs) -> Result<(), String> {
     }
     let transcript = transcript.unwrap_or_default();
     if !args.allow_empty_transcript && input.speech_detected && transcript.trim().is_empty() {
-        return Err("speech fixture produced an empty transcript".to_string());
+        return Err(format!("speech fixture for turn {turn_index} produced an empty transcript"));
     }
+    Ok((transcript, stt_elapsed_ms))
+}
 
-    let assistant_started = Instant::now();
-    let response_text = realtime_assistant_response(args.assistant_backend, &transcript);
-    let deltas = realtime_text_deltas(&response_text);
-    let mut assistant_first_delta_ms = 0;
-    for (index, delta) in deltas.iter().enumerate() {
-        if index == 0 {
-            assistant_first_delta_ms = assistant_started.elapsed().as_millis() as u64;
-        }
-        emit_realtime_event(
-            args.json,
-            &mut event_names,
-            realtime_event(
-                "response.output_text.delta",
-                serde_json::json!({
-                    "index": index,
-                    "delta": delta,
-                }),
-            ),
-        );
-    }
-
+#[allow(clippy::too_many_arguments)]
+fn run_realtime_tts_response(
+    daemon: &mut voice_protocol::client::DaemonClient,
+    args: &RealtimeSmokeArgs,
+    voice: &str,
+    voxtral: EffectiveVoxtralOptions,
+    response_text: &str,
+    turn_index: u64,
+    response_index: u64,
+    barge_in: Option<RealtimeBargeInPlan<'_>>,
+    event_names: &mut Vec<String>,
+) -> Result<RealtimeTtsResult, String> {
     let tts_started = Instant::now();
     let mut output = RealtimeOutputFrameValidator::new(args.sample_rate, args.frame_ms);
+    let queue_id = std::cell::RefCell::new(None::<String>);
     let mut tts_first_audio_ms = None;
     let mut output_done = false;
     let mut terminal_error = None;
+    let mut cancelled_reason = None;
+    let mut cancel_requested = false;
+    let mut cancellation_latency_ms = None;
+    let mut dropped_output_audio_ms = 0;
     let tts_options = voice_protocol::client::StreamSpeakOptions {
-        voice: Some(&voice),
+        voice: Some(voice),
         speed: Some(args.speed as f64),
         sample_rate: Some(args.sample_rate),
         frame_ms: Some(args.frame_ms),
         tts: daemon_tts_options(args.tts_engine, &args.voxtral_model, voxtral),
     };
-    let tts_result = daemon.stream_speak_with_options(&response_text, tts_options, |event| {
-        match event {
-            voice_stream::TtsStreamEvent::Started { metadata } => {
-                emit_realtime_event(
-                    args.json,
-                    &mut event_names,
-                    realtime_event(
-                        "response.output_audio.started",
-                        serde_json::json!({
-                            "stream_id": metadata.stream_id,
-                            "sample_rate": metadata.sample_rate,
-                            "source_sample_rate": metadata.source_sample_rate,
-                            "frame_ms": metadata.frame_ms,
-                            "encoding": metadata.encoding,
-                            "voice": metadata.voice,
-                            "speed": metadata.speed,
-                        }),
-                    ),
-                );
-            }
-            voice_stream::TtsStreamEvent::Audio { frame } => {
-                if output_done {
-                    return Err("received output audio after output_audio.done".to_string());
+    let tts_result = daemon.stream_speak_with_options_observed(
+        response_text,
+        tts_options,
+        |response| {
+            *queue_id.borrow_mut() = response
+                .result
+                .as_ref()
+                .and_then(|result| result.get("queue_id"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            Ok(())
+        },
+        |event| {
+            match event {
+                voice_stream::TtsStreamEvent::Started { metadata } => {
+                    emit_realtime_event(
+                        args.json,
+                        event_names,
+                        realtime_event(
+                            "response.output_audio.started",
+                            serde_json::json!({
+                                "turn_index": turn_index,
+                                "response_index": response_index,
+                                "stream_id": metadata.stream_id,
+                                "sample_rate": metadata.sample_rate,
+                                "source_sample_rate": metadata.source_sample_rate,
+                                "frame_ms": metadata.frame_ms,
+                                "encoding": metadata.encoding,
+                                "voice": metadata.voice,
+                                "speed": metadata.speed,
+                            }),
+                        ),
+                    );
                 }
-                output.observe(&frame)?;
-                let first_audio = tts_first_audio_ms
-                    .get_or_insert_with(|| tts_started.elapsed().as_millis() as u64);
-                emit_realtime_event(
-                    args.json,
-                    &mut event_names,
-                    realtime_event(
-                        "response.output_audio.delta",
-                        serde_json::json!({
-                            "sequence": frame.sequence,
-                            "offset_samples": frame.offset_samples,
-                            "timestamp_ms": frame.timestamp_ms,
-                            "sample_rate": frame.sample_rate,
-                            "frame_ms": frame.frame_ms,
-                            "sample_count": frame.sample_count,
-                            "padding_samples": frame.padding_samples,
-                            "byte_count": frame.samples.len() * voice_stream::PCM_S16LE_BYTES_PER_SAMPLE,
-                            "first_audio_ms": first_audio,
-                        }),
-                    ),
-                );
-            }
-            voice_stream::TtsStreamEvent::Ended(end) => {
-                output_done = true;
-                if end.frames != output.frames {
-                    return Err(format!(
-                        "tts.ended reported {} frames, observed {} frames",
-                        end.frames, output.frames
-                    ));
+                voice_stream::TtsStreamEvent::Audio { frame } => {
+                    if output_done {
+                        return Err("received output audio after output_audio.done".to_string());
+                    }
+                    if cancel_requested {
+                        return Err(
+                            "received output audio after barge-in cancellation request".to_string()
+                        );
+                    }
+                    output.observe(&frame)?;
+                    let first_audio = tts_first_audio_ms
+                        .get_or_insert_with(|| tts_started.elapsed().as_millis() as u64);
+                    emit_realtime_event(
+                        args.json,
+                        event_names,
+                        realtime_event(
+                            "response.output_audio.delta",
+                            serde_json::json!({
+                                "turn_index": turn_index,
+                                "response_index": response_index,
+                                "sequence": frame.sequence,
+                                "offset_samples": frame.offset_samples,
+                                "timestamp_ms": frame.timestamp_ms,
+                                "sample_rate": frame.sample_rate,
+                                "frame_ms": frame.frame_ms,
+                                "sample_count": frame.sample_count,
+                                "padding_samples": frame.padding_samples,
+                                "byte_count": frame.samples.len() * voice_stream::PCM_S16LE_BYTES_PER_SAMPLE,
+                                "first_audio_ms": first_audio,
+                            }),
+                        ),
+                    );
+
+                    if let Some(plan) = barge_in {
+                        if !cancel_requested && output.duration_ms >= plan.at_ms {
+                            emit_realtime_input_events(
+                                args.json,
+                                event_names,
+                                plan.input,
+                                args.frame_ms,
+                                args.vad_threshold,
+                                plan.turn_index,
+                                "barge_in",
+                            );
+                            let queue_id = queue_id
+                                .borrow()
+                                .clone()
+                                .ok_or_else(|| "stream_speak response missing queue_id".to_string())?;
+                            let cancel_started = Instant::now();
+                            let mut cancel_daemon = connect_daemon_for_realtime()?;
+                            let response = cancel_daemon
+                                .cancel_item(&queue_id)
+                                .map_err(|e| format!("cancel_item {queue_id}: {e}"))?;
+                            let cancelled = response
+                                .result
+                                .as_ref()
+                                .and_then(|result| result.get("cancelled"))
+                                .and_then(|value| value.as_bool())
+                                .unwrap_or(false);
+                            if !cancelled {
+                                return Err(format!(
+                                    "daemon did not cancel active stream_speak item {queue_id}"
+                                ));
+                            }
+                            cancellation_latency_ms =
+                                Some(cancel_started.elapsed().as_millis() as u64);
+                            cancel_requested = true;
+                            // This stream verifier consumes frames immediately, so there is no
+                            // client-side queued audio to drop. The cancelled response is still
+                            // marked truncated and any later audio event is treated as a failure.
+                            dropped_output_audio_ms = 0;
+                            emit_realtime_event(
+                                args.json,
+                                event_names,
+                                realtime_event(
+                                    "response.cancel_requested",
+                                    serde_json::json!({
+                                        "turn_index": turn_index,
+                                        "response_index": response_index,
+                                        "queue_id": queue_id,
+                                        "barge_in_turn_index": plan.turn_index,
+                                        "barge_in_at_ms": plan.at_ms,
+                                        "output_audio_ms": output.duration_ms,
+                                        "dropped_output_audio_ms": dropped_output_audio_ms,
+                                    }),
+                                ),
+                            );
+                        }
+                    }
                 }
-                if end.samples != output.next_offset_samples {
-                    return Err(format!(
-                        "tts.ended reported {} samples, observed {} samples",
-                        end.samples, output.next_offset_samples
-                    ));
+                voice_stream::TtsStreamEvent::Ended(end) => {
+                    output_done = true;
+                    if end.frames != output.frames {
+                        return Err(format!(
+                            "tts.ended reported {} frames, observed {} frames",
+                            end.frames, output.frames
+                        ));
+                    }
+                    if end.samples != output.next_offset_samples {
+                        return Err(format!(
+                            "tts.ended reported {} samples, observed {} samples",
+                            end.samples, output.next_offset_samples
+                        ));
+                    }
+                    emit_realtime_event(
+                        args.json,
+                        event_names,
+                        realtime_event(
+                            "response.output_audio.done",
+                            serde_json::json!({
+                                "turn_index": turn_index,
+                                "response_index": response_index,
+                                "stream_id": end.stream_id,
+                                "frames": end.frames,
+                                "samples": end.samples,
+                                "duration_ms": end.duration_ms,
+                                "elapsed_ms": end.elapsed_ms,
+                            }),
+                        ),
+                    );
+                    output.duration_ms = end.duration_ms;
                 }
-                emit_realtime_event(
-                    args.json,
-                    &mut event_names,
-                    realtime_event(
-                        "response.output_audio.done",
-                        serde_json::json!({
-                            "stream_id": end.stream_id,
-                            "frames": end.frames,
-                            "samples": end.samples,
-                            "duration_ms": end.duration_ms,
-                            "elapsed_ms": end.elapsed_ms,
-                        }),
-                    ),
-                );
-                output.duration_ms = end.duration_ms;
+                voice_stream::TtsStreamEvent::Error(err) => {
+                    terminal_error = Some(err.message.clone());
+                    emit_realtime_event(
+                        args.json,
+                        event_names,
+                        realtime_event(
+                            "response.failed",
+                            serde_json::json!({
+                                "turn_index": turn_index,
+                                "response_index": response_index,
+                                "stream_id": err.stream_id,
+                                "message": err.message,
+                            }),
+                        ),
+                    );
+                }
+                voice_stream::TtsStreamEvent::Cancelled(cancelled) => {
+                    cancelled_reason = Some(cancelled.reason.clone());
+                    emit_realtime_event(
+                        args.json,
+                        event_names,
+                        realtime_event(
+                            "response.cancelled",
+                            serde_json::json!({
+                                "turn_index": turn_index,
+                                "response_index": response_index,
+                                "stream_id": cancelled.stream_id,
+                                "reason": cancelled.reason,
+                                "truncated": true,
+                                "output_audio_ms": output.duration_ms,
+                                "dropped_output_audio_ms": dropped_output_audio_ms,
+                                "cancellation_latency_ms": cancellation_latency_ms,
+                            }),
+                        ),
+                    );
+                }
             }
-            voice_stream::TtsStreamEvent::Error(err) => {
-                terminal_error = Some(err.message.clone());
-                emit_realtime_event(
-                    args.json,
-                    &mut event_names,
-                    realtime_event(
-                        "response.failed",
-                        serde_json::json!({
-                            "stream_id": err.stream_id,
-                            "message": err.message,
-                        }),
-                    ),
-                );
-            }
-            voice_stream::TtsStreamEvent::Cancelled(cancelled) => {
-                terminal_error = Some(cancelled.reason.clone());
-                emit_realtime_event(
-                    args.json,
-                    &mut event_names,
-                    realtime_event(
-                        "response.cancelled",
-                        serde_json::json!({
-                            "stream_id": cancelled.stream_id,
-                            "reason": cancelled.reason,
-                        }),
-                    ),
-                );
-            }
-        }
-        Ok(())
-    });
+            Ok(())
+        },
+    );
     if let Some(err) = tts_result.map_err(|e| format!("stream_speak: {e}"))?.error {
         return Err(format!("daemon stream_speak: {}", err.message));
     }
     if let Some(err) = terminal_error {
         return Err(format!("stream_speak terminal error: {err}"));
+    }
+    if cancelled_reason.is_some() {
+        if barge_in.is_none() || !cancel_requested {
+            return Err(format!(
+                "stream_speak cancelled unexpectedly: {}",
+                cancelled_reason.unwrap_or_default()
+            ));
+        }
+        if output.frames == 0 {
+            return Err("barge-in cancelled before assistant audio started".to_string());
+        }
+        return Ok(RealtimeTtsResult {
+            first_audio_ms: tts_first_audio_ms,
+            output_audio_ms: output.duration_ms,
+            output_audio_frames: output.frames,
+            cancelled: true,
+            cancellation_latency_ms,
+            dropped_output_audio_ms,
+        });
+    }
+    if barge_in.is_some() {
+        return Err("--barge-in-at-ms was not reached before TTS completed".to_string());
     }
     if output.frames == 0 {
         return Err("TTS produced no output audio frames".to_string());
@@ -3837,10 +4194,12 @@ fn run_realtime_smoke_inner(args: RealtimeSmokeArgs) -> Result<(), String> {
 
     emit_realtime_event(
         args.json,
-        &mut event_names,
+        event_names,
         realtime_event(
             "response.done",
             serde_json::json!({
+                "turn_index": turn_index,
+                "response_index": response_index,
                 "text": response_text,
                 "output_audio_frames": output.frames,
                 "output_audio_ms": output.duration_ms,
@@ -3848,49 +4207,14 @@ fn run_realtime_smoke_inner(args: RealtimeSmokeArgs) -> Result<(), String> {
         ),
     );
 
-    let metrics = RealtimeSmokeMetrics {
-        stt_audio_ms,
-        stt_elapsed_ms,
-        assistant_first_delta_ms,
-        tts_first_audio_ms,
-        response_total_ms: session_started.elapsed().as_millis() as u64,
+    Ok(RealtimeTtsResult {
+        first_audio_ms: tts_first_audio_ms,
         output_audio_ms: output.duration_ms,
         output_audio_frames: output.frames,
-        underrun_count: 0,
-        dropped_output_audio_ms: 0,
+        cancelled: false,
         cancellation_latency_ms: None,
-        input_sample_rate: input.sample_rate,
-        output_sample_rate: args.sample_rate,
-        frame_ms: args.frame_ms,
-        stt_backend: "daemon_stream_transcribe".to_string(),
-        tts_backend: format!("daemon_stream_speak/{}", args.tts_engine.as_str()),
-        assistant_backend: args.assistant_backend.as_str().to_string(),
-        compute_device: None,
-        vad_threshold: args.vad_threshold,
-        input_peak: input.peak,
-        input_rms: input.rms,
-        speech_detected: input.speech_detected,
-    };
-    emit_realtime_event(
-        args.json,
-        &mut event_names,
-        realtime_event("session.metrics", serde_json::to_value(&metrics).unwrap()),
-    );
-
-    validate_realtime_event_sequence(&event_names)?;
-    if !args.json && !QUIET.load(Ordering::Relaxed) {
-        println!(
-            "realtime-smoke passed: transcript={:?} frames={} output_audio_ms={} tts_first_audio_ms={}",
-            transcript,
-            output.frames,
-            output.duration_ms,
-            tts_first_audio_ms
-                .map(|ms| ms.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        );
-    }
-
-    Ok(())
+        dropped_output_audio_ms: 0,
+    })
 }
 
 fn connect_daemon_for_realtime() -> Result<voice_protocol::client::DaemonClient, String> {
@@ -3994,7 +4318,10 @@ fn emit_realtime_event(json: bool, event_names: &mut Vec<String>, event: serde_j
     }
 }
 
-fn validate_realtime_event_sequence(event_names: &[String]) -> Result<(), String> {
+fn validate_realtime_event_sequence(
+    event_names: &[String],
+    expect_barge_in: bool,
+) -> Result<(), String> {
     let required = [
         "session.started",
         "input_audio_buffer.appended",
@@ -4025,7 +4352,37 @@ fn validate_realtime_event_sequence(event_names: &[String]) -> Result<(), String
             "response.done",
             "session.metrics",
         ],
-    )
+    )?;
+
+    if expect_barge_in {
+        if !event_names.iter().any(|name| name == "response.cancelled") {
+            return Err("missing realtime event response.cancelled".to_string());
+        }
+        if !event_names
+            .iter()
+            .any(|name| name == "response.cancel_requested")
+        {
+            return Err("missing realtime event response.cancel_requested".to_string());
+        }
+        ensure_event_order(
+            event_names,
+            &[
+                "response.output_audio.delta",
+                "input_audio_buffer.appended",
+                "input_audio_buffer.committed",
+                "response.cancel_requested",
+                "response.cancelled",
+                "conversation.item.input_audio_transcription.completed",
+                "response.output_text.delta",
+                "response.output_audio.delta",
+                "response.output_audio.done",
+                "response.done",
+                "session.metrics",
+            ],
+        )?;
+    }
+
+    Ok(())
 }
 
 fn ensure_event_order(event_names: &[String], ordered: &[&str]) -> Result<(), String> {
@@ -5316,6 +5673,10 @@ mod tests {
             "realtime-smoke",
             "--input-audio",
             "turn.wav",
+            "--barge-in-audio",
+            "second-turn.wav",
+            "--barge-in-at-ms",
+            "120",
             "--assistant-backend",
             "echo",
             "--tts-engine",
@@ -5332,6 +5693,8 @@ mod tests {
         match args.command {
             Some(Command::RealtimeSmoke(args)) => {
                 assert_eq!(args.input_audio, PathBuf::from("turn.wav"));
+                assert_eq!(args.barge_in_audio, Some(PathBuf::from("second-turn.wav")));
+                assert_eq!(args.barge_in_at_ms, Some(120));
                 assert_eq!(args.assistant_backend, RealtimeAssistantBackend::Echo);
                 assert_eq!(args.tts_engine, TtsEngine::Kokoro);
                 assert_eq!(args.sample_rate, 48_000);
@@ -5421,14 +5784,47 @@ mod tests {
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>();
-        assert!(validate_realtime_event_sequence(&events).is_ok());
+        assert!(validate_realtime_event_sequence(&events, false).is_ok());
 
         let missing_done = events
             .iter()
             .filter(|event| event.as_str() != "response.output_audio.done")
             .cloned()
             .collect::<Vec<_>>();
-        assert!(validate_realtime_event_sequence(&missing_done).is_err());
+        assert!(validate_realtime_event_sequence(&missing_done, false).is_err());
+    }
+
+    #[test]
+    fn realtime_event_sequence_checks_barge_in_order() {
+        let events = vec![
+            "session.started",
+            "input_audio_buffer.appended",
+            "input_audio_buffer.committed",
+            "conversation.item.input_audio_transcription.completed",
+            "response.output_text.delta",
+            "response.output_audio.delta",
+            "input_audio_buffer.appended",
+            "input_audio_buffer.committed",
+            "response.cancel_requested",
+            "response.cancelled",
+            "conversation.item.input_audio_transcription.completed",
+            "response.output_text.delta",
+            "response.output_audio.delta",
+            "response.output_audio.done",
+            "response.done",
+            "session.metrics",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        assert!(validate_realtime_event_sequence(&events, true).is_ok());
+
+        let missing_cancel = events
+            .iter()
+            .filter(|event| event.as_str() != "response.cancelled")
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(validate_realtime_event_sequence(&missing_cancel, true).is_err());
     }
 
     #[test]

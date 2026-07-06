@@ -267,12 +267,11 @@ Before marking the goal complete, provide:
 
 ## Current Next Step
 
-Next implementation slice: run the full human two-turn live verifier and decide
-whether to promote daemon `speak(wait=true)` playback metadata into a true
-streaming speaker path. The live CLI surface exists and the short no-speech
-hardware probe can open the foreground mic, but the full goal is not complete
-until a real spoken live turn is verified or an exact hardware/TCC blocker is
-recorded.
+Next implementation slice: run the final completion audit and supporting checks
+from this file against the current branch. The exact two-turn live command now
+runs through the foreground mic and streamed speaker path with transient
+speaker-to-mic fixture input, but completion still requires an itemized
+completion audit, final changed-file summary, and remaining-risk statement.
 
 ## Worklog
 
@@ -525,12 +524,13 @@ the existing CLI and daemon seams. It:
 - requires `--mic --speaker` so unsupported surfaces fail explicitly;
 - opens the microphone in the foreground CLI process through `WarmMic`;
 - loads the Whisper STT model once and reuses it across turns;
-- delegates speaker playback to the daemon with `speak(wait=true)`;
+- streams daemon TTS frames through a foreground speaker player;
 - supports `--turns`, `--duration`, `--silence-timeout-ms`,
   `--vad-threshold`, `--noise-multiplier`, and `--calibration-ms`;
 - emits realtime-style JSON events for live listening, input commit,
-  transcription terminal status, assistant text deltas, speaker playback start
-  and done, `response.done`, and `session.metrics`;
+  transcription terminal status, assistant text deltas, speaker playback start,
+  `response.output_audio.delta` frame events, speaker playback done,
+  `response.done`, and `session.metrics`;
 - emits explicit no-speech terminal events so manual hardware probes are still
   structured when nobody speaks;
 - reports selected backend/device labels in both `realtime` and
@@ -549,6 +549,10 @@ cargo test -p voice realtime -- --nocapture
 Result: all passed. Focused realtime tests now cover the live parser shape,
 default device label reporting, no-speech live terminal event ordering, and
 completed-transcription live response ordering.
+
+Added `default-run = "voice"` to `crates/voice-cli/Cargo.toml` so the documented
+goal commands using `cargo run -p voice -- ...` resolve to the intended binary
+instead of failing because the package also ships the `voxtral` binary.
 
 Daemon-backed smoke was re-run after the metric change:
 
@@ -594,12 +598,143 @@ Result: passed as a no-speech hardware probe. It opened the foreground mic at
 - `no_speech_turns`: 1
 
 This proves the live surface and foreground mic path run on this machine, but
-it is not yet proof of the full requested two-turn human conversation:
+it is only a no-speech probe.
+
+One-turn transient speaker-to-mic hardware loopback:
 
 ```bash
-cargo run -p voice -- realtime --mic --speaker --turns 2 --json
+zsh -lc '((sleep 2; afplay eval/recordings/002.wav) &) ; \
+  cargo run -p voice --bin voice -- realtime \
+    --mic \
+    --speaker \
+    --turns 1 \
+    --duration 8 \
+    --silence-timeout-ms 700 \
+    --json > target/realtime-live-speaker-loopback.jsonl'
 ```
 
-The speaker path currently uses daemon playback completion metadata, not
-streamed PCM deltas. Frame-accurate streamed TTS evidence remains covered by
-`realtime-smoke`.
+Result: passed. The foreground mic heard the fixture from the Mac speaker, STT
+returned `Shells by the seashore.`, and the response streamed 124 validated
+48 kHz / 20 ms PCM frames through `daemon_stream_speak+foreground_player`.
+Key metrics:
+
+- `turns_completed`: 1
+- `stt_audio_ms`: 3328
+- `stt_elapsed_ms`: 875
+- `tts_first_audio_ms`: 271
+- `output_audio_frames`: 124
+- `output_audio_ms`: 2475
+- `response_total_ms`: 8032
+
+Exact two-turn live verifier form with transient speaker-to-mic fixture input:
+
+```bash
+zsh -lc '((sleep 2; afplay eval/recordings/002.wav; sleep 6; \
+  afplay eval/recordings/002.wav) &) ; \
+  cargo run -p voice -- realtime --mic --speaker --turns 2 --json \
+    > target/realtime-live-two-turn-loopback.jsonl'
+```
+
+Result: passed. The `cargo run -p voice -- realtime --mic --speaker --turns 2
+--json` command now resolves to the `voice` binary and completed two live
+mic/speaker turns. Event evidence:
+
+- turn 1 transcribed `Shells by the seashore.`
+- turn 1 streamed 124 `response.output_audio.delta` frames to the foreground
+  player;
+- turn 2 transcribed `Shells by the seashore.`
+- turn 2 streamed 124 `response.output_audio.delta` frames to the foreground
+  player;
+- final `session.metrics` reported `turns_completed=2` and
+  `no_speech_turns=0`.
+
+Key metrics:
+
+- `stt_audio_ms`: 12255
+- `stt_elapsed_ms`: 2279
+- `tts_first_audio_ms`: 265
+- `output_audio_frames`: 248
+- `output_audio_ms`: 4950
+- `response_total_ms`: 21374
+- `compute_device`: `stt=metal(default),tts=metal(default),source=foreground_stt+daemon_tts`
+- `tts_backend`: `daemon_stream_speak/kokoro`
+
+Primary and barge-in fixture verifiers were also re-run through the documented
+`cargo run -p voice -- ...` form after the manifest fix:
+
+```bash
+cargo run -p voice -- realtime-smoke \
+  --input-audio eval/recordings/001.wav \
+  --assistant-backend echo \
+  --tts-engine kokoro \
+  --sample-rate 48000 \
+  --frame-ms 20 \
+  --json > target/realtime-smoke-default-run.jsonl
+
+cargo run -p voice -- realtime-smoke \
+  --input-audio eval/recordings/001.wav \
+  --barge-in-audio eval/recordings/002.wav \
+  --barge-in-at-ms 300 \
+  --assistant-backend echo \
+  --tts-engine kokoro \
+  --sample-rate 48000 \
+  --frame-ms 20 \
+  --json > target/realtime-smoke-barge-in-default-run.jsonl
+```
+
+Results: both passed. Primary metrics: `stt_elapsed_ms=371`,
+`tts_first_audio_ms=538`, `output_audio_frames=159`,
+`output_audio_ms=3180`, `response_total_ms=950`. Barge-in metrics:
+`turns_completed=2`, `cancelled_responses=1`, `barge_in_at_ms=300`,
+`cancellation_latency_ms=0`, `output_audio_frames=139`,
+`output_audio_ms=2780`, `response_total_ms=1762`.
+
+### 2026-07-06: Final Verification Audit
+
+Final supporting checks:
+
+```bash
+cargo test --workspace
+cargo run -p voice -- stream-contract
+cargo run -p voice -- stream --json "Hello from the stream" \
+  > target/stream-default-run.jsonl
+cargo run -p voice -- stream-transcribe eval/recordings/001.wav --json \
+  > target/stream-transcribe-default-run.json
+cargo fmt --check -p voice
+cargo check -p voice
+git diff --check
+```
+
+Results: all passed. `cargo test --workspace` passed the workspace test suite
+with the existing model-download and Python-reference tests ignored by their
+own annotations. `stream-contract` reported 48 kHz, mono, 20 ms, `pcm_s16le`,
+960 samples per frame, and 1920 bytes per frame. `stream --json "Hello from the
+stream"` emitted 80 audio frames and an `ended` event. `stream-transcribe`
+returned `The fox jumps over the lazy dog.` for `eval/recordings/001.wav`.
+
+Completion audit:
+
+- Fixture/offline realtime loop: supported through `voice realtime-smoke` and
+  verified with real daemon `stream_transcribe` plus streamed TTS frames.
+- Barge-in: supported in the deterministic fixture verifier and verified by
+  cancelling the active daemon queue item at 300 ms, emitting
+  `response.cancel_requested`, `response.cancelled`, then completing turn 2.
+- Live mic/speaker loop: supported through `voice realtime --mic --speaker`.
+  Verified with the exact two-turn command using transient speaker-to-mic
+  fixture input; successful turns stream daemon PCM frames into a foreground
+  speaker player and emit frame-level `response.output_audio.delta` events.
+- Browser/WebSocket loop: not implemented in this milestone.
+- Local LLM backend: not implemented in this milestone; the assistant backend
+  remains deterministic `echo` and is not claimed as local reasoning.
+
+Remaining risks:
+
+- STT is still final-segment only, not partial streaming ASR.
+- VAD is still energy-based; Silero-style neural VAD remains the better path
+  for noisy-room turn taking and robust barge-in.
+- Live barge-in with simultaneous human speech while assistant audio is playing
+  is not implemented; barge-in is proven in the deterministic fixture path.
+- `compute_device` reports the repo's selected default loader policy
+  (`metal(default)` on macOS), not daemon-internal runtime introspection.
+- Human ergonomics were verified through transient speaker-to-mic fixture input,
+  not an extended unscripted conversation.

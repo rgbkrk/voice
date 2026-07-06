@@ -818,6 +818,14 @@ struct RealtimeArgs {
     #[arg(short, long, default_value = "1.0")]
     speed: f32,
 
+    /// Local realtime output frame sample rate
+    #[arg(long = "sample-rate", default_value = "48000")]
+    sample_rate: u32,
+
+    /// Local realtime output frame duration in milliseconds
+    #[arg(long = "frame-ms", default_value = "20")]
+    frame_ms: u32,
+
     /// Max listen duration per turn in seconds
     #[arg(short, long, default_value = "30")]
     duration: u64,
@@ -3540,6 +3548,7 @@ struct RealtimeLiveMetrics {
     underrun_count: u64,
     input_sample_rate: u32,
     output_sample_rate: Option<u32>,
+    frame_ms: u32,
     stt_backend: String,
     tts_backend: String,
     assistant_backend: String,
@@ -3712,6 +3721,7 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
         return Err("--turns must be greater than zero".to_string());
     }
     validate_speed(args.speed).map_err(|e| format!("invalid speed: {e}"))?;
+    validate_stream_frame_params(args.sample_rate, args.frame_ms)?;
     validate_live_realtime_vad(&args)?;
 
     let voice = selected_voice(args.tts_engine, &args.voice);
@@ -3749,7 +3759,9 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
                 "silence_timeout_ms": args.silence_timeout_ms,
                 "calibration_ms": args.calibration_ms,
                 "compute_device": compute_device,
-                "speaker_transport": "daemon_speak_wait",
+                "sample_rate": args.sample_rate,
+                "frame_ms": args.frame_ms,
+                "speaker_transport": "daemon_stream_speak+foreground_player",
             }),
         ),
     );
@@ -3758,13 +3770,14 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
     let warm_mic = listen::WarmMic::open().map_err(|e| format!("open microphone: {e}"))?;
     let mut metrics = RealtimeLiveMetrics {
         stt_backend: "foreground_whisper_vad".to_string(),
-        tts_backend: format!("daemon_speak_wait/{}", args.tts_engine.as_str()),
+        tts_backend: format!("daemon_stream_speak/{}", args.tts_engine.as_str()),
         assistant_backend: args.assistant_backend.as_str().to_string(),
         compute_device: compute_device.to_string(),
         vad_threshold: args.vad_threshold,
         noise_multiplier: args.noise_multiplier,
         silence_timeout_ms: args.silence_timeout_ms,
         calibration_ms: args.calibration_ms,
+        frame_ms: args.frame_ms,
         mic: args.mic,
         speaker: args.speaker,
         ..Default::default()
@@ -4032,73 +4045,136 @@ fn run_realtime_live_tts_response(
     response_index: u64,
     event_names: &mut Vec<String>,
 ) -> Result<RealtimeLiveTtsResult, String> {
-    emit_realtime_event(
-        args.json,
-        event_names,
-        realtime_event(
-            "response.output_audio.started",
-            serde_json::json!({
-                "turn_index": turn_index,
-                "response_index": response_index,
-                "transport": "daemon_speak_wait",
-                "tts_engine": args.tts_engine.as_str(),
-                "voice": voice,
-                "speed": args.speed,
-            }),
-        ),
-    );
+    use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
+    use std::num::NonZero;
 
+    let mut speaker =
+        DeviceSinkBuilder::open_default_sink().map_err(|e| format!("open audio output: {e}"))?;
+    speaker.log_on_drop(false);
+    let player = Player::connect_new(speaker.mixer());
+    let channels = NonZero::new(voice_stream::WEBRTC_CHANNELS).unwrap();
+    let rate = NonZero::new(args.sample_rate).unwrap();
     let tts_started = Instant::now();
+    let mut output = RealtimeOutputFrameValidator::new(args.sample_rate, args.frame_ms);
+    let mut queue_id = None::<String>;
+    let mut first_audio_ms = None;
+    let mut stream_id = None::<String>;
+    let mut output_done = None::<voice_stream::StreamEnded>;
+    let mut terminal_error = None::<String>;
+    let mut cancelled_reason = None::<String>;
+    let tts_options = voice_protocol::client::StreamSpeakOptions {
+        voice: Some(voice),
+        speed: Some(args.speed as f64),
+        sample_rate: Some(args.sample_rate),
+        frame_ms: Some(args.frame_ms),
+        tts: daemon_tts_options(args.tts_engine, &args.voxtral_model, voxtral),
+    };
     let response = daemon
-        .speak_with_options_and_wait(
+        .stream_speak_with_options_observed(
             response_text,
-            Some(voice),
-            Some(args.speed as f64),
-            daemon_tts_options(args.tts_engine, &args.voxtral_model, voxtral),
-            true,
+            tts_options,
+            |response| {
+                queue_id = response
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.get("queue_id"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+                Ok(())
+            },
+            |event| {
+                match event {
+                    voice_stream::TtsStreamEvent::Started { metadata } => {
+                        stream_id = Some(metadata.stream_id.clone());
+                        emit_realtime_event(
+                            args.json,
+                            event_names,
+                            realtime_event(
+                                "response.output_audio.started",
+                                serde_json::json!({
+                                    "turn_index": turn_index,
+                                    "response_index": response_index,
+                                    "transport": "daemon_stream_speak+foreground_player",
+                                    "stream_id": metadata.stream_id,
+                                    "sample_rate": metadata.sample_rate,
+                                    "source_sample_rate": metadata.source_sample_rate,
+                                    "frame_ms": metadata.frame_ms,
+                                    "encoding": metadata.encoding,
+                                    "voice": metadata.voice,
+                                    "speed": metadata.speed,
+                                }),
+                            ),
+                        );
+                    }
+                    voice_stream::TtsStreamEvent::Audio { frame } => {
+                        output.observe(&frame)?;
+                        let first_audio = first_audio_ms
+                            .get_or_insert_with(|| tts_started.elapsed().as_millis() as u64);
+                        player.append(SamplesBuffer::new(
+                            channels,
+                            rate,
+                            realtime_frame_samples_f32(&frame),
+                        ));
+                        emit_realtime_event(
+                            args.json,
+                            event_names,
+                            realtime_event(
+                                "response.output_audio.delta",
+                                serde_json::json!({
+                                    "turn_index": turn_index,
+                                    "response_index": response_index,
+                                    "sequence": frame.sequence,
+                                    "offset_samples": frame.offset_samples,
+                                    "timestamp_ms": frame.timestamp_ms,
+                                    "sample_rate": frame.sample_rate,
+                                    "frame_ms": frame.frame_ms,
+                                    "sample_count": frame.sample_count,
+                                    "padding_samples": frame.padding_samples,
+                                    "byte_count": frame.samples.len() * std::mem::size_of::<i16>(),
+                                    "first_audio_ms": first_audio,
+                                }),
+                            ),
+                        );
+                    }
+                    voice_stream::TtsStreamEvent::Ended(end) => {
+                        output_done = Some(end);
+                    }
+                    voice_stream::TtsStreamEvent::Error(err) => {
+                        terminal_error = Some(err.message);
+                    }
+                    voice_stream::TtsStreamEvent::Cancelled(cancelled) => {
+                        cancelled_reason = Some(cancelled.reason);
+                    }
+                }
+                Ok(())
+            },
         )
-        .map_err(|e| format!("daemon speak: {e}"))?;
+        .map_err(|e| format!("daemon stream_speak: {e}"))?;
+    if let Some(err) = response.error {
+        return Err(format!("daemon stream_speak: {}", err.message));
+    }
+    if let Some(err) = terminal_error {
+        return Err(format!("stream_speak terminal error: {err}"));
+    }
+    if let Some(reason) = cancelled_reason {
+        return Err(format!("stream_speak was cancelled: {reason}"));
+    }
+    let Some(end) = output_done else {
+        return Err("stream_speak ended without output_audio.done".to_string());
+    };
+    if output.frames == 0 {
+        return Err("stream_speak completed without audio frames".to_string());
+    }
+    let done_stream_id = stream_id.clone().unwrap_or_else(|| end.stream_id.clone());
+
+    while !player.empty() {
+        if interrupted() {
+            player.stop();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     let playback_elapsed_ms = tts_started.elapsed().as_millis() as u64;
-    if let Some(err) = &response.error {
-        return Err(format!("daemon speak: {}", err.message));
-    }
-    let queue_id = response
-        .result
-        .as_ref()
-        .and_then(|result| result.get("queue_id"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-    let status = response
-        .result
-        .as_ref()
-        .and_then(|result| result.get("status"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    if status == "failed" {
-        return Err(format!(
-            "daemon speak queue item {} failed",
-            queue_id.as_deref().unwrap_or("unknown")
-        ));
-    }
-    let result_json = daemon_wait_result_json(&response);
-    let output_audio_ms = result_json
-        .as_ref()
-        .and_then(|result| result.get("duration_ms"))
-        .and_then(|value| value.as_u64());
-    let output_audio_frames = result_json
-        .as_ref()
-        .and_then(|result| result.get("frames"))
-        .and_then(|value| value.as_u64());
-    let output_sample_rate = result_json
-        .as_ref()
-        .and_then(|result| result.get("sample_rate"))
-        .and_then(|value| value.as_u64())
-        .and_then(|sample_rate| u32::try_from(sample_rate).ok());
-    let first_audio_ms = result_json
-        .as_ref()
-        .and_then(|result| result.get("first_audio_chunk_ms"))
-        .and_then(|value| value.as_u64());
 
     emit_realtime_event(
         args.json,
@@ -4108,18 +4184,16 @@ fn run_realtime_live_tts_response(
             serde_json::json!({
                 "turn_index": turn_index,
                 "response_index": response_index,
-                "transport": "daemon_speak_wait",
+                "transport": "daemon_stream_speak+foreground_player",
                 "queue_id": queue_id,
-                "status": status,
+                "stream_id": done_stream_id,
+                "status": "completed",
+                "stream_elapsed_ms": end.elapsed_ms,
                 "playback_elapsed_ms": playback_elapsed_ms,
-                "duration_ms": output_audio_ms,
-                "frames": output_audio_frames,
-                "sample_rate": output_sample_rate,
-                "chunks": result_json
-                    .as_ref()
-                    .and_then(|result| result.get("chunks"))
-                    .cloned(),
-                "raw_result": result_json,
+                "duration_ms": output.duration_ms,
+                "frames": output.frames,
+                "samples": output.samples,
+                "sample_rate": args.sample_rate,
             }),
         ),
     );
@@ -4140,9 +4214,9 @@ fn run_realtime_live_tts_response(
 
     Ok(RealtimeLiveTtsResult {
         first_audio_ms,
-        output_audio_ms,
-        output_audio_frames,
-        output_sample_rate,
+        output_audio_ms: Some(output.duration_ms),
+        output_audio_frames: Some(output.frames),
+        output_sample_rate: Some(args.sample_rate),
     })
 }
 
@@ -4941,14 +5015,6 @@ fn sum_optional_ms(current: Option<u64>, next: Option<u64>) -> Option<u64> {
     }
 }
 
-fn daemon_wait_result_json(response: &voice_protocol::rpc::Response) -> Option<serde_json::Value> {
-    let raw = response.result.as_ref()?.get("result")?;
-    if raw.is_object() {
-        return Some(raw.clone());
-    }
-    serde_json::from_str(raw.as_str()?).ok()
-}
-
 fn realtime_frame_playable_ms(frame: &voice_stream::AudioFrame) -> u64 {
     frame
         .sample_count
@@ -4956,6 +5022,14 @@ fn realtime_frame_playable_ms(frame: &voice_stream::AudioFrame) -> u64 {
         .max(1)
         .saturating_mul(1_000) as u64
         / frame.sample_rate.max(1) as u64
+}
+
+fn realtime_frame_samples_f32(frame: &voice_stream::AudioFrame) -> Vec<f32> {
+    frame
+        .samples
+        .iter()
+        .map(|sample| f32::from(*sample) / f32::from(i16::MAX))
+        .collect()
 }
 
 fn realtime_assistant_response(
@@ -5114,6 +5188,7 @@ fn validate_realtime_live_event_sequence(event_names: &[String]) -> Result<(), S
                 "conversation.item.input_audio_transcription.completed",
                 "response.output_text.delta",
                 "response.output_audio.started",
+                "response.output_audio.delta",
                 "response.output_audio.done",
                 "response.done",
                 "session.metrics",
@@ -6458,6 +6533,10 @@ mod tests {
             "echo",
             "--tts-engine",
             "kokoro",
+            "--sample-rate",
+            "48000",
+            "--frame-ms",
+            "20",
             "--duration",
             "12",
             "--silence-timeout-ms",
@@ -6478,6 +6557,8 @@ mod tests {
                 assert_eq!(args.turns, 2);
                 assert_eq!(args.assistant_backend, RealtimeAssistantBackend::Echo);
                 assert_eq!(args.tts_engine, TtsEngine::Kokoro);
+                assert_eq!(args.sample_rate, 48_000);
+                assert_eq!(args.frame_ms, 20);
                 assert_eq!(args.duration, 12);
                 assert_eq!(args.silence_timeout_ms, 900);
                 assert_eq!(args.vad_threshold, 0.02);
@@ -6646,6 +6727,7 @@ mod tests {
             "conversation.item.input_audio_transcription.completed",
             "response.output_text.delta",
             "response.output_audio.started",
+            "response.output_audio.delta",
             "response.output_audio.done",
             "response.done",
             "session.metrics",

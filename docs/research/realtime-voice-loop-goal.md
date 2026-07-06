@@ -903,3 +903,29 @@ only the completed transcription terminal event and reported
 Remaining risk: this slice proves deterministic fixture behavior and compiles
 the live mic path, but it has not yet been exercised in an unscripted live mic
 conversation after installing the binary.
+
+### 2026-07-06: Inline Transcript TUI Slice
+
+Implemented `voice realtime-tui` as a user-facing terminal renderer over the
+same live realtime loop:
+
+- defaults to live mic plus speaker without exposing JSON, mic, or speaker
+  switches;
+- consumes realtime events internally instead of printing event names;
+- rewrites the current transcript line with ANSI clear-line/carriage-return
+  behavior as partial STT arrives;
+- renders the `YOU` label in true-color cyan, stable prefix text in bold
+  true-color white, and in-progress suffix text in true-color grey;
+- commits the final transcript as a bold settled line when
+  `conversation.item.input_audio_transcription.completed` arrives.
+
+Verifier:
+
+```bash
+cargo run -p voice -- realtime-tui --help
+cargo test -p voice realtime -- --nocapture
+```
+
+Results: help output exposes `voice realtime-tui [OPTIONS]` without `--json`,
+`--mic`, or `--speaker`; the realtime-filtered tests passed 17 tests for both
+the `voice` and `voxtral` binaries.

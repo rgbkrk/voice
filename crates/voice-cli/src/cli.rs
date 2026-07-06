@@ -9,7 +9,10 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex, OnceLock,
+};
 use std::time::{Duration, Instant};
 
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
@@ -61,6 +64,7 @@ macro_rules! info {
                   voice stream-transcribe recording.ogg\n  \
                   voice realtime-smoke --input-audio recording.wav --json\n  \
                   voice realtime --mic --speaker --turns 2 --json\n  \
+                  voice realtime-tui --turns 2\n  \
                   voice listen\n  \
                   voice listen --continuous\n  \
                   voice transcribe recording.ogg\n  \
@@ -103,6 +107,9 @@ enum Command {
 
     /// Run a live local realtime mic -> STT -> assistant text -> speaker loop
     Realtime(RealtimeArgs),
+
+    /// Run a live realtime loop with inline terminal transcript rendering
+    RealtimeTui(RealtimeTuiArgs),
 
     /// Print the machine-readable WebRTC sidecar stream contract
     StreamContract,
@@ -352,6 +359,7 @@ fn apply_invocation_defaults(args: &mut Args, profile: InvocationProfile, engine
         Some(Command::Stream(args)) => args.engine = TtsEngine::Voxtral,
         Some(Command::RealtimeSmoke(args)) => args.tts_engine = TtsEngine::Voxtral,
         Some(Command::Realtime(args)) => args.tts_engine = TtsEngine::Voxtral,
+        Some(Command::RealtimeTui(args)) => args.tts_engine = TtsEngine::Voxtral,
         Some(Command::Converse(args)) => args.engine = TtsEngine::Voxtral,
         Some(Command::Daemon(DaemonArgs {
             command: Some(DaemonCommand::SetVoice { engine, voice: _ }),
@@ -872,6 +880,124 @@ struct RealtimeArgs {
     /// Print newline-delimited realtime JSON events
     #[arg(long)]
     json: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct RealtimeTuiArgs {
+    /// Number of live user turns to capture and answer
+    #[arg(long = "turns", default_value = "1")]
+    turns: u64,
+
+    /// Deterministic assistant backend for the live loop
+    #[arg(long = "assistant-backend", value_enum, default_value_t = RealtimeAssistantBackend::Echo)]
+    assistant_backend: RealtimeAssistantBackend,
+
+    /// TTS engine to use for assistant audio
+    #[arg(long = "tts-engine", value_enum, default_value_t = TtsEngine::Kokoro)]
+    tts_engine: TtsEngine,
+
+    /// Voice name. Defaults to af_heart for Kokoro, casual_male for Voxtral
+    #[arg(short, long)]
+    voice: Option<String>,
+
+    /// Voxtral model path or HuggingFace repo
+    #[arg(long = "voxtral-model", default_value = DEFAULT_VOXTRAL_MODEL)]
+    voxtral_model: String,
+
+    /// Maximum Voxtral audio frames to generate
+    #[arg(long = "voxtral-max-frames", default_value_t = VOXTRAL_DEFAULT_MAX_FRAMES)]
+    voxtral_max_frames: usize,
+
+    /// Voxtral flow-matching steps per frame
+    #[arg(long = "voxtral-flow-steps", default_value_t = 7)]
+    voxtral_flow_steps: usize,
+
+    /// Enable Voxtral language KV cache (off by default)
+    #[arg(long = "voxtral-kv-cache")]
+    voxtral_kv_cache: bool,
+
+    /// Use the current opt-in low-latency Voxtral preset
+    #[arg(long = "voxtral-realtime")]
+    voxtral_realtime: bool,
+
+    /// Override Voxtral's initial streaming codec chunk size for daemon playback
+    #[arg(long = "voxtral-stream-begin-frames")]
+    voxtral_stream_begin_frames: Option<usize>,
+
+    /// Speech speed factor (1.0 = normal)
+    #[arg(short, long, default_value = "1.0")]
+    speed: f32,
+
+    /// Local realtime output frame sample rate
+    #[arg(long = "sample-rate", default_value = "48000")]
+    sample_rate: u32,
+
+    /// Local realtime output frame duration in milliseconds
+    #[arg(long = "frame-ms", default_value = "20")]
+    frame_ms: u32,
+
+    /// Max listen duration per turn in seconds
+    #[arg(short, long, default_value = "30")]
+    duration: u64,
+
+    /// Silence duration after speech that commits a turn
+    #[arg(long = "silence-timeout-ms", default_value = "1500")]
+    silence_timeout_ms: u64,
+
+    /// Energy threshold floor used by the foreground microphone VAD
+    #[arg(long = "vad-threshold", default_value = "0.01")]
+    vad_threshold: f32,
+
+    /// Multiplier applied to the calibrated ambient noise floor
+    #[arg(long = "noise-multiplier", default_value = "3.0")]
+    noise_multiplier: f32,
+
+    /// Ambient calibration duration before each live turn
+    #[arg(long = "calibration-ms", default_value = "300")]
+    calibration_ms: u64,
+
+    /// Disable best-effort partial STT updates while live microphone capture is active
+    #[arg(long = "no-stt-partials", default_value_t = true, action = ArgAction::SetFalse)]
+    stt_partials: bool,
+
+    /// Minimum interval between best-effort partial STT snapshots
+    #[arg(long = "partial-interval-ms", default_value_t = REALTIME_PARTIAL_INTERVAL_MS)]
+    partial_interval_ms: u64,
+
+    /// Minimum captured audio before the first best-effort partial STT snapshot
+    #[arg(long = "partial-min-audio-ms", default_value_t = REALTIME_PARTIAL_MIN_AUDIO_MS)]
+    partial_min_audio_ms: u64,
+}
+
+impl From<RealtimeTuiArgs> for RealtimeArgs {
+    fn from(args: RealtimeTuiArgs) -> Self {
+        Self {
+            mic: true,
+            speaker: true,
+            turns: args.turns,
+            assistant_backend: args.assistant_backend,
+            tts_engine: args.tts_engine,
+            voice: args.voice,
+            voxtral_model: args.voxtral_model,
+            voxtral_max_frames: args.voxtral_max_frames,
+            voxtral_flow_steps: args.voxtral_flow_steps,
+            voxtral_kv_cache: args.voxtral_kv_cache,
+            voxtral_realtime: args.voxtral_realtime,
+            voxtral_stream_begin_frames: args.voxtral_stream_begin_frames,
+            speed: args.speed,
+            sample_rate: args.sample_rate,
+            frame_ms: args.frame_ms,
+            duration: args.duration,
+            silence_timeout_ms: args.silence_timeout_ms,
+            vad_threshold: args.vad_threshold,
+            noise_multiplier: args.noise_multiplier,
+            calibration_ms: args.calibration_ms,
+            stt_partials: args.stt_partials,
+            partial_interval_ms: args.partial_interval_ms,
+            partial_min_audio_ms: args.partial_min_audio_ms,
+            json: false,
+        }
+    }
 }
 
 #[derive(clap::Args, Debug)]
@@ -1636,6 +1762,9 @@ fn main() {
         }
         Some(Command::Realtime(realtime_args)) => {
             run_realtime(realtime_args);
+        }
+        Some(Command::RealtimeTui(realtime_args)) => {
+            run_realtime_tui(realtime_args);
         }
         Some(Command::StreamContract) => {
             run_stream_contract();
@@ -3646,6 +3775,206 @@ struct RealtimeSttStreamResult {
     event_elapsed_ms: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Default)]
+struct RealtimeTuiRenderer {
+    previous_partial: String,
+    line_active: bool,
+}
+
+struct RealtimeTuiGuard;
+
+impl Drop for RealtimeTuiGuard {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = realtime_tui_slot().lock() {
+            if let Some(mut renderer) = slot.take() {
+                renderer.finish();
+            }
+        }
+    }
+}
+
+struct QuietOverride {
+    previous: bool,
+}
+
+impl QuietOverride {
+    fn set(value: bool) -> Self {
+        Self {
+            previous: QUIET.swap(value, Ordering::Relaxed),
+        }
+    }
+}
+
+impl Drop for QuietOverride {
+    fn drop(&mut self) {
+        QUIET.store(self.previous, Ordering::Relaxed);
+    }
+}
+
+const TUI_RESET: &str = "\x1b[0m";
+const TUI_CLEAR_LINE: &str = "\r\x1b[2K";
+const TUI_LABEL: &str = "\x1b[1m\x1b[38;2;34;211;238m"; // #22D3EE
+const TUI_SETTLED: &str = "\x1b[1m\x1b[38;2;248;250;252m"; // #F8FAFC
+const TUI_PROGRESS: &str = "\x1b[38;2;148;163;184m"; // #94A3B8
+const TUI_MUTED: &str = "\x1b[38;2;100;116;139m"; // #64748B
+const TUI_ERROR: &str = "\x1b[1m\x1b[38;2;251;113;133m"; // #FB7185
+
+impl RealtimeTuiRenderer {
+    fn handle_event(&mut self, event: &serde_json::Value) {
+        let name = event
+            .get("event")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let data = event.get("data").unwrap_or(&serde_json::Value::Null);
+        match name {
+            "input_audio_buffer.listening_started" => self.render_status("listening"),
+            "input_audio_buffer.speech_started" => self.render_status("hearing"),
+            "conversation.item.input_audio_transcription.partial" => {
+                if let Some(text) = data.get("text").and_then(|value| value.as_str()) {
+                    self.render_partial(text);
+                }
+            }
+            "conversation.item.input_audio_transcription.completed" => {
+                if let Some(text) = data.get("text").and_then(|value| value.as_str()) {
+                    self.render_completed(text);
+                }
+            }
+            "conversation.item.input_audio_transcription.failed" => {
+                let message = data
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("transcription failed");
+                self.render_failed(message);
+            }
+            _ => {}
+        }
+    }
+
+    fn render_status(&mut self, status: &str) {
+        if self.previous_partial.is_empty() {
+            self.write_line(
+                &format!("{TUI_LABEL}YOU{TUI_RESET} {TUI_MUTED}{status}...{TUI_RESET}"),
+                false,
+            );
+        }
+    }
+
+    fn render_partial(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let stable_len = realtime_tui_stable_prefix_len(&self.previous_partial, text);
+        let (stable, progress) = text.split_at(stable_len);
+        self.write_line(
+            &format!(
+                "{TUI_LABEL}YOU{TUI_RESET} {TUI_SETTLED}{stable}{TUI_PROGRESS}{progress}{TUI_RESET}"
+            ),
+            false,
+        );
+        self.previous_partial = text.to_string();
+    }
+
+    fn render_completed(&mut self, text: &str) {
+        self.write_line(
+            &format!(
+                "{TUI_LABEL}YOU{TUI_RESET} {TUI_SETTLED}{}{TUI_RESET}",
+                text.trim()
+            ),
+            true,
+        );
+        self.previous_partial.clear();
+    }
+
+    fn render_failed(&mut self, message: &str) {
+        self.write_line(
+            &format!("{TUI_LABEL}YOU{TUI_RESET} {TUI_ERROR}{message}{TUI_RESET}"),
+            true,
+        );
+        self.previous_partial.clear();
+    }
+
+    fn finish(&mut self) {
+        if self.line_active {
+            let mut stdout = io::stdout().lock();
+            let _ = writeln!(stdout, "{TUI_RESET}");
+            let _ = stdout.flush();
+            self.line_active = false;
+        }
+    }
+
+    fn write_line(&mut self, rendered: &str, newline: bool) {
+        let mut stdout = io::stdout().lock();
+        let _ = write!(stdout, "{TUI_CLEAR_LINE}{rendered}");
+        if newline {
+            let _ = writeln!(stdout);
+        }
+        let _ = stdout.flush();
+        self.line_active = !newline;
+    }
+}
+
+fn realtime_tui_slot() -> &'static Mutex<Option<RealtimeTuiRenderer>> {
+    static SLOT: OnceLock<Mutex<Option<RealtimeTuiRenderer>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn begin_realtime_tui_renderer() -> RealtimeTuiGuard {
+    let mut slot = realtime_tui_slot().lock().unwrap();
+    *slot = Some(RealtimeTuiRenderer::default());
+    RealtimeTuiGuard
+}
+
+fn dispatch_realtime_tui_event(event: &serde_json::Value) -> bool {
+    let Ok(mut slot) = realtime_tui_slot().lock() else {
+        return false;
+    };
+    let Some(renderer) = slot.as_mut() else {
+        return false;
+    };
+    renderer.handle_event(event);
+    true
+}
+
+fn realtime_tui_stable_prefix_len(previous: &str, current: &str) -> usize {
+    if previous.is_empty() || current.is_empty() {
+        return 0;
+    }
+    let mut previous_chars = previous.chars();
+    let mut matched = 0usize;
+    for (index, current_char) in current.char_indices() {
+        let Some(previous_char) = previous_chars.next() else {
+            break;
+        };
+        if previous_char != current_char {
+            break;
+        }
+        matched = index + current_char.len_utf8();
+    }
+    if matched == current.len() {
+        return matched;
+    }
+    if matched == previous.len() {
+        let previous_ends_at_boundary = previous
+            .chars()
+            .last()
+            .is_some_and(|ch| ch.is_whitespace());
+        let current_continues_at_boundary = current[matched..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_whitespace());
+        if previous_ends_at_boundary || current_continues_at_boundary {
+            return matched;
+        }
+    }
+    current[..matched]
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0)
+}
+
 #[derive(Clone, Copy)]
 struct RealtimeBargeInPlan<'a> {
     input: &'a RealtimeSmokeInput,
@@ -3765,6 +4094,19 @@ fn run_realtime_smoke(args: RealtimeSmokeArgs) {
 fn run_realtime(args: RealtimeArgs) {
     if let Err(message) = run_realtime_inner(args) {
         eprintln!("voice realtime: {message}");
+        std::process::exit(1);
+    }
+}
+
+fn run_realtime_tui(args: RealtimeTuiArgs) {
+    let args = RealtimeArgs::from(args);
+    let result = {
+        let _quiet = QuietOverride::set(true);
+        let _renderer = begin_realtime_tui_renderer();
+        run_realtime_inner(args)
+    };
+    if let Err(message) = result {
+        eprintln!("voice realtime-tui: {message}");
         std::process::exit(1);
     }
 }
@@ -5370,7 +5712,7 @@ fn emit_realtime_event(json: bool, event_names: &mut Vec<String>, event: serde_j
     event_names.push(name.clone());
     if json {
         println!("{}", serde_json::to_string(&event).unwrap());
-    } else if !QUIET.load(Ordering::Relaxed) {
+    } else if !dispatch_realtime_tui_event(&event) && !QUIET.load(Ordering::Relaxed) {
         println!("{name}");
     }
 }
@@ -6923,6 +7265,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_realtime_tui_goal_shape() {
+        let args = Args::parse_from([
+            "voice",
+            "realtime-tui",
+            "--turns",
+            "2",
+            "--tts-engine",
+            "kokoro",
+            "--partial-interval-ms",
+            "500",
+            "--partial-min-audio-ms",
+            "1000",
+        ]);
+
+        match args.command {
+            Some(Command::RealtimeTui(args)) => {
+                assert_eq!(args.turns, 2);
+                assert_eq!(args.tts_engine, TtsEngine::Kokoro);
+                assert!(args.stt_partials);
+                assert_eq!(args.partial_interval_ms, 500);
+                assert_eq!(args.partial_min_audio_ms, 1000);
+            }
+            other => panic!("expected realtime-tui command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn realtime_partial_state_emits_only_changed_text() {
         let mut state = RealtimePartialSttState::default();
 
@@ -6936,6 +7305,19 @@ mod tests {
             Some((2, Some(1), "hello world".to_string()))
         );
         assert_eq!(state.sequence, 2);
+    }
+
+    #[test]
+    fn realtime_tui_stable_prefix_uses_whole_word_boundary() {
+        assert_eq!(
+            realtime_tui_stable_prefix_len("hello world", "hello word"),
+            "hello ".len()
+        );
+        assert_eq!(
+            realtime_tui_stable_prefix_len("hello world", "hello world again"),
+            "hello world".len()
+        );
+        assert_eq!(realtime_tui_stable_prefix_len("", "hello"), 0);
     }
 
     #[test]

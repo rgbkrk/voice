@@ -738,3 +738,168 @@ Remaining risks:
   (`metal(default)` on macOS), not daemon-internal runtime introspection.
 - Human ergonomics were verified through transient speaker-to-mic fixture input,
   not an extended unscripted conversation.
+
+## Follow-up Goal: Streaming Human STT Progress
+
+Outcome: `voice realtime --mic --speaker --json` should make human speech feel
+live by emitting partial transcription progress while the microphone is still
+recording, then emitting the existing final transcription event after VAD
+commits the turn. The user-visible contract is progress first, final resolution
+second.
+
+Baseline: live realtime currently calls `WarmMic::record_vad`, waits for VAD to
+finish, then calls `transcribe_samples` once and emits
+`conversation.item.input_audio_transcription.completed`. Assistant TTS already
+streams `response.output_audio.delta` frames through daemon `stream_speak`.
+
+Constraints:
+
+- Keep Whisper/distil-whisper as the first implementation path.
+- Do not port Parakeet, replace VAD, or require Voxtral STT for this goal.
+- Do not feed unstable partial text into assistant generation by default.
+- Preserve the completed transcript event as the only committed text.
+- Keep deterministic verification possible without a real microphone.
+- Do not weaken existing realtime smoke, stream, or transcription contracts.
+
+Event shape target:
+
+- `conversation.item.input_audio_transcription.partial` for unstable progress.
+- `conversation.item.input_audio_transcription.completed` for final committed
+  text.
+- Partial events should include `turn_index`, `text`, `audio_ms`,
+  `elapsed_ms`, and enough sequence metadata for a UI to replace/correct prior
+  text.
+
+Primary verifier: a deterministic realtime verifier should prove at least one
+partial transcript event is emitted before the completed transcript event for a
+fixture utterance, and that the completed transcript still matches the existing
+final transcription behavior.
+
+Supporting checks:
+
+- `cargo test -p voice` covers CLI parsing/event ordering.
+- `cargo run -p voice -- realtime-smoke ... --json` still emits final STT and
+  streamed TTS frames.
+- `cargo fmt --check -p voice` and `cargo check -p voice` pass.
+- If installed for user testing, `cargo install --path crates/voice-cli --force
+  --bin voice` succeeds and `voice realtime --help` shows the new controls.
+
+Iteration loop: add one visible streaming surface at a time, run the primary
+deterministic verifier, inspect event ordering and latency fields, then tighten
+the next slice. If partial Whisper is too slow or unstable, record that result
+and evaluate Voxtral STT or Parakeet as a separate backend spike.
+
+Anti-cheating rules: do not synthesize partials from the final transcript in
+the real mic path; do not remove final transcript verification; do not declare
+success without event-order evidence; do not make the fixture verifier pass by
+special-casing its text outside the transcription/event path.
+
+Approval gates: downloading new large model families, replacing the installed
+global binary, changing LaunchAgent state, or opening/pushing a PR requires
+separate approval unless explicitly requested in the active turn.
+
+Completion proof: record the exact commands, JSON event evidence showing
+partial-before-completed ordering, build/test output, and any installed binary
+verification in this document before marking the goal complete.
+
+### 2026-07-06: Streaming STT Progress Slice
+
+Implementation:
+
+- `voice realtime` now enables best-effort partial STT by default and exposes
+  `--no-stt-partials`, `--partial-interval-ms`, and
+  `--partial-min-audio-ms`.
+- Live mic capture uses `WarmMic::record_vad_with_progress` to snapshot the
+  active recording buffer while speech is still ongoing.
+- Partial mic snapshots run through the normal Whisper path with failures
+  suppressed, emit only changed text, and keep the final completed transcript
+  authoritative.
+- Partial events use
+  `conversation.item.input_audio_transcription.partial` with `sequence`,
+  `replaces_sequence`, `stable=false`, `audio_ms`, `capture_elapsed_ms`, and
+  decode `elapsed_ms` fields for UI replacement/correction.
+- The live event validator now requires `input_audio_buffer.speech_started`
+  before any partial transcript, and the completed transcript after partials.
+- `realtime-smoke --stt-partials` transcribes an audio prefix through daemon
+  `stream_transcribe` before the full fixture transcript, giving a deterministic
+  verifier without live microphone hardware.
+
+Primary verifier:
+
+```bash
+cargo run -p voice -- realtime-smoke \
+  --input-audio eval/recordings/001.wav \
+  --assistant-backend echo \
+  --tts-engine kokoro \
+  --sample-rate 48000 \
+  --frame-ms 20 \
+  --stt-partials \
+  --partial-audio-ms 2500 \
+  --json > target/realtime-smoke-partials-run.jsonl
+```
+
+Result: passed. Event order began:
+
+```text
+session.started
+input_audio_buffer.appended
+input_audio_buffer.speech_started
+input_audio_buffer.committed
+conversation.item.input_audio_transcription.partial
+conversation.item.input_audio_transcription.completed
+response.output_text.delta
+response.output_audio.started
+response.output_audio.delta
+...
+response.output_audio.done
+response.done
+session.metrics
+```
+
+The fixture partial showed visible progress and the final corrected it:
+
+```text
+partial: A fox jumps over the lazy doll
+final:   The fox jumps over the lazy dog.
+```
+
+Key metrics from `target/realtime-smoke-partials-run.jsonl`:
+
+- `stt_partial_events`: 1
+- partial `audio_ms`: 2500
+- final `audio_ms`: 12160
+- partial `elapsed_ms`: 322
+- `stt_elapsed_ms`: 347
+- `tts_first_audio_ms`: 319
+- `output_audio_frames`: 159
+- `response_total_ms`: 1045
+
+Supporting checks:
+
+```bash
+cargo test -p voice realtime_ -- --nocapture
+cargo test -p voice
+cargo run -p voice -- realtime-smoke \
+  --input-audio eval/recordings/001.wav \
+  --assistant-backend echo \
+  --tts-engine kokoro \
+  --sample-rate 48000 \
+  --frame-ms 20 \
+  --json > target/realtime-smoke-default-after-partials.jsonl
+cargo check -p voice
+cargo fmt --check -p voice
+git diff --check
+cargo run -p voice -- realtime --help | rg -n "stt-partials|partial-"
+```
+
+Results: all passed. Targeted realtime tests reported 15 passing tests for both
+the `voice` and `voxtral` binaries. Full `cargo test -p voice` reported 39
+passing tests for both binaries, with the existing 22 JSON-RPC model-download
+tests ignored by annotation. The default no-partial smoke path still emitted
+only the completed transcription terminal event and reported
+`stt_partial_events=0`. Help output exposes `--no-stt-partials`,
+`--partial-interval-ms`, and `--partial-min-audio-ms`.
+
+Remaining risk: this slice proves deterministic fixture behavior and compiles
+the live mic path, but it has not yet been exercised in an unscripted live mic
+conversation after installing the binary.

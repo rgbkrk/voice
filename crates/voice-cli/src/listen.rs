@@ -334,6 +334,17 @@ pub struct WarmMic {
     mic_thread: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Snapshot of the live VAD recording buffer for best-effort partial work.
+#[derive(Debug, Clone)]
+pub struct VadProgressSnapshot {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub audio_ms: u64,
+    pub elapsed_ms: u64,
+    pub current_peak: f32,
+    pub threshold: f32,
+}
+
 impl WarmMic {
     /// Open the mic and start buffering immediately.
     pub fn open() -> Result<Self, String> {
@@ -375,6 +386,34 @@ impl WarmMic {
         noise_multiplier: f32,
         calibration_ms: u64,
     ) -> Result<(Vec<f32>, u32), String> {
+        self.record_vad_with_progress(
+            max_duration_ms,
+            silence_timeout_ms,
+            silence_threshold,
+            noise_multiplier,
+            calibration_ms,
+            None,
+            |_| Ok(()),
+        )
+    }
+
+    /// Record with VAD and optionally publish live buffer snapshots while
+    /// speech is still active. The mic drain thread keeps capturing while the
+    /// progress callback runs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_vad_with_progress<F>(
+        &self,
+        max_duration_ms: u64,
+        silence_timeout_ms: u64,
+        silence_threshold: f32,
+        noise_multiplier: f32,
+        calibration_ms: u64,
+        progress_interval_ms: Option<u64>,
+        mut on_progress: F,
+    ) -> Result<(Vec<f32>, u32), String>
+    where
+        F: FnMut(VadProgressSnapshot) -> Result<(), String>,
+    {
         play_ding();
         if !QUIET.load(Ordering::Relaxed) {
             eprintln!("Listening...");
@@ -421,6 +460,10 @@ impl WarmMic {
         let start_time = std::time::Instant::now();
         let max_dur = std::time::Duration::from_millis(max_duration_ms);
         let silence_dur = std::time::Duration::from_millis(silence_timeout_ms);
+        let progress_interval = progress_interval_ms
+            .filter(|ms| *ms > 0)
+            .map(std::time::Duration::from_millis);
+        let mut last_progress_at = start_time;
 
         loop {
             if INTERRUPTED.load(Ordering::Relaxed) {
@@ -441,6 +484,7 @@ impl WarmMic {
             if is_speech {
                 if !speech_started {
                     speech_started = true;
+                    last_progress_at = start_time;
                     if !QUIET.load(Ordering::Relaxed) {
                         eprintln!("Speech detected...");
                     }
@@ -458,6 +502,25 @@ impl WarmMic {
                         break;
                     }
                 }
+            }
+
+            if speech_started
+                && is_speech
+                && progress_interval
+                    .is_some_and(|interval| last_progress_at.elapsed() >= interval)
+            {
+                let samples = self.buffer.lock().unwrap().clone();
+                let audio_ms =
+                    samples.len().saturating_mul(1_000) as u64 / self.sample_rate.max(1) as u64;
+                on_progress(VadProgressSnapshot {
+                    samples,
+                    sample_rate: self.sample_rate,
+                    audio_ms,
+                    elapsed_ms: start_time.elapsed().as_millis() as u64,
+                    current_peak,
+                    threshold: adaptive_threshold,
+                })?;
+                last_progress_at = std::time::Instant::now();
             }
 
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1345,12 +1408,31 @@ pub(crate) fn transcribe_samples(
     samples: &[f32],
     sample_rate: u32,
 ) -> Option<voice_stt::TranscribeResult> {
+    transcribe_samples_inner(model, samples, sample_rate, true)
+}
+
+/// Run transcription on recorded audio with silence trimming, suppressing
+/// best-effort partial failures.
+pub(crate) fn transcribe_samples_best_effort(
+    model: &mut voice_stt::WhisperModel,
+    samples: &[f32],
+    sample_rate: u32,
+) -> Option<voice_stt::TranscribeResult> {
+    transcribe_samples_inner(model, samples, sample_rate, false)
+}
+
+fn transcribe_samples_inner(
+    model: &mut voice_stt::WhisperModel,
+    samples: &[f32],
+    sample_rate: u32,
+    report_failures: bool,
+) -> Option<voice_stt::TranscribeResult> {
     // Trim leading/trailing silence
     let original_len = samples.len();
     let trimmed = trim_silence(samples, sample_rate);
     let trimmed_duration = trimmed.len() as f32 / sample_rate as f32;
 
-    if !QUIET.load(Ordering::Relaxed) && trimmed.len() < original_len {
+    if report_failures && !QUIET.load(Ordering::Relaxed) && trimmed.len() < original_len {
         let original_duration = original_len as f32 / sample_rate as f32;
         eprintln!(
             "Trimmed silence: {:.1}s → {:.1}s of speech",
@@ -1359,18 +1441,22 @@ pub(crate) fn transcribe_samples(
     }
 
     if trimmed.is_empty() {
-        eprintln!("No speech detected in recording.");
+        if report_failures {
+            eprintln!("No speech detected in recording.");
+        }
         return None;
     }
 
-    if !QUIET.load(Ordering::Relaxed) {
+    if report_failures && !QUIET.load(Ordering::Relaxed) {
         eprintln!("Transcribing {:.1}s of audio...", trimmed_duration);
     }
 
     match voice_stt::transcribe_audio(model, &trimmed, sample_rate) {
         Ok(r) => Some(r),
         Err(e) => {
-            eprintln!("Transcription failed: {e}");
+            if report_failures {
+                eprintln!("Transcription failed: {e}");
+            }
             None
         }
     }

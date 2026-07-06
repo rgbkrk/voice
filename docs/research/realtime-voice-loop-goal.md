@@ -267,10 +267,11 @@ Before marking the goal complete, provide:
 
 ## Current Next Step
 
-Run daemon-backed fixture verification for the primary and barge-in smoke
-commands. The code path now supports deterministic barge-in, but the completion
-proof still needs real daemon `stream_transcribe` and `stream_speak` executions
-with concrete event output and metrics.
+Next implementation slice: add or attempt the live mic/speaker realtime surface
+from the manual verifier, and improve backend/device reporting so metrics can
+distinguish Metal from CPU. The fixture smoke path and deterministic barge-in
+path now have daemon-backed evidence, but the full goal is not complete until
+manual/live surface status and device reporting are addressed.
 
 ## Worklog
 
@@ -322,10 +323,12 @@ Behavior added:
 - once emitted assistant audio reaches `--barge-in-at-ms`, emits the second
   input fixture as a `barge_in` turn and cancels the active daemon queue item
   through `cancel_item`;
-- treats any further first-response audio after the cancellation request as a
-  verifier failure;
+- emits `response.cancelled` once `cancel_item` succeeds, then deliberately
+  closes the first stream connection so leftover daemon stream events cannot
+  block turn 2;
 - accepts `response.cancelled` only when barge-in was requested;
-- continues with real daemon `stream_transcribe` and `stream_speak` for turn 2;
+- continues with a fresh daemon connection for real `stream_transcribe` and
+  `stream_speak` on turn 2;
 - emits metrics for completed turns, cancelled responses, cancellation latency,
   and dropped output audio duration. The current stream verifier consumes audio
   immediately, so client-side dropped output audio is currently reported as
@@ -346,6 +349,111 @@ and required event ordering around `response.cancel_requested`,
 `response.cancelled`, and the second turn. This is still code-level evidence;
 the goal still requires daemon-backed fixture evidence from the actual
 `cargo run -p voice -- realtime-smoke ... --barge-in-audio ...` command.
+
+### 2026-07-06: Daemon-backed Fixture Verification
+
+Used the existing running daemon at `/Users/kylekelley/.voice/daemon.sock`
+without installing, unloading, or modifying LaunchAgent state.
+
+Candidate fixture transcription:
+
+```bash
+cargo run -p voice --bin voice -- stream-transcribe eval/recordings/001.wav --json
+cargo run -p voice --bin voice -- stream-transcribe eval/recordings/002.wav --json
+```
+
+Results:
+
+- `eval/recordings/001.wav`: `The fox jumps over the lazy dog.`
+- `eval/recordings/002.wav`: `Shells by the seashore.`
+
+Primary smoke verifier:
+
+```bash
+cargo run -p voice --bin voice -- realtime-smoke \
+  --input-audio eval/recordings/001.wav \
+  --assistant-backend echo \
+  --tts-engine kokoro \
+  --sample-rate 48000 \
+  --frame-ms 20 \
+  --json > target/realtime-smoke-primary.jsonl
+```
+
+Result: passed. Event summary:
+
+- `session.started`
+- `input_audio_buffer.appended`
+- `input_audio_buffer.speech_started`
+- `input_audio_buffer.committed`
+- `conversation.item.input_audio_transcription.completed`
+- 9 `response.output_text.delta`
+- `response.output_audio.started`
+- 159 `response.output_audio.delta`
+- `response.output_audio.done`
+- `response.done`
+- `session.metrics`
+
+Key metrics:
+
+- transcript: `The fox jumps over the lazy dog.`
+- `stt_audio_ms`: 12160
+- `stt_elapsed_ms`: 379
+- `tts_first_audio_ms`: 301
+- `output_audio_frames`: 159
+- `output_audio_ms`: 3180
+- `response_total_ms`: 714
+
+Barge-in smoke verifier:
+
+```bash
+cargo run -p voice --bin voice -- realtime-smoke \
+  --input-audio eval/recordings/001.wav \
+  --barge-in-audio eval/recordings/002.wav \
+  --barge-in-at-ms 300 \
+  --assistant-backend echo \
+  --tts-engine kokoro \
+  --sample-rate 48000 \
+  --frame-ms 20 \
+  --json > target/realtime-smoke-barge-in.jsonl
+```
+
+Result: passed. Event summary:
+
+- turn 1 transcribed `The fox jumps over the lazy dog.`
+- turn 1 emitted 15 `response.output_audio.delta` frames before barge-in;
+- turn 2 fixture emitted as `input_audio_buffer.*` with trigger `barge_in`;
+- `response.cancel_requested` at `output_audio_ms=300`;
+- `response.cancelled` with `truncated=true`;
+- turn 2 transcribed `Shells by the seashore.`;
+- turn 2 emitted 124 `response.output_audio.delta` frames;
+- final `response.output_audio.done`, `response.done`, and `session.metrics`.
+
+Key metrics:
+
+- `turns_completed`: 2
+- `cancelled_responses`: 1
+- `barge_in_at_ms`: 300
+- `cancellation_latency_ms`: 0
+- `stt_audio_ms`: 17100
+- `stt_elapsed_ms`: 635
+- `tts_first_audio_ms`: 298
+- `output_audio_frames`: 139
+- `output_audio_ms`: 2780
+- `response_total_ms`: 1209
+
+Supporting stream checks:
+
+```bash
+cargo run -p voice --bin voice -- stream-contract
+cargo run -p voice --bin voice -- stream --json "Hello from the stream"
+```
+
+Results:
+
+- `stream-contract` reports 48 kHz, mono, 20 ms, `pcm_s16le`, 960 samples per
+  frame, 1920 bytes per frame.
+- `stream --json "Hello from the stream"` passed with `started`, 80 `audio`
+  frames, and `ended`.
 
 ### Reference Clones
 

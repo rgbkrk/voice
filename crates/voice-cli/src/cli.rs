@@ -3637,8 +3637,12 @@ fn run_realtime_smoke_inner(args: RealtimeSmokeArgs) -> Result<(), String> {
     if barge_in_input.is_some() && !turn1.cancelled {
         return Err("barge-in fixture did not cancel the first response".to_string());
     }
+    if turn1.cancelled {
+        drop(daemon);
+    }
 
     let turn2 = if let Some(input) = barge_in_input.as_ref() {
+        let mut daemon = connect_daemon_for_realtime()?;
         Some(run_realtime_smoke_turn(
             &mut daemon,
             &args,
@@ -3944,6 +3948,8 @@ fn run_realtime_tts_response(
     barge_in: Option<RealtimeBargeInPlan<'_>>,
     event_names: &mut Vec<String>,
 ) -> Result<RealtimeTtsResult, String> {
+    const BARGE_IN_STREAM_STOP: &str = "realtime barge-in stream stopped";
+
     let tts_started = Instant::now();
     let mut output = RealtimeOutputFrameValidator::new(args.sample_rate, args.frame_ms);
     let queue_id = std::cell::RefCell::new(None::<String>);
@@ -4000,9 +4006,8 @@ fn run_realtime_tts_response(
                         return Err("received output audio after output_audio.done".to_string());
                     }
                     if cancel_requested {
-                        return Err(
-                            "received output audio after barge-in cancellation request".to_string()
-                        );
+                        dropped_output_audio_ms += realtime_frame_playable_ms(&frame);
+                        return Ok(());
                     }
                     output.observe(&frame)?;
                     let first_audio = tts_first_audio_ms
@@ -4062,9 +4067,9 @@ fn run_realtime_tts_response(
                             cancellation_latency_ms =
                                 Some(cancel_started.elapsed().as_millis() as u64);
                             cancel_requested = true;
-                            // This stream verifier consumes frames immediately, so there is no
-                            // client-side queued audio to drop. The cancelled response is still
-                            // marked truncated and any later audio event is treated as a failure.
+                            // Stream frames already buffered by the daemon may still arrive before
+                            // the terminal cancellation event. Drop them client-side and count
+                            // their duration instead of emitting post-barge-in assistant audio.
                             dropped_output_audio_ms = 0;
                             emit_realtime_event(
                                 args.json,
@@ -4082,6 +4087,25 @@ fn run_realtime_tts_response(
                                     }),
                                 ),
                             );
+                            cancelled_reason = Some("Cancelled by user".to_string());
+                            emit_realtime_event(
+                                args.json,
+                                event_names,
+                                realtime_event(
+                                    "response.cancelled",
+                                    serde_json::json!({
+                                        "turn_index": turn_index,
+                                        "response_index": response_index,
+                                        "stream_id": frame.stream_id,
+                                        "reason": "Cancelled by user",
+                                        "truncated": true,
+                                        "output_audio_ms": output.duration_ms,
+                                        "dropped_output_audio_ms": dropped_output_audio_ms,
+                                        "cancellation_latency_ms": cancellation_latency_ms,
+                                    }),
+                                ),
+                            );
+                            return Err(BARGE_IN_STREAM_STOP.to_string());
                         }
                     }
                 }
@@ -4157,8 +4181,14 @@ fn run_realtime_tts_response(
             Ok(())
         },
     );
-    if let Some(err) = tts_result.map_err(|e| format!("stream_speak: {e}"))?.error {
-        return Err(format!("daemon stream_speak: {}", err.message));
+    match tts_result {
+        Ok(response) => {
+            if let Some(err) = response.error {
+                return Err(format!("daemon stream_speak: {}", err.message));
+            }
+        }
+        Err(err) if cancel_requested && err == BARGE_IN_STREAM_STOP => {}
+        Err(err) => return Err(format!("stream_speak: {err}")),
     }
     if let Some(err) = terminal_error {
         return Err(format!("stream_speak terminal error: {err}"));
@@ -4268,6 +4298,15 @@ fn detect_realtime_speech(samples: &[f32], threshold: f32) -> (bool, f32, f32) {
     }
     let rms = (energy / samples.len() as f64).sqrt() as f32;
     (peak >= threshold || rms >= threshold, peak, rms)
+}
+
+fn realtime_frame_playable_ms(frame: &voice_stream::AudioFrame) -> u64 {
+    frame
+        .sample_count
+        .saturating_sub(frame.padding_samples)
+        .max(1)
+        .saturating_mul(1_000) as u64
+        / frame.sample_rate.max(1) as u64
 }
 
 fn realtime_assistant_response(

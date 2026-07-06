@@ -797,7 +797,7 @@ struct RealtimeArgs {
     #[arg(long)]
     speaker: bool,
 
-    /// Number of live user turns to capture and answer
+    /// Number of live user turns to capture
     #[arg(long = "turns", default_value = "1")]
     turns: u64,
 
@@ -4204,33 +4204,41 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
     if !args.mic {
         return Err("--mic is required for the live realtime surface".to_string());
     }
-    if !args.speaker {
-        return Err("--speaker is required for the live realtime surface".to_string());
-    }
     if args.turns == 0 {
         return Err("--turns must be greater than zero".to_string());
     }
-    validate_speed(args.speed).map_err(|e| format!("invalid speed: {e}"))?;
-    validate_stream_frame_params(args.sample_rate, args.frame_ms)?;
     validate_live_realtime_vad(&args)?;
     validate_realtime_partials(&args)?;
 
-    let voice = selected_voice(args.tts_engine, &args.voice);
-    validate_voice_for_engine(args.tts_engine, &voice)?;
-    let voxtral = args.effective_voxtral_options();
-    validate_effective_voxtral_options(voxtral)?;
+    let voice = args.speaker.then(|| selected_voice(args.tts_engine, &args.voice));
+    let voxtral = args.speaker.then(|| args.effective_voxtral_options());
+    let mut daemon = if args.speaker {
+        validate_speed(args.speed).map_err(|e| format!("invalid speed: {e}"))?;
+        validate_stream_frame_params(args.sample_rate, args.frame_ms)?;
+        let voice = voice.as_deref().expect("speaker voice set");
+        validate_voice_for_engine(args.tts_engine, voice)?;
+        let voxtral = voxtral.expect("speaker voxtral options set");
+        validate_effective_voxtral_options(voxtral)?;
 
-    let mut daemon = connect_daemon_for_realtime()?;
-    if !daemon_supports_engine(&mut daemon, args.tts_engine) {
-        return Err(format!(
-            "voice daemon does not advertise {} support",
-            args.tts_engine.as_str()
-        ));
-    }
+        let mut daemon = connect_daemon_for_realtime()?;
+        if !daemon_supports_engine(&mut daemon, args.tts_engine) {
+            return Err(format!(
+                "voice daemon does not advertise {} support",
+                args.tts_engine.as_str()
+            ));
+        }
+        Some(daemon)
+    } else {
+        None
+    };
 
     let mut event_names = Vec::new();
     let session_started = Instant::now();
-    let compute_device = realtime_compute_device_label("foreground_stt+daemon_tts");
+    let compute_device = realtime_compute_device_label(if args.speaker {
+        "foreground_stt+daemon_tts"
+    } else {
+        "foreground_stt"
+    });
 
     emit_realtime_event(
         args.json,
@@ -4238,11 +4246,11 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
         realtime_event(
             "session.started",
             serde_json::json!({
-                "surface": "live_mic_speaker",
+                "surface": if args.speaker { "live_mic_speaker" } else { "live_mic_capture" },
                 "mic": args.mic,
                 "speaker": args.speaker,
                 "turns": args.turns,
-                "assistant_backend": args.assistant_backend.as_str(),
+                "assistant_backend": if args.speaker { args.assistant_backend.as_str() } else { "none" },
                 "tts_engine": args.tts_engine.as_str(),
                 "voice": voice,
                 "vad_threshold": args.vad_threshold,
@@ -4255,7 +4263,7 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
                 "compute_device": compute_device,
                 "sample_rate": args.sample_rate,
                 "frame_ms": args.frame_ms,
-                "speaker_transport": "daemon_stream_speak+foreground_player",
+                "speaker_transport": if args.speaker { "daemon_stream_speak+foreground_player" } else { "none" },
             }),
         ),
     );
@@ -4264,8 +4272,16 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
     let warm_mic = listen::WarmMic::open().map_err(|e| format!("open microphone: {e}"))?;
     let mut metrics = RealtimeLiveMetrics {
         stt_backend: "foreground_whisper_vad".to_string(),
-        tts_backend: format!("daemon_stream_speak/{}", args.tts_engine.as_str()),
-        assistant_backend: args.assistant_backend.as_str().to_string(),
+        tts_backend: if args.speaker {
+            format!("daemon_stream_speak/{}", args.tts_engine.as_str())
+        } else {
+            "none".to_string()
+        },
+        assistant_backend: if args.speaker {
+            args.assistant_backend.as_str().to_string()
+        } else {
+            "none".to_string()
+        },
         compute_device: compute_device.to_string(),
         vad_threshold: args.vad_threshold,
         noise_multiplier: args.noise_multiplier,
@@ -4286,11 +4302,11 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
             break;
         }
         let turn = run_realtime_live_turn(
-            &mut daemon,
+            daemon.as_mut(),
             &mut stt_model,
             &warm_mic,
             &args,
-            &voice,
+            voice.as_deref(),
             voxtral,
             turn_index,
             turn_index.saturating_sub(1),
@@ -4325,7 +4341,7 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
         realtime_event("session.metrics", serde_json::to_value(&metrics).unwrap()),
     );
 
-    validate_realtime_live_event_sequence(&event_names)?;
+    validate_realtime_live_event_sequence(&event_names, args.speaker)?;
 
     if !args.json && !QUIET.load(Ordering::Relaxed) {
         println!(
@@ -4345,12 +4361,12 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
 
 #[allow(clippy::too_many_arguments)]
 fn run_realtime_live_turn(
-    daemon: &mut voice_protocol::client::DaemonClient,
+    daemon: Option<&mut voice_protocol::client::DaemonClient>,
     stt_model: &mut voice_stt::WhisperModel,
     warm_mic: &listen::WarmMic,
     args: &RealtimeArgs,
-    voice: &str,
-    voxtral: EffectiveVoxtralOptions,
+    voice: Option<&str>,
+    voxtral: Option<EffectiveVoxtralOptions>,
     turn_index: u64,
     response_index: u64,
     event_names: &mut Vec<String>,
@@ -4498,6 +4514,19 @@ fn run_realtime_live_turn(
         ),
     );
 
+    if !args.speaker {
+        return Ok(RealtimeLiveTurnResult {
+            heard_speech: true,
+            partial_events: partial_state.sequence,
+            stt_audio_ms,
+            stt_elapsed_ms,
+            ..Default::default()
+        });
+    }
+
+    let daemon = daemon.expect("speaker daemon set");
+    let voice = voice.expect("speaker voice set");
+    let voxtral = voxtral.expect("speaker voxtral options set");
     let assistant_started = Instant::now();
     let response_text = realtime_assistant_response(args.assistant_backend, &transcription.text);
     let deltas = realtime_text_deltas(&response_text);
@@ -5885,7 +5914,7 @@ fn validate_realtime_event_sequence(
     Ok(())
 }
 
-fn validate_realtime_live_event_sequence(event_names: &[String]) -> Result<(), String> {
+fn validate_realtime_live_event_sequence(event_names: &[String], speaker: bool) -> Result<(), String> {
     let required = [
         "session.started",
         "input_audio_buffer.listening_started",
@@ -5932,6 +5961,16 @@ fn validate_realtime_live_event_sequence(event_names: &[String]) -> Result<(), S
                     "conversation.item.input_audio_transcription.completed",
                 ],
             )?;
+        }
+        if !speaker {
+            ensure_event_order(
+                event_names,
+                &[
+                    "conversation.item.input_audio_transcription.completed",
+                    "session.metrics",
+                ],
+            )?;
+            return Ok(());
         }
         ensure_event_order(
             event_names,
@@ -7595,7 +7634,7 @@ mod tests {
         .map(str::to_string)
         .collect::<Vec<_>>();
 
-        assert!(validate_realtime_live_event_sequence(&events).is_ok());
+        assert!(validate_realtime_live_event_sequence(&events, true).is_ok());
     }
 
     #[test]
@@ -7619,14 +7658,14 @@ mod tests {
         .map(str::to_string)
         .collect::<Vec<_>>();
 
-        assert!(validate_realtime_live_event_sequence(&events).is_ok());
+        assert!(validate_realtime_live_event_sequence(&events, true).is_ok());
 
         let missing_audio_done = events
             .iter()
             .filter(|event| event.as_str() != "response.output_audio.done")
             .cloned()
             .collect::<Vec<_>>();
-        assert!(validate_realtime_live_event_sequence(&missing_audio_done).is_err());
+        assert!(validate_realtime_live_event_sequence(&missing_audio_done, true).is_err());
 
         let late_partial = vec![
             "session.started",
@@ -7646,7 +7685,26 @@ mod tests {
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>();
-        assert!(validate_realtime_live_event_sequence(&late_partial).is_err());
+        assert!(validate_realtime_live_event_sequence(&late_partial, true).is_err());
+    }
+
+    #[test]
+    fn realtime_live_event_sequence_allows_capture_only_completion() {
+        let events = vec![
+            "session.started",
+            "input_audio_buffer.listening_started",
+            "input_audio_buffer.speech_started",
+            "input_audio_buffer.appended",
+            "input_audio_buffer.committed",
+            "conversation.item.input_audio_transcription.partial",
+            "conversation.item.input_audio_transcription.completed",
+            "session.metrics",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+        assert!(validate_realtime_live_event_sequence(&events, false).is_ok());
     }
 
     #[test]

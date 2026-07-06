@@ -1340,7 +1340,7 @@ pub fn load_stt() -> voice_stt::WhisperModel {
 }
 
 /// Run transcription on recorded audio with silence trimming.
-fn transcribe_samples(
+pub(crate) fn transcribe_samples(
     model: &mut voice_stt::WhisperModel,
     samples: &[f32],
     sample_rate: u32,

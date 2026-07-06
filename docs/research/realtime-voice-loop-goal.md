@@ -267,11 +267,12 @@ Before marking the goal complete, provide:
 
 ## Current Next Step
 
-Next implementation slice: add or attempt the live mic/speaker realtime surface
-from the manual verifier, and improve backend/device reporting so metrics can
-distinguish Metal from CPU. The fixture smoke path and deterministic barge-in
-path now have daemon-backed evidence, but the full goal is not complete until
-manual/live surface status and device reporting are addressed.
+Next implementation slice: run the full human two-turn live verifier and decide
+whether to promote daemon `speak(wait=true)` playback metadata into a true
+streaming speaker path. The live CLI surface exists and the short no-speech
+hardware probe can open the foreground mic, but the full goal is not complete
+until a real spoken live turn is verified or an exact hardware/TCC blocker is
+recorded.
 
 ## Worklog
 
@@ -515,3 +516,90 @@ the newest Ollama-class throughput in Candle likely requires separate work:
 - Metal kernels that avoid redundant weight reads during multi-token verify;
 - benchmark harnesses that report prefill, decode, accepted draft tokens,
   context length, quantization, and backend.
+
+### 2026-07-06: Live Realtime CLI Slice
+
+Implemented `voice realtime` as the first live mic/speaker session surface over
+the existing CLI and daemon seams. It:
+
+- requires `--mic --speaker` so unsupported surfaces fail explicitly;
+- opens the microphone in the foreground CLI process through `WarmMic`;
+- loads the Whisper STT model once and reuses it across turns;
+- delegates speaker playback to the daemon with `speak(wait=true)`;
+- supports `--turns`, `--duration`, `--silence-timeout-ms`,
+  `--vad-threshold`, `--noise-multiplier`, and `--calibration-ms`;
+- emits realtime-style JSON events for live listening, input commit,
+  transcription terminal status, assistant text deltas, speaker playback start
+  and done, `response.done`, and `session.metrics`;
+- emits explicit no-speech terminal events so manual hardware probes are still
+  structured when nobody speaks;
+- reports selected backend/device labels in both `realtime` and
+  `realtime-smoke` metrics. On this macOS path the label is
+  `stt=metal(default),tts=metal(default),...`, which reflects the repo's default
+  loader policy rather than daemon-internal runtime introspection.
+
+Verification run:
+
+```bash
+cargo fmt --check -p voice
+cargo check -p voice
+cargo test -p voice realtime -- --nocapture
+```
+
+Result: all passed. Focused realtime tests now cover the live parser shape,
+default device label reporting, no-speech live terminal event ordering, and
+completed-transcription live response ordering.
+
+Daemon-backed smoke was re-run after the metric change:
+
+```bash
+cargo run -p voice --bin voice -- realtime-smoke \
+  --input-audio eval/recordings/001.wav \
+  --assistant-backend echo \
+  --tts-engine kokoro \
+  --sample-rate 48000 \
+  --frame-ms 20 \
+  --json
+```
+
+Result: passed. Key metrics:
+
+- `compute_device`: `stt=metal(default),tts=metal(default),source=daemon_streams`
+- `stt_elapsed_ms`: 360
+- `tts_first_audio_ms`: 296
+- `output_audio_frames`: 159
+- `output_audio_ms`: 3180
+- `response_total_ms`: 696
+
+Short live hardware probe:
+
+```bash
+cargo run -p voice --bin voice -- realtime \
+  --mic \
+  --speaker \
+  --turns 1 \
+  --duration 1 \
+  --json
+```
+
+Result: passed as a no-speech hardware probe. It opened the foreground mic at
+48 kHz, calibrated the noise floor, recorded 1.7 seconds, and emitted
+`conversation.item.input_audio_transcription.failed` with
+`message="no speech detected"`, followed by `session.metrics`. Key metrics:
+
+- `compute_device`: `stt=metal(default),tts=metal(default),source=foreground_stt+daemon_tts`
+- `input_sample_rate`: 48000
+- `stt_audio_ms`: 1749
+- `turns_completed`: 0
+- `no_speech_turns`: 1
+
+This proves the live surface and foreground mic path run on this machine, but
+it is not yet proof of the full requested two-turn human conversation:
+
+```bash
+cargo run -p voice -- realtime --mic --speaker --turns 2 --json
+```
+
+The speaker path currently uses daemon playback completion metadata, not
+streamed PCM deltas. Frame-accurate streamed TTS evidence remains covered by
+`realtime-smoke`.

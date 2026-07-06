@@ -659,6 +659,10 @@ struct StreamArgs {
     #[arg(long = "output", conflicts_with = "raw_output")]
     output: Option<PathBuf>,
 
+    /// Play streamed audio frames as they arrive
+    #[arg(long)]
+    play: bool,
+
     /// Output container/codec for --output. Defaults from extension: .ogg, .opus
     #[arg(long = "format", value_enum, requires = "output")]
     format: Option<StreamOutputFormat>,
@@ -3469,6 +3473,10 @@ fn run_stream(stream_args: StreamArgs) {
         eprintln!("Error: --json cannot be combined with binary stream output to stdout");
         std::process::exit(1);
     }
+    if binary_to_stdout && stream_args.play {
+        eprintln!("Error: --play cannot be combined with binary stream output to stdout");
+        std::process::exit(1);
+    }
 
     let mut output_writer: Option<StreamOutputWriter> = if let Some(path) = &stream_args.raw_output
     {
@@ -3523,6 +3531,17 @@ fn run_stream(stream_args: StreamArgs) {
     let mut frame_count = 0u64;
     let emit_summaries =
         should_emit_stream_summaries(stream_args.json, QUIET.load(Ordering::Relaxed));
+    let mut playback = if stream_args.play {
+        match StreamPlayback::open(stream_args.sample_rate) {
+            Ok(playback) => Some(playback),
+            Err(e) => {
+                eprintln!("voice stream: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
 
     let result = daemon.stream_speak_with_options(
         &text,
@@ -3559,6 +3578,9 @@ fn run_stream(stream_args: StreamArgs) {
                     frame_count += 1;
                     if let Some(writer) = output_writer.as_mut() {
                         writer.write_frame(&frame)?;
+                    }
+                    if let Some(playback) = playback.as_mut() {
+                        playback.append(&frame)?;
                     }
                     if emit_summaries {
                         let line = format!(
@@ -3640,10 +3662,62 @@ fn run_stream(stream_args: StreamArgs) {
             std::process::exit(1);
         });
     }
+    if let Some(playback) = playback {
+        playback.wait_until_empty();
+    }
 
     if frame_count == 0 {
         eprintln!("voice stream produced no audio frames");
         std::process::exit(1);
+    }
+}
+
+struct StreamPlayback {
+    _sink: rodio::MixerDeviceSink,
+    player: rodio::Player,
+    sample_rate: u32,
+}
+
+impl StreamPlayback {
+    fn open(sample_rate: u32) -> Result<Self, String> {
+        use rodio::{DeviceSinkBuilder, Player};
+
+        let mut sink =
+            DeviceSinkBuilder::open_default_sink().map_err(|e| format!("open audio output: {e}"))?;
+        sink.log_on_drop(false);
+        let player = Player::connect_new(sink.mixer());
+        Ok(Self {
+            _sink: sink,
+            player,
+            sample_rate,
+        })
+    }
+
+    fn append(&mut self, frame: &voice_stream::AudioFrame) -> Result<(), String> {
+        use rodio::buffer::SamplesBuffer;
+        use std::num::NonZero;
+
+        if frame.sample_rate != self.sample_rate {
+            return Err(format!(
+                "playback sample rate mismatch: expected {}Hz, got {}Hz",
+                self.sample_rate, frame.sample_rate
+            ));
+        }
+        let channels = NonZero::new(voice_stream::WEBRTC_CHANNELS).unwrap();
+        let rate = NonZero::new(frame.sample_rate).unwrap();
+        self.player
+            .append(SamplesBuffer::new(channels, rate, realtime_frame_samples_f32(frame)));
+        Ok(())
+    }
+
+    fn wait_until_empty(&self) {
+        while !self.player.empty() {
+            if interrupted() {
+                self.player.stop();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 }
 

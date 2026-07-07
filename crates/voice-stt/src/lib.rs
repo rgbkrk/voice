@@ -84,7 +84,7 @@ impl SttBackend {
     pub fn parse(value: &str) -> Result<Self> {
         match value {
             "whisper" => Ok(Self::Whisper),
-            "voxtral" => Ok(Self::Voxtral),
+            "voxtral" | "voxtral-realtime" => Ok(Self::Voxtral),
             other => Err(SttError::Model(format!(
                 "unsupported STT backend {other:?}; expected whisper or voxtral"
             ))),
@@ -264,6 +264,33 @@ pub fn default_model_for_backend(backend: SttBackend) -> &'static str {
     match backend {
         SttBackend::Whisper => builtin::DEFAULT_MODEL_REPO,
         SttBackend::Voxtral => voice_voxtral::REALTIME_DEFAULT_REPO,
+    }
+}
+
+pub fn infer_backend_for_model(path_or_repo: &str) -> SttBackend {
+    let value = path_or_repo.to_ascii_lowercase();
+    if value.contains("voxtral") && (value.contains("realtime") || value.contains("2602")) {
+        SttBackend::Voxtral
+    } else {
+        SttBackend::Whisper
+    }
+}
+
+pub fn resolve_backend_and_model(
+    backend: Option<SttBackend>,
+    path_or_repo: Option<&str>,
+) -> (SttBackend, String) {
+    match (backend, path_or_repo) {
+        (Some(backend), Some(path_or_repo)) => (backend, path_or_repo.to_string()),
+        (Some(backend), None) => (backend, default_model_for_backend(backend).to_string()),
+        (None, Some(path_or_repo)) => (
+            infer_backend_for_model(path_or_repo),
+            path_or_repo.to_string(),
+        ),
+        (None, None) => (
+            SttBackend::Whisper,
+            default_model_for_backend(SttBackend::Whisper).to_string(),
+        ),
     }
 }
 
@@ -653,6 +680,10 @@ mod tests {
     fn parses_stt_backends() {
         assert_eq!(SttBackend::parse("whisper").unwrap(), SttBackend::Whisper);
         assert_eq!(SttBackend::parse("voxtral").unwrap(), SttBackend::Voxtral);
+        assert_eq!(
+            SttBackend::parse("voxtral-realtime").unwrap(),
+            SttBackend::Voxtral
+        );
         assert!(SttBackend::parse("kokoro").is_err());
         assert_eq!(SttBackend::Whisper.as_str(), "whisper");
         assert_eq!(SttBackend::Voxtral.as_str(), "voxtral");
@@ -667,6 +698,54 @@ mod tests {
         assert_eq!(
             default_model_for_backend(SttBackend::Voxtral),
             voice_voxtral::REALTIME_DEFAULT_REPO
+        );
+    }
+
+    #[test]
+    fn infers_backend_from_model_name() {
+        assert_eq!(
+            infer_backend_for_model("mistralai/Voxtral-Mini-4B-Realtime-2602"),
+            SttBackend::Voxtral
+        );
+        assert_eq!(
+            infer_backend_for_model("/models/voxtral-realtime"),
+            SttBackend::Voxtral
+        );
+        assert_eq!(
+            infer_backend_for_model("distil-whisper/distil-large-v3.5"),
+            SttBackend::Whisper
+        );
+    }
+
+    #[test]
+    fn resolves_backend_and_model_together() {
+        assert_eq!(
+            resolve_backend_and_model(None, None),
+            (SttBackend::Whisper, builtin::DEFAULT_MODEL_REPO.to_string())
+        );
+        assert_eq!(
+            resolve_backend_and_model(Some(SttBackend::Voxtral), None),
+            (
+                SttBackend::Voxtral,
+                voice_voxtral::REALTIME_DEFAULT_REPO.to_string()
+            )
+        );
+        assert_eq!(
+            resolve_backend_and_model(None, Some("mistralai/Voxtral-Mini-4B-Realtime-2602")),
+            (
+                SttBackend::Voxtral,
+                "mistralai/Voxtral-Mini-4B-Realtime-2602".to_string()
+            )
+        );
+        assert_eq!(
+            resolve_backend_and_model(
+                Some(SttBackend::Whisper),
+                Some("mistralai/Voxtral-Mini-4B-Realtime-2602")
+            ),
+            (
+                SttBackend::Whisper,
+                "mistralai/Voxtral-Mini-4B-Realtime-2602".to_string()
+            )
         );
     }
 

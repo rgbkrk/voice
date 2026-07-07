@@ -25,14 +25,31 @@ use voice_voxtral::{VoxtralGenerationOptions, VoxtralStreamingConfig, VoxtralTts
 
 const MODEL_REPO: &str = "prince-canuma/Kokoro-82M";
 
-/// STT model the daemon loads. Defaults to the shared
-/// [`voice_stt::builtin::DEFAULT_MODEL_REPO`] but is overridable with the
-/// `STT_MODEL` env var, so the service file can pin a larger/different model
-/// (e.g. `openai/whisper-large-v3`) without recompiling. Mirrors the CLI's
-/// `listen::stt_model_repo`.
-fn stt_repo() -> String {
-    std::env::var("STT_MODEL")
-        .unwrap_or_else(|_| voice_stt::builtin::DEFAULT_MODEL_REPO.to_string())
+/// STT backend/model the daemon loads. Defaults to Whisper with the shared
+/// [`voice_stt::builtin::DEFAULT_MODEL_REPO`] but is overridable with
+/// `STT_BACKEND` and/or `STT_MODEL`, so the service file can pin a larger
+/// Whisper model or the experimental Voxtral Realtime backend without
+/// recompiling.
+fn stt_backend_and_model() -> Result<(voice_stt::SttBackend, String), String> {
+    let backend = match std::env::var("STT_BACKEND") {
+        Ok(value) => Some(voice_stt::SttBackend::parse(value.trim()).map_err(|e| e.to_string())?),
+        Err(_) => None,
+    };
+    let model = std::env::var("STT_MODEL").ok();
+    Ok(voice_stt::resolve_backend_and_model(
+        backend,
+        model.as_deref(),
+    ))
+}
+
+fn load_stt_model() -> Result<voice_stt::SttModel, String> {
+    let (backend, repo) = stt_backend_and_model()?;
+    eprintln!(
+        "voice daemon: loading STT model (backend={}, model={})...",
+        backend.as_str(),
+        repo
+    );
+    voice_stt::load_backend_model(backend, &repo).map_err(|e| format!("stt load_model: {}", e))
 }
 const KOKORO_ENGINE: &str = "kokoro";
 const VOXTRAL_ENGINE: &str = "voxtral";
@@ -118,19 +135,13 @@ pub async fn run(
         start.elapsed().as_secs_f32()
     );
 
-    let stt: Arc<Mutex<Option<voice_stt::WhisperModel>>> = if tts_only {
+    let stt: Arc<Mutex<Option<voice_stt::SttModel>>> = if tts_only {
         eprintln!("voice daemon: skipping eager STT load (TTS-only mode)");
         Arc::new(Mutex::new(None))
     } else {
         // Eagerly load STT model — daemon is long-lived, pay the cost once
-        let repo = stt_repo();
-        eprintln!("voice daemon: loading STT model ({})...", repo);
         let stt_start = Instant::now();
-        match tokio::task::spawn_blocking(move || {
-            voice_stt::load_model(&repo).map_err(|e| format!("stt: {}", e))
-        })
-        .await
-        {
+        match tokio::task::spawn_blocking(load_stt_model).await {
             Ok(Ok(model)) => {
                 eprintln!(
                     "voice daemon: STT model loaded in {:.1}s",
@@ -1148,13 +1159,11 @@ fn send_stream_event(
 
 // -- STT listen ---------------------------------------------------------------
 
-fn ensure_stt(stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>) -> Result<(), String> {
+fn ensure_stt(stt: &Arc<Mutex<Option<voice_stt::SttModel>>>) -> Result<(), String> {
     let mut guard = stt.lock().map_err(|e| format!("stt lock: {}", e))?;
     if guard.is_none() {
-        let repo = stt_repo();
-        eprintln!("voice daemon: loading STT model ({})...", repo);
         let start = Instant::now();
-        let model = voice_stt::load_model(&repo).map_err(|e| format!("stt load_model: {}", e))?;
+        let model = load_stt_model()?;
         eprintln!(
             "voice daemon: STT model loaded in {:.1}s",
             start.elapsed().as_secs_f32()
@@ -1165,7 +1174,7 @@ fn ensure_stt(stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>) -> Result<(), S
 }
 
 fn listen_bounded(
-    stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
+    stt: &Arc<Mutex<Option<voice_stt::SttModel>>>,
     max_duration_ms: Option<u64>,
     cancelled: &Arc<AtomicBool>,
     heard_speech: Option<Arc<AtomicBool>>,
@@ -1206,7 +1215,7 @@ fn listen_bounded(
 }
 
 fn listen(
-    stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
+    stt: &Arc<Mutex<Option<voice_stt::SttModel>>>,
     max_duration_ms: Option<u64>,
     cancelled: &Arc<AtomicBool>,
     heard_speech: Option<Arc<AtomicBool>>,
@@ -1371,7 +1380,8 @@ fn listen(
     let mut guard = stt.lock().map_err(|e| format!("stt lock: {}", e))?;
     let model = guard.as_mut().ok_or("STT model not loaded")?;
 
-    let result = voice_stt::transcribe_audio(model, &samples, sample_rate)
+    let result = model
+        .transcribe_audio(&samples, sample_rate)
         .map_err(|e| format!("transcribe: {}", e))?;
 
     let text = result.text.trim().to_string();
@@ -1387,7 +1397,7 @@ fn listen(
 }
 
 fn transcribe_stream(
-    stt: &Arc<Mutex<Option<voice_stt::WhisperModel>>>,
+    stt: &Arc<Mutex<Option<voice_stt::SttModel>>>,
     stream_id: &str,
     samples: &[f32],
     sample_rate: u32,
@@ -1417,7 +1427,8 @@ fn transcribe_stream(
 
     let mut guard = stt.lock().map_err(|e| format!("stt lock: {}", e))?;
     let model = guard.as_mut().ok_or("STT model not loaded")?;
-    let result = voice_stt::transcribe_audio(model, samples, sample_rate)
+    let result = model
+        .transcribe_audio(samples, sample_rate)
         .map_err(|e| format!("transcribe: {}", e))?;
 
     let text = result.text.trim().to_string();

@@ -149,7 +149,7 @@ struct Session {
     subs: Vec<(String, String)>,
     phoneme_overrides: HashMap<String, String>,
     voice_cache: HashMap<String, candle_core::Tensor>,
-    stt_model: Option<voice_stt::WhisperModel>,
+    stt_model: Option<voice_stt::SttModel>,
     /// Persistent mic — kept open across calls to avoid Bluetooth HFP switches.
     warm_mic: Option<listen::WarmMic>,
     mem_stats: bool,
@@ -850,14 +850,11 @@ fn voice_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> {
     let calibration_ms = p.calibration_ms.unwrap_or(500);
 
     if session.stt_model.is_none() {
-        let repo = std::env::var("STT_MODEL")
-            .unwrap_or_else(|_| voice_stt::builtin::DEFAULT_MODEL_REPO.to_string());
-
         if !QUIET.load(Ordering::Relaxed) {
-            eprintln!("Loading STT model ({repo})...");
+            eprintln!("Loading STT model...");
         }
 
-        let model = voice_stt::load_model(&repo)
+        let model = listen::try_load_stt()
             .map_err(|e| RpcErr::internal(format!("Failed to load STT model: {e}")))?;
 
         session.stt_model = Some(model);

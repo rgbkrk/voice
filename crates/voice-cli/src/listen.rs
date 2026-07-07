@@ -1160,12 +1160,12 @@ pub fn record_continuous(
 /// Consume segments from the recording queue and transcribe each one.
 ///
 /// Spawns a thread that pulls segments, trims silence, resamples, and
-/// runs Whisper inference. Results are sent to the returned receiver.
+/// runs STT inference. Results are sent to the returned receiver.
 ///
 /// The model is moved into this thread because single-threaded access is
 /// required by the decoder state.
 pub fn transcribe_segments(
-    mut model: voice_stt::WhisperModel,
+    mut model: voice_stt::SttModel,
     segments: mpsc::Receiver<Segment>,
 ) -> mpsc::Receiver<SegmentResult> {
     let (tx, rx) = mpsc::channel::<SegmentResult>();
@@ -1182,7 +1182,7 @@ pub fn transcribe_segments(
             }
 
             let t0 = Instant::now();
-            let result = voice_stt::transcribe_audio(&mut model, &trimmed, segment.sample_rate);
+            let result = model.transcribe_audio(&trimmed, segment.sample_rate);
 
             let transcribe_ms = t0.elapsed().as_millis() as u64;
 
@@ -1217,7 +1217,11 @@ pub fn transcribe_segments(
 ///
 /// Entry point for `voice listen --continuous`.
 pub fn listen_continuous() {
-    let model = load_stt();
+    listen_continuous_with_options(SttLoadOptions::default());
+}
+
+pub fn listen_continuous_with_options(options: SttLoadOptions) {
+    let model = load_stt_with_options(options);
 
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("Listening continuously... (Ctrl+C to stop)\n");
@@ -1268,7 +1272,7 @@ pub fn listen_continuous() {
 ///
 /// Bluetooth microphones (e.g. AirPods) can take ~0.5-1s before audio
 /// actually flows, producing a block of zeros at the start. Whisper
-/// is sensitive to the silence-to-speech ratio, especially on short
+/// STT is sensitive to the silence-to-speech ratio, especially on short
 /// recordings — trimming silence dramatically improves accuracy.
 fn trim_silence(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     if samples.is_empty() {
@@ -1367,44 +1371,84 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 
 // ── STT model helpers ──────────────────────────────────────────────────
 
-/// STT model the CLI loads. Defaults to the shared
+#[derive(Debug, Clone, Default)]
+pub struct SttLoadOptions {
+    pub backend: Option<voice_stt::SttBackend>,
+    pub model: Option<String>,
+    pub max_new_tokens: Option<usize>,
+}
+
+impl SttLoadOptions {
+    pub fn is_explicit(&self) -> bool {
+        self.backend.is_some() || self.model.is_some() || self.max_new_tokens.is_some()
+    }
+}
+
+/// STT backend/model the CLI loads. Defaults to Whisper with the shared
 /// [`voice_stt::builtin::DEFAULT_MODEL_REPO`] (distil-large-v3.5). Override with
-/// `STT_MODEL`, e.g. `distil-whisper/distil-medium.en` for smaller/faster or
-/// `openai/whisper-large-v3` for multilingual.
-fn stt_model_repo() -> String {
-    std::env::var("STT_MODEL")
-        .unwrap_or_else(|_| voice_stt::builtin::DEFAULT_MODEL_REPO.to_string())
+/// `STT_BACKEND=voxtral` and/or `STT_MODEL`, or pass explicit CLI options.
+fn resolve_stt_load_options(options: &SttLoadOptions) -> Result<(voice_stt::SttBackend, String), String> {
+    let env_backend = match std::env::var("STT_BACKEND") {
+        Ok(value) => Some(voice_stt::SttBackend::parse(value.trim()).map_err(|e| e.to_string())?),
+        Err(_) => None,
+    };
+    let env_model = std::env::var("STT_MODEL").ok();
+    let backend = options.backend.or(env_backend);
+    let model = options.model.as_deref().or(env_model.as_deref());
+    Ok(voice_stt::resolve_backend_and_model(backend, model))
 }
 
 /// Load STT model. Prints progress to stderr unless quiet.
 ///
 /// The tokenizer is loaded internally by the model — no separate load needed.
-pub fn load_stt() -> voice_stt::WhisperModel {
-    let repo = stt_model_repo();
+pub fn load_stt() -> voice_stt::SttModel {
+    load_stt_with_options(SttLoadOptions::default())
+}
 
-    if !QUIET.load(Ordering::Relaxed) {
-        eprintln!("Loading speech-to-text model ({repo})...");
-    }
-
-    let model = match voice_stt::load_model(&repo) {
-        Ok(m) => m,
+pub fn load_stt_with_options(options: SttLoadOptions) -> voice_stt::SttModel {
+    match try_load_stt_with_options(options) {
+        Ok(model) => model,
         Err(e) => {
             eprintln!("Failed to load STT model: {e}");
             eprintln!("Model weights will be downloaded from HuggingFace on first run.");
             std::process::exit(1);
         }
+    }
+}
+
+pub fn try_load_stt() -> Result<voice_stt::SttModel, String> {
+    try_load_stt_with_options(SttLoadOptions::default())
+}
+
+pub fn try_load_stt_with_options(options: SttLoadOptions) -> Result<voice_stt::SttModel, String> {
+    let (backend, repo) = match resolve_stt_load_options(&options) {
+        Ok(resolved) => resolved,
+        Err(e) => return Err(format!("invalid STT configuration: {e}")),
     };
+
+    if !QUIET.load(Ordering::Relaxed) {
+        eprintln!(
+            "Loading speech-to-text model (backend={}, model={repo})...",
+            backend.as_str()
+        );
+    }
+
+    let mut model =
+        voice_stt::load_backend_model(backend, &repo).map_err(|e| e.to_string())?;
+    if let Some(max_new_tokens) = options.max_new_tokens {
+        model.set_max_new_tokens(max_new_tokens);
+    }
 
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("Model loaded. Ready to listen.\n");
     }
 
-    model
+    Ok(model)
 }
 
 /// Run transcription on recorded audio with silence trimming.
 pub(crate) fn transcribe_samples(
-    model: &mut voice_stt::WhisperModel,
+    model: &mut voice_stt::SttModel,
     samples: &[f32],
     sample_rate: u32,
 ) -> Option<voice_stt::TranscribeResult> {
@@ -1414,7 +1458,7 @@ pub(crate) fn transcribe_samples(
 /// Run transcription on recorded audio with silence trimming, suppressing
 /// best-effort partial failures.
 pub(crate) fn transcribe_samples_best_effort(
-    model: &mut voice_stt::WhisperModel,
+    model: &mut voice_stt::SttModel,
     samples: &[f32],
     sample_rate: u32,
 ) -> Option<voice_stt::TranscribeResult> {
@@ -1422,7 +1466,7 @@ pub(crate) fn transcribe_samples_best_effort(
 }
 
 fn transcribe_samples_inner(
-    model: &mut voice_stt::WhisperModel,
+    model: &mut voice_stt::SttModel,
     samples: &[f32],
     sample_rate: u32,
     report_failures: bool,
@@ -1451,7 +1495,7 @@ fn transcribe_samples_inner(
         eprintln!("Transcribing {:.1}s of audio...", trimmed_duration);
     }
 
-    match voice_stt::transcribe_audio(model, &trimmed, sample_rate) {
+    match model.transcribe_audio(&trimmed, sample_rate) {
         Ok(r) => Some(r),
         Err(e) => {
             if report_failures {
@@ -1468,7 +1512,11 @@ fn transcribe_samples_inner(
 ///
 /// Entry point for `voice listen`.
 pub fn listen_and_transcribe() {
-    let mut model = load_stt();
+    listen_and_transcribe_with_options(SttLoadOptions::default());
+}
+
+pub fn listen_and_transcribe_with_options(options: SttLoadOptions) {
+    let mut model = load_stt_with_options(options);
 
     let (samples, sample_rate) = match record_until_interrupt() {
         Ok(r) => r,
@@ -1500,7 +1548,7 @@ pub fn listen_and_transcribe() {
 /// Used by the JSON-RPC `listen` method. Returns `None` if no speech
 /// was detected or transcription failed.
 pub fn listen_and_transcribe_vad(
-    model: &mut voice_stt::WhisperModel,
+    model: &mut voice_stt::SttModel,
     max_duration_ms: u64,
     silence_timeout_ms: u64,
     silence_threshold: f32,
@@ -1532,7 +1580,7 @@ pub fn listen_and_transcribe_vad(
 ///
 /// The mic stays open after recording — caller retains ownership.
 pub fn listen_and_transcribe_vad_warm(
-    model: &mut voice_stt::WhisperModel,
+    model: &mut voice_stt::SttModel,
     warm_mic: &WarmMic,
     max_duration_ms: u64,
     silence_timeout_ms: u64,
@@ -1565,7 +1613,11 @@ pub fn listen_and_transcribe_vad_warm(
 ///
 /// Entry point for `voice --transcribe <file>`.
 pub fn transcribe_file(path: &Path) {
-    let mut model = load_stt();
+    transcribe_file_with_options(path, SttLoadOptions::default());
+}
+
+pub fn transcribe_file_with_options(path: &Path, options: SttLoadOptions) {
+    let mut model = load_stt_with_options(options);
 
     if !QUIET.load(Ordering::Relaxed) {
         eprintln!("Transcribing: {}", path.display());
@@ -1589,7 +1641,7 @@ pub fn transcribe_file(path: &Path) {
         );
     }
 
-    let result = match voice_stt::transcribe_audio(&mut model, &audio.samples, audio.sample_rate) {
+    let result = match model.transcribe_audio(&audio.samples, audio.sample_rate) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Transcription failed: {e}");

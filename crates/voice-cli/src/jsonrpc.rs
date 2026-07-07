@@ -180,7 +180,7 @@ struct Session {
     /// Cache of loaded voices so we don't re-load on every `speak`.
     voice_cache: HashMap<String, candle_core::Tensor>,
     /// Lazily-loaded STT model (only initialized on first `listen` call).
-    stt_model: Option<voice_stt::WhisperModel>,
+    stt_model: Option<voice_stt::SttModel>,
 }
 
 impl Session {
@@ -429,14 +429,11 @@ fn handle_listen(session: &mut Session, params: Value) -> Result<Value, RpcErr> 
 
     // Lazily load STT model on first listen call
     if session.stt_model.is_none() {
-        let repo = std::env::var("STT_MODEL")
-            .unwrap_or_else(|_| voice_stt::builtin::DEFAULT_MODEL_REPO.to_string());
-
         if !QUIET.load(Ordering::Relaxed) {
-            eprintln!("Loading STT model ({repo})...");
+            eprintln!("Loading STT model...");
         }
 
-        let model = voice_stt::load_model(&repo)
+        let model = listen::try_load_stt()
             .map_err(|e| RpcErr::internal(format!("Failed to load STT model: {e}")))?;
 
         session.stt_model = Some(model);

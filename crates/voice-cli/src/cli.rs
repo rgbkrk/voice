@@ -300,6 +300,21 @@ impl TtsEngine {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SttBackendArg {
+    Whisper,
+    Voxtral,
+}
+
+impl SttBackendArg {
+    fn to_backend(self) -> voice_stt::SttBackend {
+        match self {
+            Self::Whisper => voice_stt::SttBackend::Whisper,
+            Self::Voxtral => voice_stt::SttBackend::Voxtral,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum RealtimeAssistantBackend {
     Echo,
 }
@@ -397,6 +412,24 @@ fn validate_voice_for_engine(engine: TtsEngine, voice: &str) -> Result<(), Strin
     } else {
         Err(format!("Unknown {} voice: {}", engine.as_str(), voice))
     }
+}
+
+fn stt_load_options(
+    backend: Option<SttBackendArg>,
+    model: Option<String>,
+    max_new_tokens: Option<usize>,
+) -> listen::SttLoadOptions {
+    listen::SttLoadOptions {
+        backend: backend.map(SttBackendArg::to_backend),
+        model,
+        max_new_tokens,
+    }
+}
+
+fn stt_selection_is_explicit(options: &listen::SttLoadOptions) -> bool {
+    options.is_explicit()
+        || std::env::var_os("STT_BACKEND").is_some()
+        || std::env::var_os("STT_MODEL").is_some()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1076,12 +1109,36 @@ struct ListenArgs {
     /// Segments are split on silence and transcribed in the background.
     #[arg(long)]
     continuous: bool,
+
+    /// STT backend to use locally or via STT_BACKEND. Defaults to whisper.
+    #[arg(long = "stt-backend", value_enum)]
+    stt_backend: Option<SttBackendArg>,
+
+    /// STT model path or HuggingFace repo. Defaults from the selected backend.
+    #[arg(long = "stt-model")]
+    stt_model: Option<String>,
+
+    /// Maximum new text tokens for Voxtral Realtime STT generation.
+    #[arg(long = "stt-max-new-tokens")]
+    stt_max_new_tokens: Option<usize>,
 }
 
 #[derive(clap::Args, Debug)]
 struct TranscribeArgs {
     /// Path to an audio file
     file: PathBuf,
+
+    /// STT backend to use locally or via STT_BACKEND. Defaults to whisper.
+    #[arg(long = "stt-backend", value_enum)]
+    stt_backend: Option<SttBackendArg>,
+
+    /// STT model path or HuggingFace repo. Defaults from the selected backend.
+    #[arg(long = "stt-model")]
+    stt_model: Option<String>,
+
+    /// Maximum new text tokens for Voxtral Realtime STT generation.
+    #[arg(long = "stt-max-new-tokens")]
+    stt_max_new_tokens: Option<usize>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -1713,33 +1770,55 @@ fn main() {
 
     match args.command {
         Some(Command::Listen(listen_args)) => {
+            let stt_options = stt_load_options(
+                listen_args.stt_backend,
+                listen_args.stt_model,
+                listen_args.stt_max_new_tokens,
+            );
             if listen_args.continuous {
-                listen::listen_continuous();
-            } else if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
-                match daemon.listen(None) {
-                    Ok(resp) => {
-                        if let Some(result) = resp.result {
-                            if let Some(r) = result.get("result").and_then(|v| v.as_str()) {
-                                println!("{}", r);
+                if stt_selection_is_explicit(&stt_options) {
+                    listen::listen_continuous_with_options(stt_options);
+                } else {
+                    listen::listen_continuous();
+                }
+            } else if !stt_selection_is_explicit(&stt_options) {
+                if let Some(mut daemon) = voice_protocol::client::DaemonClient::connect() {
+                    match daemon.listen(None) {
+                        Ok(resp) => {
+                            if let Some(result) = resp.result {
+                                if let Some(r) = result.get("result").and_then(|v| v.as_str()) {
+                                    println!("{}", r);
+                                }
+                            } else if let Some(err) = resp.error {
+                                eprintln!("Daemon error: {}", err.message);
                             }
-                        } else if let Some(err) = resp.error {
-                            eprintln!("Daemon error: {}", err.message);
+                        }
+                        Err(e) => {
+                            eprintln!("Daemon error: {e}, falling back to local");
+                            listen::listen_and_transcribe();
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Daemon error: {e}, falling back to local");
-                        listen::listen_and_transcribe();
-                    }
+                } else {
+                    listen::listen_and_transcribe();
                 }
             } else {
-                listen::listen_and_transcribe();
+                listen::listen_and_transcribe_with_options(stt_options);
             }
         }
         Some(Command::Converse(converse_args)) => {
             run_converse(converse_args);
         }
         Some(Command::Transcribe(transcribe_args)) => {
-            listen::transcribe_file(&transcribe_args.file);
+            let stt_options = stt_load_options(
+                transcribe_args.stt_backend,
+                transcribe_args.stt_model,
+                transcribe_args.stt_max_new_tokens,
+            );
+            if stt_selection_is_explicit(&stt_options) {
+                listen::transcribe_file_with_options(&transcribe_args.file, stt_options);
+            } else {
+                listen::transcribe_file(&transcribe_args.file);
+            }
         }
         Some(Command::Serve(serve_args)) => {
             run_serve(serve_args);
@@ -4343,9 +4422,10 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
     );
 
     let mut stt_model = listen::load_stt();
+    let stt_backend = stt_model.backend();
     let warm_mic = listen::WarmMic::open().map_err(|e| format!("open microphone: {e}"))?;
     let mut metrics = RealtimeLiveMetrics {
-        stt_backend: "foreground_whisper_vad".to_string(),
+        stt_backend: format!("foreground_{}_vad", stt_backend.as_str()),
         tts_backend: if args.speaker {
             format!("daemon_stream_speak/{}", args.tts_engine.as_str())
         } else {
@@ -4436,7 +4516,7 @@ fn run_realtime_inner(args: RealtimeArgs) -> Result<(), String> {
 #[allow(clippy::too_many_arguments)]
 fn run_realtime_live_turn(
     daemon: Option<&mut voice_protocol::client::DaemonClient>,
-    stt_model: &mut voice_stt::WhisperModel,
+    stt_model: &mut voice_stt::SttModel,
     warm_mic: &listen::WarmMic,
     args: &RealtimeArgs,
     voice: Option<&str>,
@@ -4681,7 +4761,7 @@ fn emit_realtime_live_speech_started(
 }
 
 fn maybe_emit_realtime_partial_transcription(
-    stt_model: &mut voice_stt::WhisperModel,
+    stt_model: &mut voice_stt::SttModel,
     args: &RealtimeArgs,
     event_names: &mut Vec<String>,
     turn_index: u64,
@@ -6484,7 +6564,7 @@ fn run_converse(args: ConverseArgs) {
 }
 
 fn finish_converse_listen(
-    stt_handle: std::thread::JoinHandle<voice_stt::WhisperModel>,
+    stt_handle: std::thread::JoinHandle<voice_stt::SttModel>,
     duration: u64,
 ) {
     // STT should be loaded by now (TTS playback took seconds)
@@ -7342,6 +7422,51 @@ mod tests {
         assert!(!should_emit_stream_summaries(true, false));
         assert!(!should_emit_stream_summaries(false, true));
         assert!(!should_emit_stream_summaries(true, true));
+    }
+
+    #[test]
+    fn parses_stt_backend_options_for_listen_and_transcribe() {
+        let listen = Args::parse_from([
+            "voice",
+            "listen",
+            "--stt-backend",
+            "voxtral",
+            "--stt-model",
+            "mistralai/Voxtral-Mini-4B-Realtime-2602",
+            "--stt-max-new-tokens",
+            "64",
+        ]);
+        let Some(Command::Listen(listen)) = listen.command else {
+            panic!("expected listen command");
+        };
+        assert_eq!(listen.stt_backend, Some(SttBackendArg::Voxtral));
+        assert_eq!(
+            listen.stt_model.as_deref(),
+            Some("mistralai/Voxtral-Mini-4B-Realtime-2602")
+        );
+        assert_eq!(listen.stt_max_new_tokens, Some(64));
+
+        let transcribe = Args::parse_from([
+            "voice",
+            "transcribe",
+            "--stt-backend",
+            "whisper",
+            "--stt-model",
+            "distil-whisper/distil-large-v3.5",
+            "--stt-max-new-tokens",
+            "32",
+            "/tmp/recording.wav",
+        ]);
+        let Some(Command::Transcribe(transcribe)) = transcribe.command else {
+            panic!("expected transcribe command");
+        };
+        assert_eq!(transcribe.file, PathBuf::from("/tmp/recording.wav"));
+        assert_eq!(transcribe.stt_backend, Some(SttBackendArg::Whisper));
+        assert_eq!(
+            transcribe.stt_model.as_deref(),
+            Some("distil-whisper/distil-large-v3.5")
+        );
+        assert_eq!(transcribe.stt_max_new_tokens, Some(32));
     }
 
     #[test]

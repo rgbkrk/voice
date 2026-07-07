@@ -17,6 +17,7 @@ mod prompt;
 mod realtime;
 mod realtime_audio;
 mod realtime_inference;
+mod realtime_session;
 mod realtime_stream;
 mod streaming;
 mod text;
@@ -80,6 +81,7 @@ pub use realtime_inference::{
     VoxtralRealtimeTokenEmbeddings, VoxtralRealtimeTranscriber, VoxtralRealtimeTranscription,
     VoxtralRealtimeTranscriptionOptions,
 };
+pub use realtime_session::{VoxtralRealtimeStreamSession, VoxtralRealtimeStreamStep};
 pub use realtime_stream::{
     VoxtralRealtimeStreamBuffer, VoxtralRealtimeStreamConfig, VoxtralRealtimeStreamWindow,
 };

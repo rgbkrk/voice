@@ -1398,6 +1398,18 @@ fn resolve_stt_load_options(options: &SttLoadOptions) -> Result<(voice_stt::SttB
     Ok(voice_stt::resolve_backend_and_model(backend, model))
 }
 
+fn default_stt_device_label() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "metal:0"
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        "cpu"
+    }
+}
+
 /// Load STT model. Prints progress to stderr unless quiet.
 ///
 /// The tokenizer is loaded internally by the model — no separate load needed.
@@ -1433,14 +1445,20 @@ pub fn try_load_stt_with_options(options: SttLoadOptions) -> Result<voice_stt::S
         );
     }
 
-    let mut model =
-        voice_stt::load_backend_model(backend, &repo).map_err(|e| e.to_string())?;
+    let device_label = default_stt_device_label();
+    let load_start = Instant::now();
+    let device = voice_stt::default_stt_device().map_err(|e| e.to_string())?;
+    let mut model = voice_stt::load_backend_model_on_device(backend, &repo, device)
+        .map_err(|e| e.to_string())?;
     if let Some(max_new_tokens) = options.max_new_tokens {
         model.set_max_new_tokens(max_new_tokens);
     }
 
     if !QUIET.load(Ordering::Relaxed) {
-        eprintln!("Model loaded. Ready to listen.\n");
+        eprintln!(
+            "Model loaded on {device_label} in {:.2}s. Ready to listen.\n",
+            load_start.elapsed().as_secs_f32()
+        );
     }
 
     Ok(model)

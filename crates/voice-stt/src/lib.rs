@@ -78,6 +78,35 @@ pub enum SttModel {
 pub struct VoxtralRealtimeSttModel {
     transcriber: voice_voxtral::VoxtralRealtimeTranscriber,
     options: voice_voxtral::VoxtralRealtimeTranscriptionOptions,
+    stream_config: voice_voxtral::VoxtralRealtimeStreamConfig,
+}
+
+/// A single native streaming STT decode step.
+#[derive(Debug, Clone)]
+pub struct StreamTranscribeStep {
+    /// Full decoded transcript so far.
+    pub text: String,
+    /// Token generated at this streaming step.
+    pub token: u32,
+    /// Token IDs generated so far, excluding backend prompt tokens.
+    pub tokens: Vec<u32>,
+    /// Whether the backend generated its end-of-sequence token.
+    pub reached_eos: bool,
+    /// Model input sample rate for this streaming session.
+    pub sample_rate: u32,
+    /// Number of 16 kHz audio samples pushed into the model stream so far.
+    pub pushed_samples: usize,
+}
+
+/// Backend-neutral native streaming STT session.
+pub enum SttStreamSession<'a> {
+    Voxtral(VoxtralRealtimeSttStreamSession<'a>),
+}
+
+/// Native Voxtral Realtime STT streaming session.
+pub struct VoxtralRealtimeSttStreamSession<'a> {
+    session: voice_voxtral::VoxtralRealtimeStreamSession<'a>,
+    pushed_samples: usize,
 }
 
 impl SttBackend {
@@ -123,6 +152,19 @@ impl SttModel {
             model.set_max_new_tokens(max_new_tokens);
         }
     }
+
+    pub fn supports_native_streaming(&self) -> bool {
+        matches!(self, Self::Voxtral(_))
+    }
+
+    pub fn stream_session(&self) -> Result<SttStreamSession<'_>> {
+        match self {
+            Self::Whisper(_) => Err(SttError::Model(
+                "native streaming STT is not supported for Whisper".into(),
+            )),
+            Self::Voxtral(model) => model.stream_session().map(SttStreamSession::Voxtral),
+        }
+    }
 }
 
 impl VoxtralRealtimeSttModel {
@@ -154,6 +196,98 @@ impl VoxtralRealtimeSttModel {
             tokens,
             sample_rate: voice_voxtral::REALTIME_SAMPLE_RATE,
         })
+    }
+
+    pub fn stream_session(&self) -> Result<VoxtralRealtimeSttStreamSession<'_>> {
+        let session = self
+            .transcriber
+            .stream_session(self.stream_config.clone(), self.options)
+            .map_err(|e| SttError::Model(e.to_string()))?;
+        Ok(VoxtralRealtimeSttStreamSession {
+            session,
+            pushed_samples: 0,
+        })
+    }
+}
+
+impl<'a> SttStreamSession<'a> {
+    pub fn push_audio(&mut self, samples: &[f32], sample_rate: u32) -> Result<()> {
+        match self {
+            Self::Voxtral(session) => session.push_audio(samples, sample_rate),
+        }
+    }
+
+    pub fn finish(&mut self) {
+        match self {
+            Self::Voxtral(session) => session.finish(),
+        }
+    }
+
+    pub fn next_step(&mut self) -> Result<Option<StreamTranscribeStep>> {
+        match self {
+            Self::Voxtral(session) => session.next_step(),
+        }
+    }
+
+    pub fn drain_ready(&mut self) -> Result<Vec<StreamTranscribeStep>> {
+        let mut steps = Vec::new();
+        while let Some(step) = self.next_step()? {
+            let reached_eos = step.reached_eos;
+            steps.push(step);
+            if reached_eos {
+                break;
+            }
+        }
+        Ok(steps)
+    }
+}
+
+impl VoxtralRealtimeSttStreamSession<'_> {
+    pub fn push_audio(&mut self, samples: &[f32], sample_rate: u32) -> Result<()> {
+        let samples = if sample_rate != voice_voxtral::REALTIME_SAMPLE_RATE {
+            resample_linear(samples, sample_rate, voice_voxtral::REALTIME_SAMPLE_RATE)
+        } else {
+            samples.to_vec()
+        };
+        self.pushed_samples = self.pushed_samples.saturating_add(samples.len());
+        self.session
+            .push_audio_16khz(&samples)
+            .map_err(|e| SttError::Model(e.to_string()))
+    }
+
+    pub fn finish(&mut self) {
+        self.session.finish();
+    }
+
+    pub fn next_step(&mut self) -> Result<Option<StreamTranscribeStep>> {
+        let Some(step) = self
+            .session
+            .next_step()
+            .map_err(|e| SttError::Model(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let token = u32::try_from(step.token)
+            .map_err(|_| SttError::Model(format!("Voxtral token id {} exceeds u32", step.token)))?;
+        let tokens = self
+            .session
+            .output_tokens()
+            .iter()
+            .copied()
+            .map(|token| {
+                u32::try_from(token)
+                    .map_err(|_| SttError::Model(format!("Voxtral token id {token} exceeds u32")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Some(StreamTranscribeStep {
+            text: step.text,
+            token,
+            tokens,
+            reached_eos: step.reached_eos,
+            sample_rate: voice_voxtral::REALTIME_SAMPLE_RATE,
+            pushed_samples: self.pushed_samples,
+        }))
     }
 }
 
@@ -321,6 +455,15 @@ fn load_voxtral_realtime_model_on_device(
     let delay_tokens = model
         .default_delay_tokens()
         .map_err(|e| SttError::Model(e.to_string()))?;
+    let stream_config =
+        voice_voxtral::VoxtralRealtimeStreamConfig::from_metadata_with_delay_tokens(
+            model.config(),
+            model
+                .tokenizer()
+                .ok_or_else(|| SttError::Model("missing realtime tekken tokenizer".into()))?,
+            delay_tokens,
+        )
+        .map_err(|e| SttError::Model(e.to_string()))?;
     let dtype = default_voxtral_dtype(&device);
     let transcriber = model
         .load_transcriber(dtype, &device)
@@ -331,6 +474,7 @@ fn load_voxtral_realtime_model_on_device(
             delay_tokens,
             max_new_tokens: usize::MAX,
         },
+        stream_config,
     })
 }
 
@@ -757,6 +901,63 @@ mod tests {
         let samples = vec![0.0f32; 16_000];
         let result = transcribe_audio(&mut model, &samples, 16_000).unwrap();
         assert_eq!(result.sample_rate, 16_000);
+    }
+
+    #[test]
+    #[ignore = "loads Voxtral Realtime weights and runs native streaming inference"]
+    fn voxtral_native_stream_smoke_transcribes_eval_recording() {
+        let device = default_stt_device().unwrap();
+        let mut model = load_backend_model_on_device(
+            SttBackend::Voxtral,
+            default_model_for_backend(SttBackend::Voxtral),
+            device,
+        )
+        .unwrap();
+        model.set_max_new_tokens(128);
+
+        let audio_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../eval/recordings/002.wav")
+            .canonicalize()
+            .unwrap();
+        let audio = load_audio_file(&audio_path).unwrap();
+        let mut stream = model.stream_session().unwrap();
+        let chunk_samples = ((audio.sample_rate as usize) * 80 / 1_000).max(1);
+        let mut latest = None;
+
+        for chunk in audio.samples.chunks(chunk_samples) {
+            stream.push_audio(chunk, audio.sample_rate).unwrap();
+            for step in stream.drain_ready().unwrap() {
+                if !step.text.trim().is_empty() {
+                    latest = Some(step.text);
+                }
+                if step.reached_eos {
+                    break;
+                }
+            }
+        }
+
+        stream.finish();
+        for step in stream.drain_ready().unwrap() {
+            if !step.text.trim().is_empty() {
+                latest = Some(step.text);
+            }
+            if step.reached_eos {
+                break;
+            }
+        }
+
+        let transcript = latest.unwrap_or_default();
+        eprintln!("voxtral native stream transcript: {transcript}");
+        assert!(
+            !transcript.trim().is_empty(),
+            "Voxtral native stream produced no transcript for {}",
+            audio_path.display()
+        );
+        assert!(
+            transcript.to_ascii_lowercase().contains("seashore"),
+            "unexpected Voxtral native stream transcript for {}: {transcript:?}",
+            audio_path.display()
+        );
     }
 
     #[test]

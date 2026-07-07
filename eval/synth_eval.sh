@@ -19,7 +19,7 @@ echo "=== Synthetic STT Evaluation ==="
 echo "Using: $VOICE"
 echo ""
 
-# Models to test
+# Rust voice STT models to test
 MODELS=(
     "distil-whisper/distil-large-v3"
     "distil-whisper/distil-medium.en"
@@ -50,3 +50,14 @@ for model in "${MODELS[@]}"; do
         --json-out "$RESULTS_DIR/synth_${safe_model}.json"
     echo ""
 done
+
+if [ "${PARAKEET_MLX:-0}" = "1" ]; then
+    model="${PARAKEET_MODEL:-mlx-community/parakeet-tdt-0.6b-v3}"
+    safe_model="${model//\//_}"
+    python3 eval/evaluate.py \
+        --recordings "$TMPDIR" \
+        --engine parakeet-mlx \
+        --model "$model" \
+        --json-out "$RESULTS_DIR/synth_parakeet_mlx_${safe_model}.json"
+    echo ""
+fi

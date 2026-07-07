@@ -12,7 +12,11 @@ import subprocess
 import time
 import wave
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Sequence
+
+DEFAULT_VOICE_MODEL = "distil-whisper/distil-medium.en"
+DEFAULT_PARAKEET_MLX_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 
 
 def normalize_text(text: str) -> str:
@@ -140,7 +144,7 @@ def recording_pairs(recordings: Path) -> list[tuple[str, Path, Path]]:
     return pairs
 
 
-def transcribe(voice: str, model: str, wav_path: Path) -> tuple[str, float, str | None]:
+def transcribe_voice(voice: str, model: str, wav_path: Path) -> tuple[str, float, str | None]:
     env = os.environ.copy()
     env["STT_MODEL"] = model
     start = time.perf_counter()
@@ -163,11 +167,108 @@ def transcribe(voice: str, model: str, wav_path: Path) -> tuple[str, float, str 
     return transcript, elapsed, None
 
 
-def evaluate(recordings: Path, voice: str, model: str) -> dict[str, object]:
+def parakeet_txt_output_path(output_dir: Path, wav_path: Path) -> Path:
+    return output_dir / f"{wav_path.stem}.txt"
+
+
+def build_parakeet_mlx_command(
+    parakeet_bin: str,
+    model: str,
+    wav_path: Path,
+    output_dir: Path,
+    cache_dir: Path | None,
+) -> list[str]:
+    command = [
+        parakeet_bin,
+        str(wav_path),
+        "--model",
+        model,
+        "--output-dir",
+        str(output_dir),
+        "--output-format",
+        "txt",
+        "--output-template",
+        "{filename}",
+    ]
+    if cache_dir is not None:
+        command.extend(["--cache-dir", str(cache_dir)])
+    return command
+
+
+def transcribe_parakeet_mlx(
+    parakeet_bin: str,
+    model: str,
+    wav_path: Path,
+    cache_dir: Path | None,
+) -> tuple[str, float, str | None]:
+    start = time.perf_counter()
+    with TemporaryDirectory(prefix="voice-parakeet-mlx-") as tmpdir:
+        output_dir = Path(tmpdir)
+        command = build_parakeet_mlx_command(
+            parakeet_bin,
+            model,
+            wav_path,
+            output_dir,
+            cache_dir,
+        )
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as err:
+            return "", time.perf_counter() - start, str(err)
+
+        elapsed = time.perf_counter() - start
+        output_path = parakeet_txt_output_path(output_dir, wav_path)
+        transcript = ""
+        if output_path.exists():
+            transcript = output_path.read_text(encoding="utf-8").strip()
+        if completed.returncode != 0:
+            message = completed.stderr.strip() or f"exit status {completed.returncode}"
+            return transcript, elapsed, message
+        if not output_path.exists():
+            message = f"expected Parakeet MLX output not found: {output_path}"
+            return transcript, elapsed, message
+        return transcript, elapsed, None
+
+
+def transcribe(
+    engine: str,
+    voice: str,
+    parakeet_bin: str,
+    model: str,
+    wav_path: Path,
+    parakeet_cache_dir: Path | None,
+) -> tuple[str, float, str | None]:
+    if engine == "voice":
+        return transcribe_voice(voice, model, wav_path)
+    if engine == "parakeet-mlx":
+        return transcribe_parakeet_mlx(parakeet_bin, model, wav_path, parakeet_cache_dir)
+    raise ValueError(f"unsupported engine: {engine}")
+
+
+def evaluate(
+    recordings: Path,
+    engine: str,
+    voice: str,
+    parakeet_bin: str,
+    model: str,
+    parakeet_cache_dir: Path | None,
+) -> dict[str, object]:
     items = []
     for item_id, text_path, wav_path in recording_pairs(recordings):
         expected = text_path.read_text(encoding="utf-8").strip()
-        transcript, elapsed_seconds, error = transcribe(voice, model, wav_path)
+        transcript, elapsed_seconds, error = transcribe(
+            engine,
+            voice,
+            parakeet_bin,
+            model,
+            wav_path,
+            parakeet_cache_dir,
+        )
         duration_seconds = wav_duration_seconds(wav_path)
         score = score_pair(expected, transcript)
         item = {
@@ -198,8 +299,11 @@ def evaluate(recordings: Path, voice: str, model: str) -> dict[str, object]:
     )
 
     return {
+        "engine": engine,
         "model": model,
         "voice_binary": voice,
+        "parakeet_binary": parakeet_bin,
+        "parakeet_cache_dir": str(parakeet_cache_dir) if parakeet_cache_dir else None,
         "recordings": str(recordings),
         "total": total,
         "exact": exact,
@@ -223,7 +327,7 @@ def print_summary(summary: dict[str, object]) -> None:
     mean_cer = float(summary["mean_cer"])
     rtf = summary["rtf"]
 
-    print(f"=== Model: {summary['model']} ===")
+    print(f"=== Engine: {summary['engine']} | Model: {summary['model']} ===")
     for item in summary["items"]:
         status = "PASS" if item["exact"] else f"WER={float(item['wer']) * 100:.1f}%"
         print(f"  {item['id']} [{status}]")
@@ -246,15 +350,46 @@ def print_summary(summary: dict[str, object]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--recordings", required=True, type=Path)
+    parser.add_argument(
+        "--engine",
+        choices=["voice", "parakeet-mlx"],
+        default="voice",
+        help="Transcription engine to evaluate.",
+    )
     parser.add_argument("--voice", default="./target/release/voice")
-    parser.add_argument("--model", default="distil-whisper/distil-medium.en")
+    parser.add_argument(
+        "--parakeet-bin",
+        default="parakeet-mlx",
+        help="Parakeet MLX CLI path when --engine parakeet-mlx is used.",
+    )
+    parser.add_argument(
+        "--parakeet-cache-dir",
+        type=Path,
+        help="Optional HuggingFace cache directory for Parakeet MLX models.",
+    )
+    parser.add_argument("--model")
     parser.add_argument("--json-out", type=Path)
     args = parser.parse_args()
 
     if not args.recordings.is_dir():
         parser.error(f"{args.recordings} is not a directory")
 
-    summary = evaluate(args.recordings, args.voice, args.model)
+    model = args.model
+    if model is None:
+        model = (
+            DEFAULT_PARAKEET_MLX_MODEL
+            if args.engine == "parakeet-mlx"
+            else DEFAULT_VOICE_MODEL
+        )
+
+    summary = evaluate(
+        args.recordings,
+        args.engine,
+        args.voice,
+        args.parakeet_bin,
+        model,
+        args.parakeet_cache_dir,
+    )
     print_summary(summary)
 
     if args.json_out is not None:

@@ -3,9 +3,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from eval.evaluate import (
+    build_parakeet_mlx_command,
     char_error_rate,
     edit_distance,
     normalize_text,
+    parakeet_txt_output_path,
     score_pair,
     wav_duration_seconds,
     word_error_rate,
@@ -71,6 +73,29 @@ class EvaluationMetricTests(unittest.TestCase):
             path.write_bytes(b"RIFF" + riff_size.to_bytes(4, "little") + b"WAVE" + fmt + data)
 
             self.assertEqual(wav_duration_seconds(path), 2.0)
+
+    def test_parakeet_output_path_uses_wav_stem(self):
+        self.assertEqual(
+            parakeet_txt_output_path(Path("/tmp/out"), Path("recordings/001.wav")),
+            Path("/tmp/out/001.txt"),
+        )
+
+    def test_build_parakeet_mlx_command_uses_txt_output_and_optional_cache(self):
+        command = build_parakeet_mlx_command(
+            "parakeet-mlx",
+            "mlx-community/parakeet-tdt-0.6b-v3",
+            Path("eval/recordings/001.wav"),
+            Path("/tmp/out"),
+            Path("/tmp/hf-cache"),
+        )
+
+        self.assertEqual(command[0], "parakeet-mlx")
+        self.assertIn("--output-format", command)
+        self.assertIn("txt", command)
+        self.assertIn("--output-template", command)
+        self.assertIn("{filename}", command)
+        self.assertIn("--cache-dir", command)
+        self.assertIn("/tmp/hf-cache", command)
 
 
 if __name__ == "__main__":

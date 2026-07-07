@@ -904,6 +904,63 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "loads Voxtral Realtime weights and runs native streaming inference"]
+    fn voxtral_native_stream_smoke_transcribes_eval_recording() {
+        let device = default_stt_device().unwrap();
+        let mut model = load_backend_model_on_device(
+            SttBackend::Voxtral,
+            default_model_for_backend(SttBackend::Voxtral),
+            device,
+        )
+        .unwrap();
+        model.set_max_new_tokens(128);
+
+        let audio_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../eval/recordings/002.wav")
+            .canonicalize()
+            .unwrap();
+        let audio = load_audio_file(&audio_path).unwrap();
+        let mut stream = model.stream_session().unwrap();
+        let chunk_samples = ((audio.sample_rate as usize) * 80 / 1_000).max(1);
+        let mut latest = None;
+
+        for chunk in audio.samples.chunks(chunk_samples) {
+            stream.push_audio(chunk, audio.sample_rate).unwrap();
+            for step in stream.drain_ready().unwrap() {
+                if !step.text.trim().is_empty() {
+                    latest = Some(step.text);
+                }
+                if step.reached_eos {
+                    break;
+                }
+            }
+        }
+
+        stream.finish();
+        for step in stream.drain_ready().unwrap() {
+            if !step.text.trim().is_empty() {
+                latest = Some(step.text);
+            }
+            if step.reached_eos {
+                break;
+            }
+        }
+
+        let transcript = latest.unwrap_or_default();
+        eprintln!("voxtral native stream transcript: {transcript}");
+        assert!(
+            !transcript.trim().is_empty(),
+            "Voxtral native stream produced no transcript for {}",
+            audio_path.display()
+        );
+        assert!(
+            transcript.to_ascii_lowercase().contains("seashore"),
+            "unexpected Voxtral native stream transcript for {}: {transcript:?}",
+            audio_path.display()
+        );
+    }
+
+    #[test]
     fn test_resample_identity() {
         let sr = 16000u32;
         let freq = 440.0f32;

@@ -22,15 +22,15 @@ pub struct VoxtralRealtimeStreamStep {
 /// Stateful Voxtral Realtime decoding session.
 ///
 /// This implements the model-native token/audio feedback loop. It intentionally
-/// does not cache decoder KV state yet; each step recomputes the current text
-/// history while preserving the externally visible streaming contract.
+/// does not cache decoder KV state or incremental audio encoder state yet; each
+/// step recomputes the current prefix while preserving the externally visible
+/// streaming contract.
 pub struct VoxtralRealtimeStreamSession<'a> {
     transcriber: &'a VoxtralRealtimeTranscriber,
     buffer: VoxtralRealtimeStreamBuffer,
     options: VoxtralRealtimeTranscriptionOptions,
     input_token_ids: Vec<usize>,
     output_tokens: Vec<usize>,
-    audio_embeddings: Option<Tensor>,
     done: bool,
 }
 
@@ -56,7 +56,6 @@ impl<'a> VoxtralRealtimeStreamSession<'a> {
             options,
             input_token_ids: Vec::new(),
             output_tokens: Vec::new(),
-            audio_embeddings: None,
             done: false,
         })
     }
@@ -92,26 +91,15 @@ impl<'a> VoxtralRealtimeStreamSession<'a> {
             return Ok(None);
         };
 
-        let window_embeddings = self.transcriber.encode_stream_window_embeddings(&window)?;
-        self.audio_embeddings = Some(match &self.audio_embeddings {
-            Some(existing) => {
-                Tensor::cat(&[existing, &window_embeddings], 1).map_err(candle_err)?
-            }
-            None => window_embeddings,
-        });
         self.input_token_ids
             .extend(window.input_token_ids.iter().copied());
-
-        let audio_embeddings = self
-            .audio_embeddings
-            .as_ref()
-            .expect("audio embeddings are set above");
+        let audio_embeddings = self.transcriber.encode_stream_prefix_embeddings(&window)?;
         let generation = self
             .transcriber
             .text_decoder
             .greedy_decode_audio_embeddings_with_prompt(
                 &self.transcriber.token_embeddings,
-                audio_embeddings,
+                &audio_embeddings,
                 &self.input_token_ids,
                 self.options.delay_tokens,
                 1,
@@ -149,7 +137,28 @@ impl VoxtralRealtimeTranscriber {
         &self,
         window: &VoxtralRealtimeStreamWindow,
     ) -> Result<Tensor> {
-        let mel = realtime_log_mel_spectrogram(&self.config, &window.audio_samples)?;
+        self.encode_stream_embeddings_for_samples(
+            &window.audio_samples,
+            window.input_token_ids.len(),
+        )
+    }
+
+    pub fn encode_stream_prefix_embeddings(
+        &self,
+        window: &VoxtralRealtimeStreamWindow,
+    ) -> Result<Tensor> {
+        self.encode_stream_embeddings_for_samples(
+            &window.prefix_audio_samples,
+            window.input_token_end,
+        )
+    }
+
+    fn encode_stream_embeddings_for_samples(
+        &self,
+        samples: &[f32],
+        expected_tokens: usize,
+    ) -> Result<Tensor> {
+        let mel = realtime_log_mel_spectrogram(&self.config, samples)?;
         let input_features = Tensor::from_vec(
             mel.to_channel_major(),
             (1, mel.mel_bins, mel.frames),
@@ -158,16 +167,11 @@ impl VoxtralRealtimeTranscriber {
         .map_err(candle_err)?
         .to_dtype(self.token_embeddings.tok_embeddings.embeddings().dtype())
         .map_err(candle_err)?;
-        let audio_start_pos = window
-            .input_token_start
-            .checked_mul(self.config.downsample_factor())
-            .ok_or_else(|| VoxtralError::InvalidConfig("stream audio position overflow".into()))?;
         let embeddings = self
             .audio_modules
-            .forward(&input_features, audio_start_pos)
+            .forward(&input_features, 0)
             .map_err(candle_err)?;
         let actual_tokens = embeddings.dim(1).map_err(candle_err)?;
-        let expected_tokens = window.input_token_ids.len();
         if actual_tokens < expected_tokens {
             return Err(VoxtralError::Candle(format!(
                 "stream window produced {actual_tokens} audio embeddings for {expected_tokens} input tokens"
@@ -176,9 +180,7 @@ impl VoxtralRealtimeTranscriber {
         if actual_tokens == expected_tokens {
             return Ok(embeddings);
         }
-        embeddings
-            .narrow(1, actual_tokens - expected_tokens, expected_tokens)
-            .map_err(candle_err)
+        embeddings.narrow(1, 0, expected_tokens).map_err(candle_err)
     }
 }
 

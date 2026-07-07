@@ -160,12 +160,19 @@ uv run --with parakeet-mlx python eval/evaluate.py \
 
 The default engine remains the existing `voice` CLI path. The shell wrappers
 also keep their default Whisper model matrix unchanged; set `PARAKEET_MLX=1`
-to add an opt-in Parakeet pass:
+to add an opt-in Parakeet pass. The wrappers run that Parakeet pass through
+`uv run --with parakeet-mlx`, so a clean checkout needs `uv` but does not need a
+preinstalled `parakeet-mlx` console script:
 
 ```bash
 PARAKEET_MLX=1 ./eval/compare.sh target/debug/voice
 PARAKEET_MLX=1 ./eval/synth_eval.sh target/debug/voice
 ```
+
+Parakeet infrastructure failures are strict by default. If the Parakeet binary
+is missing or the subprocess exits nonzero, `eval/evaluate.py` records the item
+error and exits nonzero. Use `--allow-errors` only for exploratory scoring where
+empty/error transcripts should not fail the command.
 
 ## Streaming assessment
 

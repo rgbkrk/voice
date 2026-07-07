@@ -6,6 +6,7 @@ from eval.evaluate import (
     build_parakeet_mlx_command,
     char_error_rate,
     edit_distance,
+    exit_code_for_summary,
     normalize_text,
     parakeet_txt_output_path,
     score_pair,
@@ -96,6 +97,16 @@ class EvaluationMetricTests(unittest.TestCase):
         self.assertIn("{filename}", command)
         self.assertIn("--cache-dir", command)
         self.assertIn("/tmp/hf-cache", command)
+
+    def test_summary_with_errors_exits_nonzero_by_default(self):
+        summary = {"error_count": 1}
+
+        self.assertEqual(exit_code_for_summary(summary, allow_errors=False), 1)
+
+    def test_summary_with_errors_can_be_allowed_for_exploration(self):
+        summary = {"error_count": 1}
+
+        self.assertEqual(exit_code_for_summary(summary, allow_errors=True), 0)
 
 
 if __name__ == "__main__":

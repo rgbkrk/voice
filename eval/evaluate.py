@@ -9,6 +9,7 @@ import os
 import re
 import struct
 import subprocess
+import sys
 import time
 import wave
 from pathlib import Path
@@ -297,6 +298,7 @@ def evaluate(
     mean_cer = (
         sum(float(item["cer"]) for item in items) / total if total else 0.0
     )
+    error_count = sum(1 for item in items if "error" in item)
 
     return {
         "engine": engine,
@@ -307,6 +309,7 @@ def evaluate(
         "recordings": str(recordings),
         "total": total,
         "exact": exact,
+        "error_count": error_count,
         "mean_wer": mean_wer,
         "mean_cer": mean_cer,
         "total_audio_seconds": total_audio_seconds,
@@ -320,9 +323,16 @@ def evaluate(
     }
 
 
+def exit_code_for_summary(summary: dict[str, object], allow_errors: bool) -> int:
+    if allow_errors:
+        return 0
+    return 1 if int(summary.get("error_count", 0)) > 0 else 0
+
+
 def print_summary(summary: dict[str, object]) -> None:
     total = int(summary["total"])
     exact = int(summary["exact"])
+    error_count = int(summary.get("error_count", 0))
     mean_wer = float(summary["mean_wer"])
     mean_cer = float(summary["mean_cer"])
     rtf = summary["rtf"]
@@ -341,6 +351,7 @@ def print_summary(summary: dict[str, object]) -> None:
     print()
     print(
         f"  Exact: {exact}/{total}; "
+        f"Errors: {error_count}; "
         f"WER: {mean_wer * 100:.1f}%; "
         f"CER: {mean_cer * 100:.1f}%; "
         f"RTF: {rtf_text}"
@@ -366,6 +377,11 @@ def main() -> int:
         "--parakeet-cache-dir",
         type=Path,
         help="Optional HuggingFace cache directory for Parakeet MLX models.",
+    )
+    parser.add_argument(
+        "--allow-errors",
+        action="store_true",
+        help="Exit 0 even when transcription subprocesses fail.",
     )
     parser.add_argument("--model")
     parser.add_argument("--json-out", type=Path)
@@ -399,7 +415,16 @@ def main() -> int:
             encoding="utf-8",
         )
 
-    return 0
+    exit_code = exit_code_for_summary(summary, args.allow_errors)
+    if exit_code != 0:
+        error_count = int(summary.get("error_count", 0))
+        sys.stdout.flush()
+        print(
+            f"error: {error_count} transcription item(s) failed; "
+            "use --allow-errors for exploratory scoring",
+            file=sys.stderr,
+        )
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ done
 if [ "${PARAKEET_MLX:-0}" = "1" ]; then
     model="${PARAKEET_MODEL:-mlx-community/parakeet-tdt-0.6b-v3}"
     safe_model="${model//\//_}"
-    python3 eval/evaluate.py \
+    uv run --with parakeet-mlx python eval/evaluate.py \
         --recordings "$TMPDIR" \
         --engine parakeet-mlx \
         --model "$model" \

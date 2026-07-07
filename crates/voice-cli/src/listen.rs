@@ -714,6 +714,16 @@ pub fn warmup_permissions() -> Result<(), String> {
 ///
 /// Returns mono f32 samples at the device's native sample rate, plus the rate.
 pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
+    record_until_interrupt_with_progress(None, |_| Ok(()))
+}
+
+pub fn record_until_interrupt_with_progress<F>(
+    progress_interval_ms: Option<u64>,
+    mut on_progress: F,
+) -> Result<(Vec<f32>, u32), String>
+where
+    F: FnMut(VadProgressSnapshot) -> Result<(), String>,
+{
     // Ding before mic so Bluetooth users hear the "ready" signal
     play_ding();
 
@@ -743,6 +753,12 @@ pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
     // Wait for Enter key or Ctrl+C
     let enter_pressed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let enter_clone = Arc::clone(&enter_pressed);
+    let start_time = Instant::now();
+    let progress_interval = progress_interval_ms
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis);
+    let mut last_progress_at = start_time;
+    let mut progress_error = None;
 
     let stdin_thread = std::thread::spawn(move || {
         let mut line = String::new();
@@ -753,6 +769,24 @@ pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
     loop {
         if INTERRUPTED.load(Ordering::Relaxed) || enter_pressed.load(Ordering::Relaxed) {
             break;
+        }
+        if progress_interval.is_some_and(|interval| last_progress_at.elapsed() >= interval) {
+            let samples = buffer.lock().unwrap().clone();
+            let audio_ms = samples.len().saturating_mul(1_000) as u64 / sample_rate.max(1) as u64;
+            let peak_bits = peak.load(Ordering::Relaxed);
+            let current_peak = f32::from_bits(peak_bits);
+            if let Err(error) = on_progress(VadProgressSnapshot {
+                samples,
+                sample_rate,
+                audio_ms,
+                elapsed_ms: start_time.elapsed().as_millis() as u64,
+                current_peak,
+                threshold: 0.0,
+            }) {
+                progress_error = Some(error);
+                break;
+            }
+            last_progress_at = Instant::now();
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -768,6 +802,10 @@ pub fn record_until_interrupt() -> Result<(Vec<f32>, u32), String> {
     };
     log_recording_stats(&samples, sample_rate);
     maybe_save_recording(&samples, sample_rate);
+
+    if let Some(error) = progress_error {
+        return Err(error);
+    }
 
     Ok((samples, sample_rate))
 }
@@ -1559,6 +1597,100 @@ pub fn listen_and_transcribe_with_options(options: SttLoadOptions) {
             eprintln!("\n({} tokens)", result.tokens.len());
         }
     }
+}
+
+pub fn listen_and_stream_with_options(options: SttLoadOptions) {
+    let model = load_stt_with_options(options);
+    if !model.supports_native_streaming() {
+        eprintln!("Native streaming STT is only available for the Voxtral backend.");
+        std::process::exit(1);
+    }
+
+    let mut stream = match model.stream_session() {
+        Ok(stream) => stream,
+        Err(e) => {
+            eprintln!("Failed to start STT stream: {e}");
+            std::process::exit(1);
+        }
+    };
+    let mut last_sample_count = 0usize;
+    let mut last_text = String::new();
+    let mut last_tokens = 0usize;
+
+    let record_result = record_until_interrupt_with_progress(Some(80), |snapshot| {
+        if snapshot.samples.len() <= last_sample_count {
+            return Ok(());
+        }
+        let delta = &snapshot.samples[last_sample_count..];
+        last_sample_count = snapshot.samples.len();
+        stream
+            .push_audio(delta, snapshot.sample_rate)
+            .map_err(|e| e.to_string())?;
+        for step in stream.drain_ready().map_err(|e| e.to_string())? {
+            if !step.text.trim().is_empty() {
+                last_text = step.text;
+                last_tokens = step.tokens.len();
+                print_streaming_transcript(&last_text);
+            }
+            if step.reached_eos {
+                break;
+            }
+        }
+        Ok(())
+    });
+
+    let (samples, sample_rate) = match record_result {
+        Ok(recording) => recording,
+        Err(e) => {
+            eprintln!("Recording failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if samples.len() > last_sample_count {
+        let delta = &samples[last_sample_count..];
+        if let Err(e) = stream.push_audio(delta, sample_rate) {
+            eprintln!("Streaming transcription failed: {e}");
+            std::process::exit(1);
+        }
+    }
+    stream.finish();
+    match stream.drain_ready() {
+        Ok(steps) => {
+            for step in steps {
+                if !step.text.trim().is_empty() {
+                    last_text = step.text;
+                    last_tokens = step.tokens.len();
+                    print_streaming_transcript(&last_text);
+                }
+                if step.reached_eos {
+                    break;
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Streaming transcription failed: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    INTERRUPTED.store(false, Ordering::Relaxed);
+
+    if !last_text.trim().is_empty() {
+        println!();
+        if !QUIET.load(Ordering::Relaxed) {
+            let _ = io::stderr().flush();
+            eprintln!("\n({last_tokens} tokens)");
+        }
+    } else {
+        println!();
+        eprintln!("No speech detected in recording.");
+    }
+}
+
+fn print_streaming_transcript(text: &str) {
+    print!("\r\x1b[2K{}", text.trim());
+    let _ = io::stdout().flush();
 }
 
 /// Record from mic (VAD auto-stop), transcribe, return result.

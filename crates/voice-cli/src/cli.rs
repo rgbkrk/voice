@@ -1110,6 +1110,10 @@ struct ListenArgs {
     #[arg(long)]
     continuous: bool,
 
+    /// Stream native STT tokens while recording. Defaults to Voxtral when no STT backend is selected.
+    #[arg(long)]
+    stream: bool,
+
     /// STT backend to use locally or via STT_BACKEND. Defaults to whisper.
     #[arg(long = "stt-backend", value_enum)]
     stt_backend: Option<SttBackendArg>,
@@ -1770,12 +1774,21 @@ fn main() {
 
     match args.command {
         Some(Command::Listen(listen_args)) => {
-            let stt_options = stt_load_options(
+            let mut stt_options = stt_load_options(
                 listen_args.stt_backend,
                 listen_args.stt_model,
                 listen_args.stt_max_new_tokens,
             );
-            if listen_args.continuous {
+            if listen_args.stream && listen_args.continuous {
+                eprintln!("voice listen: --stream and --continuous cannot be combined yet");
+                std::process::exit(1);
+            }
+            if listen_args.stream && !stt_selection_is_explicit(&stt_options) {
+                stt_options.backend = Some(voice_stt::SttBackend::Voxtral);
+            }
+            if listen_args.stream {
+                listen::listen_and_stream_with_options(stt_options);
+            } else if listen_args.continuous {
                 if stt_selection_is_explicit(&stt_options) {
                     listen::listen_continuous_with_options(stt_options);
                 } else {
@@ -4545,8 +4558,76 @@ fn run_realtime_live_turn(
 
     let mut partial_state = RealtimePartialSttState::default();
     let partial_interval = args.stt_partials.then_some(args.partial_interval_ms);
-    let (samples, sample_rate) = warm_mic
-        .record_vad_with_progress(
+    let mut native_stream_transcription: Option<voice_stt::TranscribeResult> = None;
+    let mut native_stream_elapsed_ms = 0u64;
+    let (samples, sample_rate) = if args.stt_partials && stt_model.supports_native_streaming() {
+        let mut stt_stream = stt_model
+            .stream_session()
+            .map_err(|e| format!("start native STT stream: {e}"))?;
+        let mut last_streamed_sample = 0usize;
+        let recording = warm_mic
+            .record_vad_with_progress(
+                args.duration.saturating_mul(1_000),
+                args.silence_timeout_ms,
+                args.vad_threshold,
+                args.noise_multiplier,
+                args.calibration_ms,
+                partial_interval,
+                |snapshot| {
+                    let stt_started = Instant::now();
+                    let latest = maybe_emit_realtime_native_stream_transcription(
+                        &mut stt_stream,
+                        &mut last_streamed_sample,
+                        args,
+                        event_names,
+                        turn_index,
+                        &mut partial_state,
+                        snapshot,
+                        false,
+                    )?;
+                    native_stream_elapsed_ms = native_stream_elapsed_ms
+                        .saturating_add(stt_started.elapsed().as_millis() as u64);
+                    if let Some(latest) = latest {
+                        native_stream_transcription = Some(latest);
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(|e| format!("record microphone: {e}"))?;
+
+        let (samples, sample_rate) = recording;
+        if samples.len() > last_streamed_sample {
+            let stt_started = Instant::now();
+            stt_stream
+                .push_audio(&samples[last_streamed_sample..], sample_rate)
+                .map_err(|e| format!("stream final microphone audio: {e}"))?;
+            native_stream_elapsed_ms = native_stream_elapsed_ms
+                .saturating_add(stt_started.elapsed().as_millis() as u64);
+        }
+        let stt_started = Instant::now();
+        stt_stream.finish();
+        let latest = emit_realtime_native_stream_steps(
+            &mut stt_stream,
+            args,
+            event_names,
+            turn_index,
+            &mut partial_state,
+            NativeStreamPartialContext {
+                audio_ms: samples.len().saturating_mul(1_000) as u64 / sample_rate.max(1) as u64,
+                capture_elapsed_ms: None,
+                peak: None,
+                threshold: None,
+                emit_allowed: true,
+            },
+        )?;
+        native_stream_elapsed_ms =
+            native_stream_elapsed_ms.saturating_add(stt_started.elapsed().as_millis() as u64);
+        if let Some(latest) = latest {
+            native_stream_transcription = Some(latest);
+        }
+        (samples, sample_rate)
+    } else {
+        warm_mic.record_vad_with_progress(
             args.duration.saturating_mul(1_000),
             args.silence_timeout_ms,
             args.vad_threshold,
@@ -4564,7 +4645,8 @@ fn run_realtime_live_turn(
                 )
             },
         )
-        .map_err(|e| format!("record microphone: {e}"))?;
+        .map_err(|e| format!("record microphone: {e}"))?
+    };
     let stt_audio_ms = samples.len().saturating_mul(1_000) as u64 / sample_rate.max(1) as u64;
     let (speech_detected, peak, rms) = detect_realtime_speech(&samples, args.vad_threshold);
     emit_realtime_event(
@@ -4630,27 +4712,33 @@ fn run_realtime_live_turn(
     }
 
     let stt_started = Instant::now();
-    let Some(transcription) = listen::transcribe_samples(stt_model, &samples, sample_rate) else {
-        emit_realtime_event(
-            args.json,
-            event_names,
-            realtime_event(
-                "conversation.item.input_audio_transcription.failed",
-                serde_json::json!({
-                    "turn_index": turn_index,
-                    "message": "transcription failed",
-                    "audio_ms": stt_audio_ms,
-                }),
-            ),
-        );
-        return Ok(RealtimeLiveTurnResult {
-            heard_speech: false,
-            stt_audio_ms,
-            stt_elapsed_ms: stt_started.elapsed().as_millis() as u64,
-            ..Default::default()
-        });
-    };
-    let stt_elapsed_ms = stt_started.elapsed().as_millis() as u64;
+    let (transcription, stt_elapsed_ms) =
+        if let Some(transcription) = native_stream_transcription {
+            (transcription, native_stream_elapsed_ms)
+        } else {
+            let Some(transcription) = listen::transcribe_samples(stt_model, &samples, sample_rate)
+            else {
+                emit_realtime_event(
+                    args.json,
+                    event_names,
+                    realtime_event(
+                        "conversation.item.input_audio_transcription.failed",
+                        serde_json::json!({
+                            "turn_index": turn_index,
+                            "message": "transcription failed",
+                            "audio_ms": stt_audio_ms,
+                        }),
+                    ),
+                );
+                return Ok(RealtimeLiveTurnResult {
+                    heard_speech: false,
+                    stt_audio_ms,
+                    stt_elapsed_ms: stt_started.elapsed().as_millis() as u64,
+                    ..Default::default()
+                });
+            };
+            (transcription, stt_started.elapsed().as_millis() as u64)
+        };
     emit_realtime_event(
         args.json,
         event_names,
@@ -4758,6 +4846,121 @@ fn emit_realtime_live_speech_started(
             }),
         ),
     );
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeStreamPartialContext {
+    audio_ms: u64,
+    capture_elapsed_ms: Option<u64>,
+    peak: Option<f32>,
+    threshold: Option<f32>,
+    emit_allowed: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn maybe_emit_realtime_native_stream_transcription(
+    stt_stream: &mut voice_stt::SttStreamSession<'_>,
+    last_streamed_sample: &mut usize,
+    args: &RealtimeArgs,
+    event_names: &mut Vec<String>,
+    turn_index: u64,
+    state: &mut RealtimePartialSttState,
+    snapshot: listen::VadProgressSnapshot,
+    force_emit: bool,
+) -> Result<Option<voice_stt::TranscribeResult>, String> {
+    if snapshot.samples.len() <= *last_streamed_sample {
+        return Ok(None);
+    }
+    let delta = &snapshot.samples[*last_streamed_sample..];
+    *last_streamed_sample = snapshot.samples.len();
+    stt_stream
+        .push_audio(delta, snapshot.sample_rate)
+        .map_err(|e| e.to_string())?;
+
+    emit_realtime_live_speech_started(
+        args,
+        event_names,
+        turn_index,
+        snapshot.threshold,
+        snapshot.current_peak,
+        None,
+        snapshot.audio_ms,
+        state,
+    );
+
+    emit_realtime_native_stream_steps(
+        stt_stream,
+        args,
+        event_names,
+        turn_index,
+        state,
+        NativeStreamPartialContext {
+            audio_ms: snapshot.audio_ms,
+            capture_elapsed_ms: Some(snapshot.elapsed_ms),
+            peak: Some(snapshot.current_peak),
+            threshold: Some(snapshot.threshold),
+            emit_allowed: force_emit || snapshot.audio_ms >= args.partial_min_audio_ms,
+        },
+    )
+}
+
+fn emit_realtime_native_stream_steps(
+    stt_stream: &mut voice_stt::SttStreamSession<'_>,
+    args: &RealtimeArgs,
+    event_names: &mut Vec<String>,
+    turn_index: u64,
+    state: &mut RealtimePartialSttState,
+    context: NativeStreamPartialContext,
+) -> Result<Option<voice_stt::TranscribeResult>, String> {
+    let mut latest = None;
+    for step in stt_stream.drain_ready().map_err(|e| e.to_string())? {
+        if step.text.trim().is_empty() {
+            if step.reached_eos {
+                break;
+            }
+            continue;
+        }
+        latest = Some(voice_stt::TranscribeResult {
+            text: step.text.clone(),
+            tokens: step.tokens.clone(),
+            sample_rate: step.sample_rate,
+        });
+        if context.emit_allowed {
+            let Some((sequence, replaces_sequence, text)) = state.observe_text(step.text) else {
+                if step.reached_eos {
+                    break;
+                }
+                continue;
+            };
+            emit_realtime_event(
+                args.json,
+                event_names,
+                realtime_event(
+                    "conversation.item.input_audio_transcription.partial",
+                    serde_json::json!({
+                        "turn_index": turn_index,
+                        "sequence": sequence,
+                        "replaces_sequence": replaces_sequence,
+                        "text": text,
+                        "stable": false,
+                        "native_streaming": true,
+                        "tokens": step.tokens.len(),
+                        "sample_rate": step.sample_rate,
+                        "audio_ms": context.audio_ms,
+                        "capture_elapsed_ms": context.capture_elapsed_ms,
+                        "elapsed_ms": 0,
+                        "peak": context.peak,
+                        "threshold": context.threshold,
+                    }),
+                ),
+            );
+        }
+        if step.reached_eos {
+            break;
+        }
+    }
+
+    Ok(latest)
 }
 
 fn maybe_emit_realtime_partial_transcription(
@@ -7467,6 +7670,16 @@ mod tests {
             Some("distil-whisper/distil-large-v3.5")
         );
         assert_eq!(transcribe.stt_max_new_tokens, Some(32));
+    }
+
+    #[test]
+    fn parses_listen_stream_flag() {
+        let listen = Args::parse_from(["voice", "listen", "--stream"]);
+        let Some(Command::Listen(listen)) = listen.command else {
+            panic!("expected listen command");
+        };
+        assert!(listen.stream);
+        assert!(!listen.continuous);
     }
 
     #[test]

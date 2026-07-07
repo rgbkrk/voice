@@ -17,6 +17,7 @@ mod prompt;
 mod realtime;
 mod realtime_audio;
 mod realtime_inference;
+mod realtime_stream;
 mod streaming;
 mod text;
 mod tokenizer;
@@ -78,6 +79,9 @@ pub use realtime_inference::{
     VoxtralRealtimeTextDecoderBlock, VoxtralRealtimeTextFeedForward, VoxtralRealtimeTextGeneration,
     VoxtralRealtimeTokenEmbeddings, VoxtralRealtimeTranscriber, VoxtralRealtimeTranscription,
     VoxtralRealtimeTranscriptionOptions,
+};
+pub use realtime_stream::{
+    VoxtralRealtimeStreamBuffer, VoxtralRealtimeStreamConfig, VoxtralRealtimeStreamWindow,
 };
 pub use streaming::{
     plan_codec_chunk, VoxtralCodecChunk, VoxtralStreamingConfig, DEFAULT_CODEC_CHUNK_FRAMES,

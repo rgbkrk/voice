@@ -7,6 +7,7 @@ import json
 import sys
 import time
 import wave
+from collections.abc import Mapping
 from pathlib import Path
 
 import tinker
@@ -18,6 +19,20 @@ from tml_renderers import chat
 
 def emit(message: dict[str, object]) -> None:
     print(json.dumps(message, separators=(",", ":")), flush=True)
+
+
+def get_thinking_content(message: Mapping[str, object]) -> str:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return ""
+    thinking: list[str] = []
+    for part in content:
+        if not isinstance(part, Mapping) or part.get("type") != "thinking":
+            continue
+        value = part.get("thinking")
+        if isinstance(value, str):
+            thinking.append(value)
+    return "".join(thinking)
 
 
 async def main() -> None:
@@ -69,16 +84,19 @@ async def main() -> None:
                 ),
             )
             sample_ms = (time.perf_counter() - sample_started) * 1000
-            message, termination = renderer.parse_response(response.sequences[0].tokens)
+            response_tokens = response.sequences[0].tokens
+            message, termination = renderer.parse_response(response_tokens)
             emit(
                 {
                     "type": "result",
                     "id": request_id,
                     "text": get_text_content(message),
+                    "thinking": get_thinking_content(message),
                     "termination": termination.value,
                     "audio_ms": frames / sample_rate * 1000,
                     "render_ms": render_ms,
                     "sample_ms": sample_ms,
+                    "response_tokens": len(response_tokens),
                 }
             )
         except Exception as error:

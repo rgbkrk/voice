@@ -96,6 +96,10 @@ voice tinker
 # Keep a warm Tinker worker across independently sampled turns
 voice tinker --turns 0 --silence-timeout-ms 900
 
+# Keep audio/results and show completed reasoning in dim terminal text
+voice tinker --turns 0 --speak --show-thinking \
+  --output-dir ./tinker-runs/formal-verification
+
 # Speak Inkling's reply immediately through a loaded daemon model
 voice tinker --speak --tts-engine kokoro
 voice tinker --speak --tts-engine voxtral --voxtral-realtime
@@ -218,6 +222,14 @@ first use, though an engine's first request may still load its assets. Start the
 daemon first with `voice daemon start`. Tinker sampling currently returns a
 completed response rather than token deltas, so TTS audio streaming begins
 after Inkling finishes.
+
+The 512-token response budget includes Inkling's reasoning. If the model reaches
+it before completing a clean final answer, `voice` does not speak the partial
+result and continues to the next turn. Use `--max-tokens` for a larger budget.
+`--show-thinking` prints structured reasoning returned by the renderer in dim
+terminal text after sampling completes. `--output-dir` saves each normalized
+input as `turn-NNNN.wav` alongside JSON containing final text, reasoning,
+termination, token count, and latency fields.
 
 ```bash
 # Respond to one microphone turn, considering tone and emphasis

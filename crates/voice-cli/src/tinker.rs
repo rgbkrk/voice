@@ -6,7 +6,7 @@
 //! boundary.
 
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Instant;
@@ -34,8 +34,8 @@ pub struct TinkerArgs {
     #[arg(long, default_value_t = 1)]
     turns: u64,
 
-    /// Maximum response tokens
-    #[arg(long, default_value_t = 256)]
+    /// Maximum response tokens, including Inkling's reasoning
+    #[arg(long, default_value_t = 512)]
     max_tokens: usize,
 
     /// Sampling temperature
@@ -65,6 +65,14 @@ pub struct TinkerArgs {
     /// Print one JSON object per result
     #[arg(long)]
     json: bool,
+
+    /// Save each normalized input WAV and result JSON in this directory
+    #[arg(long, value_name = "DIR")]
+    output_dir: Option<PathBuf>,
+
+    /// Print Inkling's completed reasoning trace dimmed on stderr
+    #[arg(long)]
+    show_thinking: bool,
 
     /// Speak each Inkling response through the already-running voice daemon
     #[arg(long)]
@@ -109,6 +117,8 @@ struct WorkerMessage {
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
     termination: Option<String>,
     #[serde(default)]
     error: Option<String>,
@@ -120,12 +130,21 @@ struct WorkerMessage {
     sample_ms: Option<f64>,
     #[serde(default)]
     audio_ms: Option<f64>,
+    #[serde(default)]
+    response_tokens: Option<usize>,
 }
 
 #[derive(Serialize)]
 struct ResultEvent<'a> {
     turn: u64,
+    model: &'a str,
     text: &'a str,
+    thinking: &'a str,
+    termination: &'a str,
+    complete: bool,
+    response_tokens: usize,
+    max_tokens: usize,
+    temperature: f32,
     audio_ms: f64,
     capture_ms: f64,
     render_ms: f64,
@@ -460,26 +479,48 @@ fn run_turn(
         temperature: args.temperature,
     })?;
     let round_trip_ms = started.elapsed().as_secs_f64() * 1_000.0;
-    if speaker.is_some() && response.termination.as_deref() == Some("malformed") {
-        return Err(format!(
-            "Inkling did not finish a clean final answer within {} tokens; refusing to speak the partial response (increase --max-tokens)",
-            args.max_tokens
-        ));
-    }
+    let termination = response.termination.as_deref().unwrap_or("unknown");
+    let complete = termination != "malformed";
     let text = response.text.as_deref().unwrap_or("");
-    if !args.json {
+    let thinking = response.thinking.as_deref().unwrap_or("");
+    let response_tokens = response.response_tokens.unwrap_or_default();
+    if args.show_thinking {
+        print_thinking(thinking);
+    }
+    if !args.json && complete {
         println!("{text}");
         std::io::stdout()
             .flush()
             .map_err(|error| format!("flush response text: {error}"))?;
     }
-    let tts_metrics = speaker
-        .as_mut()
-        .map(|speaker| speaker.speak(text))
-        .transpose()?;
+    if !complete {
+        eprintln!(
+            "Inkling ended without a clean final answer after {response_tokens} response tokens (budget {}); the partial response will not be spoken{}.",
+            args.max_tokens,
+            args.output_dir
+                .as_ref()
+                .map(|_| " and is available in the saved result JSON")
+                .unwrap_or("")
+        );
+    }
+    let tts_metrics = if complete {
+        speaker
+            .as_mut()
+            .map(|speaker| speaker.speak(text))
+            .transpose()?
+    } else {
+        None
+    };
     let event = ResultEvent {
         turn,
+        model: &args.model,
         text,
+        thinking,
+        termination,
+        complete,
+        response_tokens,
+        max_tokens: args.max_tokens,
+        temperature: args.temperature,
         audio_ms: response.audio_ms.unwrap_or_default(),
         capture_ms,
         render_ms: response.render_ms.unwrap_or_default(),
@@ -489,6 +530,9 @@ fn run_turn(
         tts_first_audio_ms: tts_metrics.as_ref().map(|metrics| metrics.first_audio_ms),
         tts_elapsed_ms: tts_metrics.as_ref().map(|metrics| metrics.elapsed_ms),
     };
+    if let Some(output_dir) = &args.output_dir {
+        save_turn_artifacts(output_dir, turn, audio_path, &event)?;
+    }
     if args.json {
         println!(
             "{}",
@@ -500,6 +544,43 @@ fn run_turn(
             event.audio_ms, event.render_ms, event.sample_ms
         );
     }
+    Ok(())
+}
+
+fn print_thinking(thinking: &str) {
+    if thinking.is_empty() {
+        return;
+    }
+    if std::io::stderr().is_terminal() {
+        eprintln!("\x1b[2;3;90mthinking\n{thinking}\x1b[0m");
+    } else {
+        eprintln!("thinking:\n{thinking}");
+    }
+}
+
+fn save_turn_artifacts(
+    output_dir: &Path,
+    turn: u64,
+    audio_path: &Path,
+    event: &ResultEvent<'_>,
+) -> Result<(), String> {
+    std::fs::create_dir_all(output_dir).map_err(|error| {
+        format!(
+            "create Tinker artifact directory {}: {error}",
+            output_dir.display()
+        )
+    })?;
+    let stem = format!("turn-{turn:04}");
+    let wav_path = output_dir.join(format!("{stem}.wav"));
+    let json_path = output_dir.join(format!("{stem}.json"));
+    std::fs::copy(audio_path, &wav_path)
+        .map_err(|error| format!("save Tinker input WAV {}: {error}", wav_path.display()))?;
+    let mut json = serde_json::to_vec_pretty(event)
+        .map_err(|error| format!("encode Tinker result artifact: {error}"))?;
+    json.push(b'\n');
+    std::fs::write(&json_path, json)
+        .map_err(|error| format!("save Tinker result JSON {}: {error}", json_path.display()))?;
+    eprintln!("Saved turn {turn} artifacts to {}", output_dir.display());
     Ok(())
 }
 
@@ -596,12 +677,67 @@ mod tests {
         assert_eq!(ready.startup_ms, Some(123.4));
 
         let result: WorkerMessage = serde_json::from_str(
-            r#"{"type":"result","id":2,"text":"hello","termination":"stop_sequence","audio_ms":500,"render_ms":3,"sample_ms":900}"#,
+            r#"{"type":"result","id":2,"text":"hello","thinking":"considering","termination":"stop_sequence","audio_ms":500,"render_ms":3,"sample_ms":900,"response_tokens":42}"#,
         )
         .unwrap();
         assert_eq!(result.id, Some(2));
         assert_eq!(result.text.as_deref(), Some("hello"));
+        assert_eq!(result.thinking.as_deref(), Some("considering"));
         assert_eq!(result.termination.as_deref(), Some("stop_sequence"));
+        assert_eq!(result.response_tokens, Some(42));
+    }
+
+    #[test]
+    fn tinker_defaults_allow_room_for_reasoning() {
+        let args = super::super::Args::parse_from(["voice", "tinker"]);
+        let Some(super::super::Command::Tinker(args)) = args.command else {
+            panic!("expected tinker command");
+        };
+        assert_eq!(args.max_tokens, 512);
+        assert_eq!(args.output_dir, None);
+        assert!(!args.show_thinking);
+    }
+
+    #[test]
+    fn saves_normalized_audio_and_result_artifacts() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "voice-tinker-artifact-test-{}",
+            std::process::id()
+        ));
+        let input = output_dir.with_extension("input.wav");
+        write_pcm16_wav(&[-0.5, 0.0, 0.5], 16_000, &input).unwrap();
+        let event = ResultEvent {
+            turn: 2,
+            model: DEFAULT_MODEL,
+            text: "partial",
+            thinking: "I should reason about this.",
+            termination: "malformed",
+            complete: false,
+            response_tokens: 512,
+            max_tokens: 512,
+            temperature: 0.3,
+            audio_ms: 0.2,
+            capture_ms: 10.0,
+            render_ms: 4.0,
+            sample_ms: 2_000.0,
+            round_trip_ms: 2_005.0,
+            tts_engine: None,
+            tts_first_audio_ms: None,
+            tts_elapsed_ms: None,
+        };
+        save_turn_artifacts(&output_dir, 2, &input, &event).unwrap();
+
+        assert!(output_dir.join("turn-0002.wav").is_file());
+        let saved: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(output_dir.join("turn-0002.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["complete"], false);
+        assert_eq!(saved["response_tokens"], 512);
+        assert_eq!(saved["thinking"], "I should reason about this.");
+
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_dir_all(output_dir);
     }
 
     #[test]

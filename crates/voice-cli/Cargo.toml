@@ -46,6 +46,8 @@ voice-stream = { version = "0.1.0", path = "../voice-stream" }
 voice-audio = { version = "0.1.0", path = "../voice-audio" }
 voice-daemon = { version = "0.1.0", path = "../voice-daemon" }
 dirs = "6"
+tinkernel = "0.0.2"
+tokio = { version = "1", features = ["net", "rt", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

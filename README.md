@@ -203,17 +203,16 @@ Options:
 
 Sends a complete microphone turn or local audio file to the audio-capable
 `thinkingmachines/Inkling` model. Rust owns microphone capture, adaptive VAD,
-turn segmentation, 16 kHz mono PCM conversion, worker supervision, and timing.
-The warm worker is limited to Tinker's Python SDK and its compiled
-`tml-renderers` DMel codec, which do not currently expose a public Rust API.
+turn segmentation, 16 kHz mono PCM conversion, native DMel encoding, TMLv0
+rendering, Tinker sampling, and timing through `tinkernel 0.0.2`.
 
 This path sends the original speech audio to Tinker, so the model can use vocal
-delivery in addition to the words. It requires `uv`, an exported
-`TINKER_API_KEY`, network access, and a funded Tinker account. Each turn is an
-independent sample; `--turns 0` keeps the model client and microphone warm until
-Ctrl+C. The CLI commits a turn after 900 ms of silence by default. For natural
-conversation, turns around 5–15 seconds usually balance context and latency;
-the current API does not begin inference until the turn has ended.
+delivery in addition to the words. It requires an exported `TINKER_API_KEY`,
+network access, and a funded Tinker account. Each turn is an independent sample;
+`--turns 0` keeps the native model client, encoder, renderer, and microphone warm
+until Ctrl+C. The CLI commits a turn after 900 ms of silence by default. For
+natural conversation, turns around 5–15 seconds usually balance context and
+latency; the current API does not begin inference until the turn has ended.
 
 `--speak` hands each completed response directly to the running voice daemon's
 `stream_speak` path, so its daemon-resident Kokoro or Voxtral model emits audio

@@ -1,20 +1,21 @@
 //! Rust-first microphone turns for Tinker's audio-capable Inkling model.
 //!
-//! Capture, VAD, WAV framing, process supervision, and result reporting stay
-//! in Rust. Tinker's only public audio renderer is currently distributed as a
-//! Rust-backed Python extension, so a warm JSONL worker owns that narrow SDK
-//! boundary.
+//! Capture, VAD, DMel encoding, TMLv0 rendering, Tinker sampling, result
+//! reporting, and optional local speech all stay in Rust.
 
-use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, IsTerminal, Write};
+use serde::Serialize;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tinkernel::audio::InklingAudioEncoder;
+use tinkernel::renderer::{Author, Content, Message, TmlV0Renderer};
+use tinkernel::types::{SamplingParams, StopCondition, StopReason};
+use tinkernel::{FutureOptions, SamplingClient, TinkerClient};
 
 const DEFAULT_MODEL: &str = "thinkingmachines/Inkling";
 const TINKER_AUDIO_SAMPLE_RATE: u32 = 16_000;
 const DEFAULT_INSTRUCTION: &str = "Respond naturally and concisely to the speaker. Use both the words and audible delivery, including tone, hesitation, emphasis, and emotion when relevant. Do not provide a transcript unless asked.";
-const WORKER_SOURCE: &str = include_str!("tinker_worker.py");
+const TINKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(clap::Args, Debug)]
 pub struct TinkerArgs {
@@ -93,45 +94,18 @@ pub struct TinkerArgs {
     /// Use the low-latency Voxtral preset when --tts-engine voxtral is selected
     #[arg(long)]
     voxtral_realtime: bool,
-
-    /// uv executable used to provide the Tinker Python SDK boundary
-    #[arg(long, default_value = "uv", hide = true)]
-    uv: String,
 }
 
-#[derive(Serialize)]
-struct WorkerRequest<'a> {
-    id: u64,
-    audio_path: &'a Path,
-    instruction: &'a str,
-    max_tokens: usize,
-    temperature: f32,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkerMessage {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    id: Option<u64>,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    thinking: Option<String>,
-    #[serde(default)]
-    termination: Option<String>,
-    #[serde(default)]
-    error: Option<String>,
-    #[serde(default)]
-    startup_ms: Option<f64>,
-    #[serde(default)]
-    render_ms: Option<f64>,
-    #[serde(default)]
-    sample_ms: Option<f64>,
-    #[serde(default)]
-    audio_ms: Option<f64>,
-    #[serde(default)]
-    response_tokens: Option<usize>,
+struct NativeResponse {
+    text: String,
+    thinking: String,
+    termination: &'static str,
+    complete: bool,
+    response_tokens: usize,
+    audio_ms: f64,
+    encode_ms: f64,
+    render_ms: f64,
+    sample_ms: f64,
 }
 
 #[derive(Serialize)]
@@ -147,6 +121,7 @@ struct ResultEvent<'a> {
     temperature: f32,
     audio_ms: f64,
     capture_ms: f64,
+    encode_ms: f64,
     render_ms: f64,
     sample_ms: f64,
     round_trip_ms: f64,
@@ -286,138 +261,159 @@ impl DaemonSpeaker {
     }
 }
 
-struct TinkerWorker {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+struct NativeTinker {
+    encoder: InklingAudioEncoder,
+    renderer: TmlV0Renderer,
+    sampler: SamplingClient,
+    runtime: tokio::runtime::Runtime,
 }
 
-impl TinkerWorker {
-    fn start(uv: &str, model: &str) -> Result<Self, String> {
+impl NativeTinker {
+    fn start(model: &str) -> Result<Self, String> {
         if std::env::var_os("TINKER_API_KEY").is_none() {
             return Err("TINKER_API_KEY is not exported in this shell".to_string());
         }
 
-        let mut child = Command::new(uv)
-            .args([
-                "run",
-                "--quiet",
-                "--with",
-                "tinker-cookbook",
-                "--with",
-                "tml-renderers",
-                "python",
-                "-u",
-                "-c",
-                WORKER_SOURCE,
-                "--",
-                model,
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|error| format!("failed to start `{uv}`: {error}"))?;
-        let stdin = child.stdin.take().ok_or("worker stdin was not piped")?;
-        let stdout = child.stdout.take().ok_or("worker stdout was not piped")?;
-        let mut worker = Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
+        let started = Instant::now();
+        let encoder = InklingAudioEncoder::new();
+        let renderer = TmlV0Renderer::new()
+            .map_err(|error| format!("initialize Inkling renderer: {error}"))?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("initialize Tinker runtime: {error}"))?;
+        let sampler = runtime
+            .block_on(async {
+                let client = TinkerClient::from_env().await?;
+                client.sampling_client(model).await
+            })
+            .map_err(|error| format!("initialize Tinker sampling client: {error}"))?;
+        eprintln!(
+            "Tinker client ready in {:.0} ms.",
+            started.elapsed().as_secs_f64() * 1_000.0
+        );
+        Ok(Self {
+            encoder,
+            renderer,
+            sampler,
+            runtime,
+        })
+    }
+
+    fn sample(
+        &self,
+        samples: &[f32],
+        instruction: &str,
+        max_tokens: u32,
+        temperature: f32,
+    ) -> Result<NativeResponse, String> {
+        let audio_ms = samples.len() as f64 / f64::from(TINKER_AUDIO_SAMPLE_RATE) * 1_000.0;
+        let encode_started = Instant::now();
+        let dmel = self
+            .encoder
+            .encode(samples)
+            .map_err(|error| format!("encode Inkling audio: {error}"))?;
+        let encode_ms = encode_started.elapsed().as_secs_f64() * 1_000.0;
+
+        let render_started = Instant::now();
+        let prompt = self.renderer.render_for_completion(&[
+            Message::user(instruction),
+            Message::user_audio(dmel.into_tensor_container())
+                .map_err(|error| format!("render Inkling audio message: {error}"))?,
+        ]);
+        let render_ms = render_started.elapsed().as_secs_f64() * 1_000.0;
+
+        let sample_started = Instant::now();
+        let response = self
+            .runtime
+            .block_on(async {
+                self.sampler
+                    .sample(
+                        prompt,
+                        SamplingParams {
+                            max_tokens: Some(max_tokens),
+                            temperature,
+                            stop: Some(StopCondition::Tokens(
+                                self.renderer.stop_tokens().to_vec(),
+                            )),
+                            ..SamplingParams::default()
+                        },
+                    )
+                    .await?
+                    .with_options(FutureOptions {
+                        timeout: Some(TINKER_REQUEST_TIMEOUT),
+                        ..FutureOptions::default()
+                    })
+                    .await_result()
+                    .await
+            })
+            .map_err(|error| format!("sample Inkling audio: {error}"))?;
+        let sample_ms = sample_started.elapsed().as_secs_f64() * 1_000.0;
+        let sequence = response
+            .sequences
+            .into_iter()
+            .next()
+            .ok_or("Tinker returned no sampled sequences")?;
+        let response_tokens = sequence.tokens.len();
+        let (text, thinking) = completion_text(&self.renderer, &sequence.tokens)?;
+        let complete = sequence.stop_reason == StopReason::Stop && !text.trim().is_empty();
+        let termination = match (sequence.stop_reason, text.trim().is_empty()) {
+            (StopReason::Stop, false) => "stop",
+            (StopReason::Stop, true) => "missing_final_text",
+            (StopReason::Length, _) => "length",
         };
-        let ready = worker.read_message()?;
-        match ready.kind.as_str() {
-            "ready" => {
-                if let Some(ms) = ready.startup_ms {
-                    eprintln!("Tinker worker ready in {ms:.0} ms.");
-                }
-                Ok(worker)
-            }
-            "error" => Err(ready.error.unwrap_or_else(|| "worker startup failed".into())),
-            other => Err(format!("expected worker ready message, got {other:?}")),
-        }
-    }
 
-    fn sample(&mut self, request: &WorkerRequest<'_>) -> Result<WorkerMessage, String> {
-        serde_json::to_writer(&mut self.stdin, request)
-            .map_err(|error| format!("encode worker request: {error}"))?;
-        self.stdin
-            .write_all(b"\n")
-            .and_then(|_| self.stdin.flush())
-            .map_err(|error| format!("write worker request: {error}"))?;
-
-        loop {
-            let response = self.read_message()?;
-            if response.kind == "error" {
-                return Err(response.error.unwrap_or_else(|| "Tinker request failed".into()));
-            }
-            if response.kind == "result" && response.id == Some(request.id) {
-                return Ok(response);
-            }
-        }
-    }
-
-    fn read_message(&mut self) -> Result<WorkerMessage, String> {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let read = self
-                .stdout
-                .read_line(&mut line)
-                .map_err(|error| format!("read worker response: {error}"))?;
-            if read == 0 {
-                let status = self.child.try_wait().ok().flatten();
-                return Err(format!("Tinker worker exited unexpectedly ({status:?})"));
-            }
-            match serde_json::from_str(line.trim()) {
-                Ok(message) => return Ok(message),
-                Err(_) => eprintln!("Tinker worker: {}", line.trim_end()),
-            }
-        }
+        Ok(NativeResponse {
+            text,
+            thinking,
+            termination,
+            complete,
+            response_tokens,
+            audio_ms,
+            encode_ms,
+            render_ms,
+            sample_ms,
+        })
     }
 }
 
-impl Drop for TinkerWorker {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+fn completion_text(
+    renderer: &TmlV0Renderer,
+    tokens: &[u32],
+) -> Result<(String, String), String> {
+    let mut text = String::new();
+    let mut thinking = String::new();
+    for message in renderer
+        .parse_completion(tokens)
+        .map_err(|error| format!("parse Inkling completion: {error}"))?
+    {
+        match message.into_parts() {
+            (Author::Model, Content::Text(part)) => text.push_str(&part),
+            (Author::Model, Content::Thinking(part)) => thinking.push_str(&part),
+            _ => {}
+        }
     }
+    Ok((text, thinking))
 }
 
-struct TemporaryWav(PathBuf);
-
-impl TemporaryWav {
-    fn from_samples(samples: &[f32], sample_rate: u32, turn: u64) -> Result<Self, String> {
-        let path = std::env::temp_dir().join(format!(
-            "voice-tinker-{}-{turn}.wav",
-            std::process::id()
-        ));
-        let normalized = if sample_rate == TINKER_AUDIO_SAMPLE_RATE {
-            samples.to_vec()
-        } else {
-            voice_stream::resample_linear(samples, sample_rate, TINKER_AUDIO_SAMPLE_RATE)
-        };
-        write_pcm16_wav(&normalized, TINKER_AUDIO_SAMPLE_RATE, &path)?;
-        Ok(Self(path))
-    }
-}
-
-impl Drop for TemporaryWav {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+fn normalize_samples(samples: &[f32], sample_rate: u32) -> Vec<f32> {
+    if sample_rate == TINKER_AUDIO_SAMPLE_RATE {
+        samples.to_vec()
+    } else {
+        voice_stream::resample_linear(samples, sample_rate, TINKER_AUDIO_SAMPLE_RATE)
     }
 }
 
 pub fn run(args: TinkerArgs) -> Result<(), String> {
     validate_args(&args)?;
     let mut speaker = DaemonSpeaker::connect(&args)?;
-    eprintln!("Starting warm Tinker worker for {}...", args.model);
-    let mut worker = TinkerWorker::start(&args.uv, &args.model)?;
+    eprintln!("Starting native Tinker client for {}...", args.model);
+    let tinker = NativeTinker::start(&args.model)?;
 
     if let Some(audio) = &args.audio {
         let loaded = super::listen::load_transcription_audio(audio)?;
-        let wav = TemporaryWav::from_samples(&loaded.samples, loaded.sample_rate, 1)?;
-        return run_turn(&mut worker, &mut speaker, &args, 1, &wav.0, 0.0);
+        let samples = normalize_samples(&loaded.samples, loaded.sample_rate);
+        return run_turn(&tinker, &mut speaker, &args, 1, &samples, 0.0);
     }
 
     let mic = super::listen::WarmMic::open()?;
@@ -444,13 +440,13 @@ pub fn run(args: TinkerArgs) -> Result<(), String> {
             turn += 1;
             continue;
         }
-        let wav = TemporaryWav::from_samples(&samples, sample_rate, turn)?;
+        let samples = normalize_samples(&samples, sample_rate);
         run_turn(
-            &mut worker,
+            &tinker,
             &mut speaker,
             &args,
             turn,
-            &wav.0,
+            &samples,
             capture_ms,
         )?;
         turn += 1;
@@ -459,31 +455,32 @@ pub fn run(args: TinkerArgs) -> Result<(), String> {
 }
 
 fn run_turn(
-    worker: &mut TinkerWorker,
+    tinker: &NativeTinker,
     speaker: &mut Option<DaemonSpeaker>,
     args: &TinkerArgs,
     turn: u64,
-    audio_path: &Path,
+    samples: &[f32],
     capture_ms: f64,
 ) -> Result<(), String> {
-    if !audio_path.is_file() {
-        return Err(format!("audio file does not exist: {}", audio_path.display()));
+    if samples.is_empty() {
+        return Err("cannot send an empty audio turn to Tinker".to_string());
     }
     eprintln!("Sending turn {turn} to Tinker...");
     let started = Instant::now();
-    let response = worker.sample(&WorkerRequest {
-        id: turn,
-        audio_path,
-        instruction: &args.instruction,
-        max_tokens: args.max_tokens,
-        temperature: args.temperature,
-    })?;
+    let response = tinker.sample(
+        samples,
+        &args.instruction,
+        args.max_tokens
+            .try_into()
+            .map_err(|_| "--max-tokens is too large for Tinker")?,
+        args.temperature,
+    )?;
     let round_trip_ms = started.elapsed().as_secs_f64() * 1_000.0;
-    let termination = response.termination.as_deref().unwrap_or("unknown");
-    let complete = termination != "malformed";
-    let text = response.text.as_deref().unwrap_or("");
-    let thinking = response.thinking.as_deref().unwrap_or("");
-    let response_tokens = response.response_tokens.unwrap_or_default();
+    let termination = response.termination;
+    let complete = response.complete;
+    let text = response.text.as_str();
+    let thinking = response.thinking.as_str();
+    let response_tokens = response.response_tokens;
     if args.show_thinking {
         print_thinking(thinking);
     }
@@ -521,17 +518,18 @@ fn run_turn(
         response_tokens,
         max_tokens: args.max_tokens,
         temperature: args.temperature,
-        audio_ms: response.audio_ms.unwrap_or_default(),
+        audio_ms: response.audio_ms,
         capture_ms,
-        render_ms: response.render_ms.unwrap_or_default(),
-        sample_ms: response.sample_ms.unwrap_or_default(),
+        encode_ms: response.encode_ms,
+        render_ms: response.render_ms,
+        sample_ms: response.sample_ms,
         round_trip_ms,
         tts_engine: speaker.as_ref().map(|speaker| speaker.engine.as_str()),
         tts_first_audio_ms: tts_metrics.as_ref().map(|metrics| metrics.first_audio_ms),
         tts_elapsed_ms: tts_metrics.as_ref().map(|metrics| metrics.elapsed_ms),
     };
     if let Some(output_dir) = &args.output_dir {
-        save_turn_artifacts(output_dir, turn, audio_path, &event)?;
+        save_turn_artifacts(output_dir, turn, samples, &event)?;
     }
     if args.json {
         println!(
@@ -540,8 +538,8 @@ fn run_turn(
         );
     } else {
         eprintln!(
-            "audio={:.0}ms render={:.0}ms sample={:.0}ms round-trip={round_trip_ms:.0}ms",
-            event.audio_ms, event.render_ms, event.sample_ms
+            "audio={:.0}ms encode={:.0}ms render={:.0}ms sample={:.0}ms round-trip={round_trip_ms:.0}ms",
+            event.audio_ms, event.encode_ms, event.render_ms, event.sample_ms
         );
     }
     Ok(())
@@ -561,7 +559,7 @@ fn print_thinking(thinking: &str) {
 fn save_turn_artifacts(
     output_dir: &Path,
     turn: u64,
-    audio_path: &Path,
+    samples: &[f32],
     event: &ResultEvent<'_>,
 ) -> Result<(), String> {
     std::fs::create_dir_all(output_dir).map_err(|error| {
@@ -573,8 +571,7 @@ fn save_turn_artifacts(
     let stem = format!("turn-{turn:04}");
     let wav_path = output_dir.join(format!("{stem}.wav"));
     let json_path = output_dir.join(format!("{stem}.json"));
-    std::fs::copy(audio_path, &wav_path)
-        .map_err(|error| format!("save Tinker input WAV {}: {error}", wav_path.display()))?;
+    write_pcm16_wav(samples, TINKER_AUDIO_SAMPLE_RATE, &wav_path)?;
     let mut json = serde_json::to_vec_pretty(event)
         .map_err(|error| format!("encode Tinker result artifact: {error}"))?;
     json.push(b'\n');
@@ -670,21 +667,23 @@ mod tests {
     }
 
     #[test]
-    fn worker_message_accepts_ready_and_result_shapes() {
-        let ready: WorkerMessage =
-            serde_json::from_str(r#"{"type":"ready","startup_ms":123.4}"#).unwrap();
-        assert_eq!(ready.kind, "ready");
-        assert_eq!(ready.startup_ms, Some(123.4));
+    fn separates_native_thinking_from_final_text() {
+        use tinkernel::renderer::token;
 
-        let result: WorkerMessage = serde_json::from_str(
-            r#"{"type":"result","id":2,"text":"hello","thinking":"considering","termination":"stop_sequence","audio_ms":500,"render_ms":3,"sample_ms":900,"response_tokens":42}"#,
-        )
-        .unwrap();
-        assert_eq!(result.id, Some(2));
-        assert_eq!(result.text.as_deref(), Some("hello"));
-        assert_eq!(result.thinking.as_deref(), Some("considering"));
-        assert_eq!(result.termination.as_deref(), Some("stop_sequence"));
-        assert_eq!(result.response_tokens, Some(42));
+        let renderer = TmlV0Renderer::new().unwrap();
+        let mut tokens = vec![token::MESSAGE_MODEL, token::CONTENT_THINKING];
+        tokens.extend(renderer.encode_ordinary("considering"));
+        tokens.extend([
+            token::END_MESSAGE,
+            token::MESSAGE_MODEL,
+            token::CONTENT_TEXT,
+        ]);
+        tokens.extend(renderer.encode_ordinary("hello"));
+        tokens.extend([token::END_MESSAGE, token::CONTENT_MODEL_END_SAMPLING]);
+
+        let (text, thinking) = completion_text(&renderer, &tokens).unwrap();
+        assert_eq!(text, "hello");
+        assert_eq!(thinking, "considering");
     }
 
     #[test]
@@ -704,8 +703,6 @@ mod tests {
             "voice-tinker-artifact-test-{}",
             std::process::id()
         ));
-        let input = output_dir.with_extension("input.wav");
-        write_pcm16_wav(&[-0.5, 0.0, 0.5], 16_000, &input).unwrap();
         let event = ResultEvent {
             turn: 2,
             model: DEFAULT_MODEL,
@@ -718,6 +715,7 @@ mod tests {
             temperature: 0.3,
             audio_ms: 0.2,
             capture_ms: 10.0,
+            encode_ms: 1.5,
             render_ms: 4.0,
             sample_ms: 2_000.0,
             round_trip_ms: 2_005.0,
@@ -725,7 +723,7 @@ mod tests {
             tts_first_audio_ms: None,
             tts_elapsed_ms: None,
         };
-        save_turn_artifacts(&output_dir, 2, &input, &event).unwrap();
+        save_turn_artifacts(&output_dir, 2, &[-0.5, 0.0, 0.5], &event).unwrap();
 
         assert!(output_dir.join("turn-0002.wav").is_file());
         let saved: serde_json::Value = serde_json::from_slice(
@@ -736,7 +734,6 @@ mod tests {
         assert_eq!(saved["response_tokens"], 512);
         assert_eq!(saved["thinking"], "I should reason about this.");
 
-        let _ = std::fs::remove_file(input);
         let _ = std::fs::remove_dir_all(output_dir);
     }
 

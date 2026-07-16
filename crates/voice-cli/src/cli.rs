@@ -1,6 +1,7 @@
 mod jsonrpc;
 mod listen;
 mod mcp;
+mod tinker;
 
 use clap::{ArgAction, Parser, ValueEnum};
 use crossterm::{
@@ -71,6 +72,8 @@ macro_rules! info {
                   voice realtime-tui --turns 2\n  \
                   voice listen\n  \
                   voice listen --continuous\n  \
+                  voice tinker\n  \
+                  voice tinker --audio recording.wav --instruction \"Transcribe exactly\"\n  \
                   voice transcribe recording.ogg\n  \
                   voice bench tts --engine kokoro --engine voxtral --runs 2 \"Hello world\"\n  \
                   voice daemon start --tts-only\n  \
@@ -123,6 +126,9 @@ enum Command {
 
     /// Record from microphone and transcribe (speech-to-text)
     Listen(ListenArgs),
+
+    /// Send a microphone turn or WAV file to Tinker's Inkling audio model
+    Tinker(tinker::TinkerArgs),
 
     /// Transcribe an audio file
     Transcribe(TranscribeArgs),
@@ -380,6 +386,7 @@ fn apply_invocation_defaults(args: &mut Args, profile: InvocationProfile, engine
         Some(Command::Realtime(args)) => args.tts_engine = TtsEngine::Voxtral,
         Some(Command::RealtimeTui(args)) => args.tts_engine = TtsEngine::Voxtral,
         Some(Command::Converse(args)) => args.engine = TtsEngine::Voxtral,
+        Some(Command::Tinker(args)) => args.tts_engine = TtsEngine::Voxtral,
         Some(Command::Daemon(DaemonArgs {
             command: Some(DaemonCommand::SetVoice { engine, voice: _ }),
         })) => *engine = TtsEngine::Voxtral,
@@ -1803,6 +1810,12 @@ fn main() {
                 }
             } else {
                 listen::listen_and_transcribe_with_options(stt_options);
+            }
+        }
+        Some(Command::Tinker(tinker_args)) => {
+            if let Err(error) = tinker::run(tinker_args) {
+                eprintln!("voice tinker: {error}");
+                std::process::exit(1);
             }
         }
         Some(Command::Converse(converse_args)) => {

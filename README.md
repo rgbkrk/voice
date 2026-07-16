@@ -89,6 +89,21 @@ voice listen
 # Continuous listening — segments split on silence
 voice listen --continuous
 
+# Send a microphone turn directly to Tinker's audio-capable Inkling model
+export TINKER_API_KEY=...
+voice tinker
+
+# Keep a warm Tinker worker across independently sampled turns
+voice tinker --turns 0 --silence-timeout-ms 900
+
+# Keep audio/results and show completed reasoning in dim terminal text
+voice tinker --turns 0 --speak --show-thinking \
+  --output-dir ./tinker-runs/formal-verification
+
+# Speak Inkling's reply immediately through a loaded daemon model
+voice tinker --speak --tts-engine kokoro
+voice tinker --speak --tts-engine voxtral --voxtral-realtime
+
 # Transcribe an audio file
 voice transcribe recording.ogg
 
@@ -182,6 +197,50 @@ Options:
       --markdown                   Strip markdown/MDX formatting before speaking
       --sub <WORD=REPLACEMENT>     Word substitution (repeatable)
       --sub-file <PATH>            Load substitutions from a file
+```
+
+### `voice tinker` (experimental)
+
+Sends a complete microphone turn or local audio file to the audio-capable
+`thinkingmachines/Inkling` model. Rust owns microphone capture, adaptive VAD,
+turn segmentation, 16 kHz mono PCM conversion, native DMel encoding, TMLv0
+rendering, Tinker sampling, and timing through `tinkernel 0.0.2`.
+
+This path sends the original speech audio to Tinker, so the model can use vocal
+delivery in addition to the words. It requires an exported `TINKER_API_KEY`,
+network access, and a funded Tinker account. Each turn is an independent sample;
+`--turns 0` keeps the native model client, encoder, renderer, and microphone warm
+until Ctrl+C. The CLI commits a turn after 900 ms of silence by default. For
+natural conversation, turns around 5–15 seconds usually balance context and
+latency; the current API does not begin inference until the turn has ended.
+
+`--speak` hands each completed response directly to the running voice daemon's
+`stream_speak` path, so its daemon-resident Kokoro or Voxtral model emits audio
+frames without another process cold start. The daemon retains model state after
+first use, though an engine's first request may still load its assets. Start the
+daemon first with `voice daemon start`. Tinker sampling currently returns a
+completed response rather than token deltas, so TTS audio streaming begins
+after Inkling finishes.
+
+The 512-token response budget includes Inkling's reasoning. If the model reaches
+it before completing a clean final answer, `voice` does not speak the partial
+result and continues to the next turn. Use `--max-tokens` for a larger budget.
+`--show-thinking` prints structured reasoning returned by the renderer in dim
+terminal text after sampling completes. `--output-dir` saves each normalized
+input as `turn-NNNN.wav` alongside JSON containing final text, reasoning,
+termination, token count, and latency fields.
+
+```bash
+# Respond to one microphone turn, considering tone and emphasis
+voice tinker
+
+# Transcribe an existing file through the same Rust normalization path
+voice tinker --audio recording.wav \
+  --instruction "Transcribe this speech exactly. Return only the transcript." \
+  --temperature 0
+
+# Machine-readable latency and result fields
+voice tinker --json
 ```
 
 ### `voice stream-contract`
